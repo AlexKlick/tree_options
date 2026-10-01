@@ -1249,6 +1249,7 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
               receipts_files: Mapping[str, str] | None = None, run_id: str = "",
               plan_created: str | None = None, complete: bool = True,
+              amendments: Sequence[Mapping[str, Any]] | None = None,
               clock: Clock = _utcnow,
               skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout)."""
@@ -1413,7 +1414,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         "schema": DIGEST_SCHEMA,
         "untrusted_note": UNTRUSTED_NOTE,
         "promotion": {"promoted": False, "rule": PREREGISTERED_RULE,
-                      "pre_registered_at": plan_created},
+                      "pre_registered_at": plan_created,
+                      "amendments": [dict(entry) for entry in (amendments or ())]},
         "headline": headline,
         "evaluation_valid": bool(aa["valid"]),
         "complete": complete,
@@ -1535,6 +1537,13 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
     add(f"Promoted: {promotion['promoted']} (pre-registered at "
         f"{promotion.get('pre_registered_at')})")
     add("")
+    amended = list(promotion.get("amendments") or ())
+    if amended:
+        add(f"> WEAK PROVENANCE: {len(amended)} arm-roster change(s) were attempted after this "
+            f"run's pre-registration, so the arms below are NOT the arms that were registered "
+            f"before any scoring: " + ", ".join(str(e.get("arm")) for e in amended)
+            + " (see plan.json amendments).")
+        add("")
     protocol = doc["protocol"]
     boards = doc["boards"]
     add("## Protocol")
@@ -1691,10 +1700,45 @@ def boards_fingerprint(boards: Sequence[Board]) -> str:
     return digest.hexdigest()
 
 
+def _roster_amendments(before: Sequence[Mapping[str, Any]],
+                       after: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One record per pre-registered arm the new roster adds, drops or retunes.
+
+    ``pre_registered_before_any_scoring`` is False for every one of them: an
+    arm that only appears on a resume was, by construction, not in the
+    registration written before the run started scoring, and this harness
+    cannot prove otherwise after the fact. The record says so instead of
+    leaving the digest to imply it."""
+    was = {str(doc["name"]): dict(doc) for doc in before}
+    now = {str(doc["name"]): dict(doc) for doc in after}
+    records: list[dict[str, Any]] = []
+    for name in sorted(was.keys() | now.keys()):
+        if was.get(name) == now.get(name):
+            continue
+        verb = ("added" if name not in was else
+                "removed" if name not in now else "changed")
+        records.append({"arm": name, "reason": f"{verb} after the pre-registration",
+                        "pre_registered_before_any_scoring": False})
+    return records
+
+
 def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec],
           protocol: Protocol, meta: Mapping[str, Any] | None, clock: Clock) -> dict[str, Any]:
     """Write plan.json + boards.jsonl on first start; on resume refuse changed
-    boards (the pairing) or a changed protocol (the pre-registration)."""
+    boards (the pairing), a changed protocol, or a changed arm roster -- all
+    three are the pre-registration, and none of them may be edited in place.
+
+    A refused roster change is still recorded: ``plan["amendments"]`` is
+    append-only and every attempt to add, drop or retune an arm after the
+    registration lands there before the run refuses to continue. Nothing is
+    ever removed from it, so the record of what the run's own arms were when
+    the results were produced survives on disk.
+
+    A plan written before this record existed cannot be shown to carry the
+    roster it was started with (an earlier resume could have rewritten it in
+    place with nothing to show), so its arms are marked unverifiable rather
+    than the run being blocked: the digest then says the provenance is weak
+    instead of the run being silently taken at its word."""
     path = run_dir / "plan.json"
     fingerprint = boards_fingerprint(boards)
     policy_docs = [{"name": p.name, "kind": p.kind, "repeats": p.repeats,
@@ -1708,7 +1752,25 @@ def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec]
         if plan.get("protocol") != protocol.to_json():
             raise ValueError("the protocol is pre-registered in plan.json and cannot change "
                              "on resume")
-        plan["policies"] = policy_docs
+        if "amendments" not in plan:
+            amendments = [{"added_at": clock().isoformat(), "arm": str(doc["name"]),
+                           "reason": "roster provenance unverifiable: this plan predates the "
+                                     "append-only amendment record, so an earlier resume may "
+                                     "have rewritten the roster in place",
+                           "pre_registered_before_any_scoring": False} for doc in policy_docs]
+        else:
+            amendments = [dict(entry) for entry in (plan.get("amendments") or ())]
+            if plan.get("policies") != policy_docs:
+                added = _roster_amendments(plan.get("policies") or (), policy_docs)
+                stamped = clock().isoformat()
+                for record in added:  # append-only, then refuse: the trace is the point
+                    amendments.append({"added_at": stamped, **record})
+                _write_json(path, {**plan, "amendments": amendments})
+                raise ValueError(
+                    "the arm roster is pre-registered in plan.json and cannot change on resume ("
+                    + ", ".join(f"{r['arm']} {r['reason']}" for r in added)
+                    + "); the attempt is recorded in plan.json amendments -- start a new run dir")
+        plan["amendments"] = amendments
         plan["resumed_at"] = clock().isoformat()
         _write_json(path, plan)
         return dict(plan)
@@ -1716,7 +1778,7 @@ def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec]
     plan = {"schema": PLAN_SCHEMA, "run_id": run_dir.name, "created": clock().isoformat(),
             "boards": len(boards), "boards_fingerprint": fingerprint,
             "sessions": {"count": len(sessions), "first": sessions[0], "last": sessions[-1]},
-            "policies": policy_docs, "protocol": protocol.to_json(),
+            "policies": policy_docs, "amendments": [], "protocol": protocol.to_json(),
             "preregistered_rule": PREREGISTERED_RULE, "untrusted_note": UNTRUSTED_NOTE,
             "meta": dict(meta or {})}
     with (run_dir / "boards.jsonl").open("w", encoding="utf-8") as stream:
@@ -1808,6 +1870,7 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
             digest = score_run(boards, scored_arms, scored_receipts, outcomes, protocol,
                                benchmarks=benchmarks, receipts_files=files,
                                run_id=run_dir.name, plan_created=plan.get("created"),
+                               amendments=plan.get("amendments"),
                                complete=complete, clock=clock, skill_options=skill_options)
         except Exception:
             executor.status = "scoring_failed"
