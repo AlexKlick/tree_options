@@ -29,6 +29,14 @@ Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
 ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk challenge run \
   --bundles-from artifacts/desk-store \
   --windows /home/alexk/.local/state/trex/desk-paper/quota-windows.json
+# after every game: rebuild the cross-digest standings (post-seal digests
+# only) so the REGISTERED promotion rule's clauses are always readable from
+# evaluations/challenge/standings.json (challenge rule-check prints them)
+ExecStartPost=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk challenge standings \
+  --bundles-from artifacts/desk-store
+# a standings rebuild failure must not mark the game failed (exit 3 = no
+# post-seal digests yet is a normal first-run state)
+SuccessExitStatus=3
 # one challenge is a few hundred flash board calls plus ~15 replay scorings
 # of the multi-month bundles: bounded but not fast
 TimeoutStartSec=7200
