@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh the forward minute-bar selection (weekly, after the Saturday chain recording)
+
+[Timer]
+# The selection re-reads the latest RECORDED CBOE chain (desk-chain's
+# Sat 06:30 slot records Friday's session; 09:00 is clear of it) and
+# re-selects the measured universe (IWM/QQQ/SPY, |delta| <= 0.70,
+# 7 <= dte <= 60, monthly expiries) so the corpus tracks the universe as
+# deltas and dtes age. Write-once per selected_on date, so a missed week
+# self-heals the next Saturday (within the 10-day staleness window the
+# capture enforces).
+OnCalendar=Sat *-*-* 09:00:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

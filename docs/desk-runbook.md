@@ -407,6 +407,86 @@ the vendor (probed: a 2024-09-13 start returned its first bar on
   the fetch date and is cached as such; the chain recorder (D1) carries the
   forward data.
 
+## Forward minute-bar corpus (`desk-forward-select`, `desk-forward-minutes`; units shipped DISABLED)
+
+The restart option for the one gap `desk/cost.py` names as unfalsifiable
+from EOD data: the chains are CBOE snapshots published once overnight
+(byte-stable during RTH), so nothing on disk can describe a 10:00/10:15/15:15
+ET fill. This lane accumulates a FORWARD corpus of Massive (Polygon)
+per-contract minute aggregates — the intraday source the repo already
+trusts (the 1.12M-bar longrun bundle was built from it) — for the measured
+universe (IWM/QQQ/SPY rows, 7 <= dte <= 60, |delta| <= 0.70, volume > 0,
+oi > 0, monthly third-Friday expiries; `n = 18,783` of `612,371` is the
+EOD corpus's count, the forward one grows session by session).
+
+Store: `artifacts/desk-forward-minutes/` (`DESK_FORWARD_DIR` overrides),
+a sibling of `desk-longdated-capture`; the Massive response cache is the
+shared `artifacts/massive-cache-desk`. Four subdirectories, all
+write-once-per-key and never rewritten: `selection/<D>.json`
+(`desk-forward-selection/1`), `bars/<D>.json`
+(`desk-forward-minute-bars/1`), `budget/<date>.json`
+(`desk-forward-wire-budget/1`), `verify/<D>.json`
+(`desk-forward-verify/1`). Every document says
+`execution_authorized: false`; nothing here trades.
+
+| job | when (America/New_York) | does |
+|---|---|---|
+| `desk-forward-select` | Sat 09:00 (after `desk-chain`'s Sat 06:30 recording) | re-selects the universe from the latest recorded chain so the corpus tracks it as deltas/dtes age; 3 nearest-the-money strikes per (underlying, expiry, right), capped at 60 contracts; no wire requests |
+| `desk-forward-minutes` | Mon-Fri 17:25; Mon-Sat 06:50 (catch-up) | captures the latest closed session's minute bars for the selection (1 request per contract, cache hits free), then writes the decision-clock verify verdict |
+
+The wire budget guard: `--budget N` (default 120 requests/day, ET date
+keyed) is checked with a headroom rule — a request starts only when the
+retry budget still fits under the cap — and every refusal is logged to the
+day's ledger. A selection older than 10 calendar days (or postdating the
+session) makes the capture refuse with exit 4 before any request.
+
+Exit codes (beyond the shared 0 ok / 1 failure / 2 bad args / 3 retryable):
+4 selection stale or missing (run `forward-select`); 5 the daily budget
+stopped the capture before anything landed; 6 captured, but a decision
+clock has no bar (or no bars document at all). Only 3 is in
+`SuccessExitStatus`.
+
+**Units are shipped DISABLED** (files only; nothing starts burning quota
+without an operator decision — the desk-lab timers stay stopped and are
+not touched):
+
+```bash
+cp ~/documents/tree_options/deploy/desk/desk-forward-select.{service,timer} \
+   ~/documents/tree_options/deploy/desk/desk-forward-minutes.{service,timer} \
+   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemd-analyze --user verify ~/.config/systemd/user/desk-forward-{select,minutes}.{service,timer}
+# ENABLE (operator decision; this is what starts the daily wire spend).
+# ENABLE ONLY AFTER THIS BRANCH IS MERGED INTO the main checkout the units'
+# ExecStart runs from: before the merge the service exits 1 (module not
+# found) and burns no wire — but enabling pre-merge only buys error logs:
+systemctl --user enable --now desk-forward-select.timer desk-forward-minutes.timer
+# and one manual pass each:
+systemctl --user start desk-forward-select.service; journalctl --user -u desk-forward-select -n 20
+systemctl --user start desk-forward-minutes.service; journalctl --user -u desk-forward-minutes -n 30
+# DISABLE again:
+systemctl --user disable --now desk-forward-select.timer desk-forward-minutes.timer
+```
+
+Manual runs (no units needed):
+
+```bash
+cd ~/documents/tree_options
+PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-select            # today
+PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-minutes --session 2026-10-05
+PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-verify  --session 2026-10-05
+```
+
+The live-session check (run at the next RTH session after 17:25 ET, or
+read the journal the next morning):
+
+```bash
+systemctl --user start desk-forward-minutes.service
+journalctl --user -u desk-forward-minutes -n 30   # ... ok=N ... covered=N
+head -40 ~/documents/tree_options/artifacts/desk-forward-minutes/verify/<D>.json
+# covered_contracts >= 1 and ok == true proves bars landed on 10:00/10:15/15:15 ET
+```
+
 ## Playbook and conditions (Wave 2 D5; no timer yet)
 
 - `data/desk/playbook/v2.toml` is the ACTIVE version; `v1.toml` stays as

@@ -1,0 +1,23 @@
+[Unit]
+Description=Options desk: forward Massive minute-bar capture (wire-budgeted)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk forward-minutes
+# exit 3 = retryable vendor failure (the next slot retries; a captured
+# session is never refetched). 4 = selection stale/missing: run
+# desk-forward-select. 5 = the daily wire budget stopped the capture.
+# 6 = captured, but a decision clock (10:00/10:15/15:15 ET) has no bar.
+# Only 3 is benign; the rest stay red so the operator sees them.
+SuccessExitStatus=3
+# ~14-40 contracts at 1 request each plus retries, paced 5/min by the
+# client's governor; the ledger is artifacts/desk-forward-minutes/budget/.
+TimeoutStartSec=3600

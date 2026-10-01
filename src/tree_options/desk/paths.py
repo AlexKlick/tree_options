@@ -7,6 +7,8 @@
 * ``DESK_PAPER_DIR``: the research lane's scripts and panel, default
   ``<repo>/artifacts/paper-trades`` (read, and written only through its
   own ``fetch_ohlc.py``);
+* ``DESK_FORWARD_DIR``: the forward minute-bar corpus root, default
+  ``<repo>/artifacts/desk-forward-minutes`` (sibling of the desk captures);
 * ``TREX_NOTIFY_ENV``: the ntfy config, default
   ``~/.config/trex/notify.env`` (see :mod:`tree_options.trex.notify`);
 * ``DESK_REPO_ROOT``: the checkout the jobs run from (cwd of the
@@ -49,6 +51,12 @@ def state_root() -> Path:
 
 def paper_dir() -> Path:
     return _env_path("DESK_PAPER_DIR") or repo_root() / "artifacts" / "paper-trades"
+
+
+def forward_dir() -> Path:
+    """The forward minute-bar corpus (desk/forward_minutes.py): sibling of the
+    existing desk captures under ``artifacts/`` (``DESK_FORWARD_DIR`` overrides)."""
+    return _env_path("DESK_FORWARD_DIR") or repo_root() / "artifacts" / "desk-forward-minutes"
 
 
 def events_dir() -> Path:
