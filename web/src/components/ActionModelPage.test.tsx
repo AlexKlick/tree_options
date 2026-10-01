@@ -176,12 +176,26 @@ const LONG_RUN: LongRunView = {
     boards: { total: 6, scored: 4, excluded: 2, sessions: { count: 3, first: '2026-06-01', last: '2026-06-03' } },
     aa: { status: 'valid', valid: true, rule: 'INVALID when the CI excludes 0', pair: ['m31#1', 'm31#2'], boards: 4, agreement: 0.8333, diff: pair(-4, -20, 12) },
     random_null: { p_enter: 0.75, matched_to: ['m31#1', 'm31#2'], horizons: [null], seeds: 1000, expected_total: 7, expected_ci95: [3, 11], simulated_mean_total: 7.1, band95: [-30, 44] },
-    standings: [{
-      arm: 'm31#1', policy: 'm31', repeat: 1, kind: 'model', boards: 4, entered: 3, entry_rate: 0.75,
-      unevaluable: 1, failures: 2, net_total: 42.5, net_ci95: [-10.25, 80],
-      vs_random: pair(35.5, -17, 73), vs_first_row: pair(56, 10, 90), vs_incumbent: null,
-      vs_regime: pair(-12, -60, 30), null_percentile: 0.91,
-    }],
+    standings: [
+      // Server order per #45's sort (own-null ci95 low desc: no_trade 0 > m31#1
+      // −18). no_trade identity pinned by #45's test_vs_random_is_matched_to_each_
+      // arms_own_entry_rate: p_enter 0.0, diff_total == net_total == 0.0. Its
+      // legacy vs_random is hand-derived: 0.00 − 7.00 (the shared null's
+      // expected_total at the pooled 75% rate, from random_null below).
+      { arm: 'no_trade', policy: 'no_trade', repeat: 1, kind: 'control', boards: 4, entered: 0,
+        entry_rate: 0.0, unevaluable: 0, failures: 0, net_total: 0, net_ci95: [0, 0],
+        vs_random: pair(-7, -44, 30), vs_first_row: null, vs_incumbent: null, vs_regime: null,
+        null_percentile: 0.5, vs_random_own: { ...pair(0, 0, 0), p_enter: 0.0 },
+        null_percentile_own: 0.5 },
+      // vs_random_own: own-null expected_total 10.50 at this arm's own 75% rate
+      // (fixture input), so diff_total = 42.50 − 10.50 = 32.00 (paired shape +
+      // p_enter per #45's keep list).
+      { arm: 'm31#1', policy: 'm31', repeat: 1, kind: 'model', boards: 4, entered: 3, entry_rate: 0.75,
+        unevaluable: 1, failures: 2, net_total: 42.5, net_ci95: [-10.25, 80],
+        vs_random: pair(35.5, -17, 73), vs_first_row: pair(56, 10, 90), vs_incumbent: null,
+        vs_regime: pair(-12, -60, 30), null_percentile: 0.91,
+        vs_random_own: { ...pair(32, -18, 72), p_enter: 0.75 }, null_percentile_own: 0.92 },
+    ],
     walk_forward: { status: 'ok', cutoff: '2026-06-02', metric: 'ci_low_diff_vs_random', max_finalists: 2, tune_sessions: 2, test_sessions: 1, reason: null,
       finalists: [{ policy: 'm31', holm_p: 0.5, eligible_for_operator_review: false,
         test: { net_total: 12, net_ci95: [12, 12], vs_random: pair(9, 9, 9), vs_incumbent: null } }] },
@@ -213,7 +227,107 @@ it('renders the long-run card: progress bars, CI standings, A/A, random band, be
   expect(card.textContent).toMatch(/Never promoted: the pre-registered rule is text for the operator/)
   expect(card.textContent).toMatch(/at most 2 finalists tested once/)
   expect(card.textContent).not.toMatch(/eligible for operator review —/)
+  expect(screen.queryByTestId('longrun-skill')).toBeNull()
+  expect(screen.queryByTestId('longrun-skill-no-price')).toBeNull()
   expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
+})
+
+it('renders vs own-null as the standings headline (p_enter stated) and labels the legacy shared-null column', async () => {
+  vi.mocked(getLongRun).mockResolvedValue(LONG_RUN)
+  render(<ActionModelPage />)
+  await screen.findByTestId('longrun-standing-m31#1')
+  const legacyHead = screen.getByRole('columnheader', { name: /vs random \(legacy\)/ })
+  expect(screen.getByRole('columnheader', { name: /vs random \(own entry rate\)/ })).toBeTruthy()
+  // the legacy column must be unreadable as a skill measure
+  expect(legacyHead.getAttribute('title')).toMatch(/not a skill measure/i)
+  expect(legacyHead.getAttribute('title')).toMatch(/single shared constant/i)
+  expect(screen.getByTestId('longrun-standing-m31#1').textContent)
+    .toMatch(/\+\$32\.00 \[−\$18\.00, \+\$72\.00\] · p_enter 75\.0%/)
+  expect(screen.getByTestId('longrun-standing-no_trade').textContent)
+    .toMatch(/\+\$0\.00 \[\+\$0\.00, \+\$0\.00\] · p_enter 0\.0%/)
+})
+
+it('keeps the server\'s standings order — no client sort on the legacy column or net', async () => {
+  vi.mocked(getLongRun).mockResolvedValue(LONG_RUN)
+  render(<ActionModelPage />)
+  await screen.findByTestId('longrun-standing-m31#1')
+  const order = screen.getAllByTestId(/^longrun-standing-/).map((el) => el.getAttribute('data-testid'))
+  // fixture order [no_trade, m31#1] is what the #45 server sort produces
+  // (own-null ci95 low desc: 0 > −18). A client sort on the legacy column
+  // (ci95 low −44 < −17) or on net (0 < 42.5) would flip this and fail here.
+  expect(order).toEqual(['longrun-standing-no_trade', 'longrun-standing-m31#1'])
+})
+
+it('renders the promotion outcome from the server with the evaluated-entries floor; a net_total=0 abstention is NOT eligible', async () => {
+  // Real case from PR #47's body (run 20260929T094303Z): finalist
+  // refl-trend-persistent-bullish-trend scored a test-window net of exactly
+  // $0.00 yet a vs_random CI of [+540.97, +2398.67] — it won the comparison
+  // by abstaining. #47's rule adds test_net_positive and
+  // test_entries_at_least_floor (MIN_TEST_ENTRIES = 30); the server folds
+  // those into eligible_for_operator_review, and the SPA renders that verdict
+  // plus the counts (15 = at most 15 evaluated fills exist run-wide). It
+  // deliberately mirrors NO clause names — that is how the old local
+  // ActionModelPage mirror drifted in the first place.
+  const view: LongRunView = { ...LONG_RUN, digest: { ...LONG_RUN.digest!,
+    walk_forward: { ...LONG_RUN.digest!.walk_forward, min_test_entries: 30,
+      finalists: [
+        { policy: 'refl-trend-persistent-bullish-trend', holm_p: 0.004, test_entries: 15,
+          eligible_for_operator_review: false,
+          test: { net_total: 0, net_ci95: [0, 0],
+            vs_random: { diff_total: 1494.53, ci95: [540.97, 2398.67], p_one_sided: 0.002, sessions: 29 },
+            vs_incumbent: { diff_total: -703.5, ci95: [-3483.27, 1664.94], p_one_sided: 0.6906, sessions: 29 } } },
+        { policy: 'm31', holm_p: 0.5, test_entries: 42, eligible_for_operator_review: true,
+          test: { net_total: 12, net_ci95: [12, 12], vs_random: pair(9, 9, 9), vs_incumbent: null } },
+      ] } } }
+  vi.mocked(getLongRun).mockResolvedValue(view)
+  render(<ActionModelPage />)
+  const wf = await screen.findByTestId('longrun-wf')
+  expect(wf.textContent).toMatch(/refl-trend-persistent-bullish-trend test \+\$0\.00.*15\/30 evaluated test entries/)
+  expect(wf.textContent).toMatch(/m31 test.*Holm p 0\.500, 42\/30 evaluated test entries — eligible for operator review/)
+  expect(wf.textContent).not.toMatch(/refl-trend[^;]*— eligible for operator review/)
+})
+
+it('renders the skill verdicts and the NO PRICE ledger — a fully-refused arm cannot read as break-even', async () => {
+  // Served shape is PR #50's (skill.cockpit_projection): {no_price: <section
+  // ledger>, arms: {name: {...}}}. Ledger numbers are #48's STRICT fixture
+  // (tests/unit/test_desk_no_price_propagation.py): s3 unknown_symbol, s4
+  // no_delta, s5 delta_out_of_universe -> 3 dropped, by_arm {m31#1: 3},
+  // verdict prefix "NO PRICE (3 dropped): ". cost_provenance is #48's
+  // CostProvenance.measured_corpus().as_dict() (desk/cost.py): EOD chain
+  // snapshots, describes_fill_clock hard-coded false.
+  const view: LongRunView = { ...LONG_RUN, digest: { ...LONG_RUN.digest!,
+    skill: {
+      no_price: { total: 3, by_arm: { 'm31#1': 3 },
+        by_reason: { unknown_symbol: 1, no_delta: 1, delta_out_of_universe: 1 } },
+      arms: {
+        'm31#1': { verdict: 'NO PRICE (3 dropped): NO SKILL DETECTED (excess CI straddles 0) — Descriptive; nothing promoted.',
+          excess_total: 0, excess_block_ci95: [-1, 1], forward_significant: false,
+          no_price: { total: 3, snapshots: ['s3', 's4', 's5'],
+            reasons: { s3: 'unknown_symbol', s4: 'no_delta', s5: 'delta_out_of_universe' } },
+          boards_dropped_unpriced: 3,
+          cost_provenance: { source: 'cboe-delayed-eod-chains', snapshot_window_et: '17:45-06:30',
+            universe_filter: 'symbol in IWM/QQQ/SPY, 7 <= dte <= 60, volume > 0, oi > 0, |delta| <= 0.70',
+            n_rows: 18783, decision_clocks_et: ['10:00', '10:15', '15:15'],
+            describes_fill_clock: false,
+            gap: 'the cboe-delayed-eod-chains corpus was captured 17:45-06:30 ET, outside every decision clock this desk trades (10:00, 10:15, 15:15 ET); no instant of the capture window describes a fill at a decision clock, and this gap is not falsifiable from the corpus' } },
+        no_trade: { verdict: 'NO TRADES (entered 0) — Descriptive; nothing promoted.',
+          excess_total: 0, excess_block_ci95: null, forward_significant: false,
+          no_price: null, boards_dropped_unpriced: 0, cost_provenance: null },
+      } } } }
+  vi.mocked(getLongRun).mockResolvedValue(view)
+  render(<ActionModelPage />)
+  const skillLine = await screen.findByTestId('longrun-skill')
+  expect(skillLine.textContent).toMatch(/NO PRICE \(3 dropped\)/)
+  expect(skillLine.textContent).toMatch(/m31#1: NO PRICE \(3 dropped\).* — 3 boards dropped unpriced/)
+  expect(skillLine.textContent).toMatch(/no_trade: NO TRADES/)
+  const noPrice = screen.getByTestId('longrun-skill-no-price')
+  expect(noPrice.textContent).toMatch(/3 boards dropped unpriced/)
+  expect(noPrice.textContent).toMatch(/unknown_symbol 1, no_delta 1, delta_out_of_universe 1/)
+  // cost-derived numbers never display without their cost basis: the source
+  // and the fill-clock caveat ride along whenever provenance is present
+  const cost = screen.getByTestId('longrun-skill-cost')
+  expect(cost.textContent).toMatch(/cboe-delayed-eod-chains/)
+  expect(cost.textContent).toMatch(/do not describe the fill clock/)
 })
 
 it('flags an invalid A/A pair and the empty store', async () => {

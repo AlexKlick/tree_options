@@ -54,6 +54,12 @@ def test_finished_run_serves_progress_and_standings_read_only(world) -> None:
     assert {'m#1', 'm#2', 'first_row', 'no_trade', 'always_bullish'} <= arms
     assert all(len(row['net_ci95']) == 2 for row in digest['standings'])
     assert digest['random_null']['seeds'] == 200
+    skill = digest['skill']
+    assert skill and all(isinstance(a.get('verdict'), str) for a in skill['arms'].values())
+    # the mini run predates the measured cost ledger: absence stays visible as
+    # None (fail-closed), never an invented zero-drop ledger
+    assert skill['no_price'] is None
+    assert all(a['boards_dropped_unpriced'] is None for a in skill['arms'].values())
     assert str(world.root) not in response.text  # no absolute paths (receipts omitted)
     assert c.post('/api/desk/longrun').status_code == 405
 

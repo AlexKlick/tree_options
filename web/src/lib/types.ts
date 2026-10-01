@@ -316,6 +316,10 @@ export interface LongRunStanding {
   // vs the always_bullish regime baseline (null for that arm itself)
   vs_regime?: LongRunPaired | null
   null_percentile: number
+  /** paired diff vs a random null matched at THIS arm's own entry rate (#45);
+   *  the headline skill comparison. Absent on digests that predate #45. */
+  vs_random_own?: (LongRunPaired & { p_enter: number }) | null
+  null_percentile_own?: number | null
 }
 
 export interface LongRunBenchmark {
@@ -388,6 +392,47 @@ export interface LongRunDigest {
     finalists: LongRunFinalist[]
   }
   benchmarks: LongRunBenchmark[]
+  /** the served skill payload (skill.cockpit_projection, PR #50's shape):
+   *  per-arm verdicts beside the section ledger they were measured over.
+   *  Absent when the run predates the skill section or it errored. */
+  skill?: LongRunSkillPayload | null
+}
+
+export interface LongRunSkillPayload {
+  /** section-level unpriced-board ledger (#48); null when the digest predates
+   *  the measured cost model — never fabricated. */
+  no_price: LongRunSkillNoPrice | null
+  arms: Record<string, LongRunSkillArm>
+}
+
+export interface LongRunSkillArm {
+  verdict: string
+  excess_total: number | null
+  excess_block_ci95: [number, number] | null
+  forward_significant: boolean | null
+  /** the measured cost model's per-arm refusal ledger; null pre-#48 */
+  no_price: { total: number; snapshots?: string[]; reasons?: Record<string, string> } | null
+  boards_dropped_unpriced: number | null
+  /** where the measured costs came from (#48); null when none was supplied —
+   *  cost-derived numbers must not display without their cost basis. */
+  cost_provenance: LongRunCostProvenance | null
+}
+
+export interface LongRunCostProvenance {
+  source: string
+  snapshot_window_et?: string
+  universe_filter?: string
+  n_rows?: number
+  decision_clocks_et?: string[]
+  /** always false in #48: EOD snapshots never describe an intraday fill */
+  describes_fill_clock?: boolean
+  gap?: string
+}
+
+export interface LongRunSkillNoPrice {
+  total: number
+  by_arm: Record<string, number>
+  by_reason: Record<string, number>
 }
 
 export interface LongRunView {
