@@ -1090,10 +1090,17 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
                  metric: str, max_finalists: int, draws: int, seed: int,
                  alpha: float, aa_valid: bool, embargo: int = 1,
                  test_entries: Mapping[str, np.ndarray],
-                 min_test_entries: int = MIN_TEST_ENTRIES) -> dict[str, Any]:
+                 min_test_entries: int = MIN_TEST_ENTRIES,
+                 own_expected: Mapping[str, np.ndarray] | None = None) -> dict[str, Any]:
     """Rank candidates on tune sessions (<= cutoff) by the pre-declared metric,
     keep at most MAX_FINALISTS, test them ONCE on the sessions >= ``embargo``
     sessions after the cutoff session (score_run passes purged series).
+
+    ``own_expected`` supplies a per-policy null matched to THAT policy's own
+    entry rate; the selection metric and the confirmatory vs-random test both
+    use it when present. Ranking candidates on a null built for a different
+    (higher) entry rate hands a low-entry-rate policy a constant credit it did
+    not earn, so the shared ``expected`` is only a fallback.
 
     ``test_entries`` is REQUIRED, per policy, the per-session count of
     evaluated entries aligned to ``sessions``: without it the confirmatory
@@ -1112,7 +1119,14 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
     base = {"cutoff": cutoff, "metric": metric,
             "tune_sessions": int(tune.sum()), "test_sessions": int(test.sum()),
             "embargo_sessions": max(1, embargo),
-            "embargoed_sessions": int((~tune & ~test).sum())}
+            "embargoed_sessions": int((~tune & ~test).sum()),
+            "null_scope": "per_policy_own_entry_rate" if own_expected else "shared_incumbent"}
+
+    def null_for(name: str) -> np.ndarray:
+        if own_expected is not None and name in own_expected:
+            return own_expected[name]
+        return expected
+
     if not tune.any() or not test.any() or not pooled:
         return {"status": "not_applicable", **base,
                 "reason": "the cutoff leaves no tune or no test sessions, or no candidates"}
@@ -1120,7 +1134,7 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
     ranking: list[dict[str, Any]] = []
     for name in sorted(pooled):
         series = pooled[name]
-        diff = series[tune] - expected[tune]
+        diff = series[tune] - null_for(name)[tune]
         if metric == "total":
             value = float(series[tune].sum())
         elif metric == "diff_vs_random":
@@ -1136,7 +1150,7 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
     pvalues: dict[str, float] = {}
     for entry in finalists:
         name = entry["policy"]
-        series, exp = pooled[name][test], expected[test]
+        series, exp = pooled[name][test], null_for(name)[test]
         vs_random = paired(series, exp, draws=draws, seed=seed)
         vs_incumbent = (paired(series, pooled[incumbent][test], draws=draws, seed=seed)
                         if incumbent is not None and incumbent in pooled and name != incumbent
@@ -1309,12 +1323,23 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     first_row = next((a.name for a in arms if a.policy.name == FIRST_ROW), None)
     regime = next((a.name for a in arms if a.policy.name == REGIME), None)
     incumbent_ref = incumbent_arms[0] if incumbent_arms else None
+    # The incumbent-matched null above is a LEGACY comparison kept for continuity.
+    # The load-bearing column is vs_random_own: a null at THIS arm's own entry
+    # rate, so an arm is never measured against a picker that traded a different
+    # fraction of the window than it did (a low-entry-rate arm used to be handed
+    # a large constant credit simply because the shared null entered ~0.9).
+    own_nulls: dict[str, NullResult] = {}
+    for arm in arms:
+        rate = (per_arm[arm.name]["entered"] / len(scored)) if scored else 0.0
+        own_nulls[arm.name] = random_null(board_sessions, sessions, options, rate,
+                                          seeds=protocol.random_seeds, seed=seed)
     standings: list[dict[str, Any]] = []
     for arm in arms:
         data = per_arm[arm.name]
         series = data["sessions"]
         total = float(series.sum())
         evaluated = data["entered"] - data["unevaluable"]
+        own = own_nulls[arm.name]
         chosen_options: list[np.ndarray] = []
         realized = 0.0
         for board, (choice, horizon), value in zip(scored, data["decisions"], data["net"],
@@ -1334,6 +1359,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "gross_total": round(data["gross_total"], 2),
             "net_per_evaluated_entry": round(total / evaluated, 2) if evaluated else None,
             "vs_random": paired(series, expected, draws=draws, seed=seed),
+            "vs_random_own": {**paired(series, own.expected_sessions, draws=draws, seed=seed),
+                              "p_enter": round(own.p_enter, 4)},
             "vs_first_row": (paired(series, per_arm[first_row]["sessions"], draws=draws,
                                     seed=seed)
                              if first_row is not None and arm.name != first_row else None),
@@ -1344,16 +1371,17 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "vs_regime": (paired(series, per_arm[regime]["sessions"], draws=draws, seed=seed)
                           if regime is not None and arm.name != regime else None),
             "null_percentile": round(float(np.mean(null.totals < total)), 4),
+            "null_percentile_own": round(float(np.mean(own.totals < total)), 4),
             "pick_null": pick_null(realized, chosen_options, seeds=protocol.random_seeds,
                                    seed=seed),
-            "stability_vs_random": stability(series - expected, sessions),
+            "stability_vs_random": stability(series - own.expected_sessions, sessions),
             "receipts": (receipts_files or {}).get(arm.name),
             **({"failure_reasons": data["failure_reasons"]}
                if data["failure_reasons"] else {}),  # additive: a clean arm shows none
             **({"heals": data["heals"]}
                if data["heals"] else {}),  # additive: a clean arm shows no heal tally
         })
-    standings.sort(key=lambda r: (-r["vs_random"]["ci95"][0], r["arm"]))
+    standings.sort(key=lambda r: (-r["vs_random_own"]["ci95"][0], r["arm"]))
 
     aa = aa_check(per_arm, incumbent_arms, draws=draws, seed=seed)
     # purged walk-forward (desk.purge): selection never sees post-cutoff prices
@@ -1363,6 +1391,10 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     window = sorted({b.session for b in boards})
     selection = {a.name: per_arm[a.name]["sessions"] for a in arms}
     sel_expected, purge_doc = expected, None
+    # Per-policy purged nulls at each policy's OWN entry rate, for the same
+    # reason as the standings: the walk-forward both SELECTS on and CONFIRMS
+    # with this null, so a shared high-rate null decides finalists.
+    own_sel_expected: dict[str, np.ndarray] = {}
     if cutoff is not None:
         by_arm: dict[str, dict[str, int]] = {}
         for arm in arms:
@@ -1373,8 +1405,19 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         sel_expected, null_counts = purge.purged_null(scored, sessions, horizons, outcomes.get,
                                                       outcomes.exit_at, cutoff, null.p_enter,
                                                       window)
+        policy_rates: dict[str, list[float]] = {}
+        for arm in arms:
+            if arm.policy.kind in ("model", "rule"):
+                policy_rates.setdefault(arm.policy.name, []).append(
+                    per_arm[arm.name]["entered"] / len(scored) if scored else 0.0)
+        own_null_counts: dict[str, dict[str, int]] = {}
+        for policy_name, rates in policy_rates.items():
+            own_sel_expected[policy_name], own_null_counts[policy_name] = purge.purged_null(
+                scored, sessions, horizons, outcomes.get, outcomes.exit_at, cutoff,
+                float(np.mean(rates)), window)
         purge_doc = {"rule": purge.RULE, "cutoff": cutoff, "by_arm": by_arm,
                      "random_null": null_counts,
+                     "random_null_own_entry_rate": own_null_counts,
                      "own_coverage": {a.name: purge.own_coverage(
                          boards, receipts.get(a.name, {}), outcomes.get, outcomes.exit_at,
                          cutoff, window) for a in arms}}
@@ -1395,7 +1438,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
                       cutoff=cutoff, metric=protocol.metric,
                       max_finalists=protocol.max_finalists, draws=draws, seed=seed,
                       alpha=protocol.alpha, aa_valid=bool(aa["valid"]),
-                      embargo=protocol.embargo_sessions, test_entries=entry_pooled)
+                      embargo=protocol.embargo_sessions, test_entries=entry_pooled,
+                      own_expected=own_sel_expected or None)
     if purge_doc is not None:
         wf["purge"] = purge_doc
     bench = benchmark_rows(benchmarks or {}, sessions, capital=protocol.capital,
@@ -1562,24 +1606,32 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         f"{protocol['metric']}; max finalists {protocol['max_finalists']}; "
         f"alpha {protocol['alpha']}")
     add("")
-    add("## Standings (net $, 95% session-bootstrap CI; ordered by the vs-random CI low)")
+    add("## Standings (net $, 95% session-bootstrap CI)")
+    add("")
+    add("Ordered by **vs random (own entry rate)** — the null is rebuilt at each arm's own")
+    add("entry rate, so it is not the incumbent's rate subtracted from everyone. The")
+    add("`vs random (incumbent p)` column is the legacy shared-null comparison, kept for")
+    add("continuity: it is net minus ONE constant, so it ranks identically to net and")
+    add("flatters any arm that enters less than the incumbent.")
     add("")
     add("| arm | kind | entered | unevaluable | failures | net total [95% CI] | "
-        f"vs random | vs first_row | vs incumbent | vs {REGIME} | null pctile |")
-    add("|---|---|---|---|---|---|---|---|---|---|---|")
+        f"vs random (own entry rate) | vs random (incumbent p) | vs first_row | "
+        f"vs incumbent | vs {REGIME} | null pctile (own) |")
+    add("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in doc["standings"]:
         add(f"| {row['arm']} | {row['kind']} | {row['entered']} | {row['unevaluable']} | "
             f"{row['failures']} | {row['net_total']:+.2f} {_ci(row['net_ci95'])} | "
-            f"{_pair(row['vs_random'])} | {_pair(row['vs_first_row'])} | "
+            f"{_pair(row['vs_random_own'])} | {_pair(row['vs_random'])} | "
+            f"{_pair(row['vs_first_row'])} | "
             f"{_pair(row['vs_incumbent'])} | {_pair(row.get('vs_regime'))} | "
-            f"{row['null_percentile']:.3f} |")
+            f"{row['null_percentile_own']:.3f} |")
     null = doc["random_null"]
     add(f"| random (p_enter {null['p_enter']:.3f}) | control | - | - | - | "
-        f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])} | - | - | - | - | - |")
+        f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])} | - | - | - | - | - | - |")
     for bench in doc["benchmarks"]:
         if bench.get("status") == "ok":
             add(f"| {bench['name']} buy-and-hold | benchmark | - | - | - | "
-                f"{bench['net_total']:+.2f} {_ci(bench['net_ci95'])} | - | - | - | - | - |")
+                f"{bench['net_total']:+.2f} {_ci(bench['net_ci95'])} | - | - | - | - | - | - |")
     add("")
     tallies = [(row["arm"], row["failure_reasons"]) for row in doc["standings"]
                if row.get("failure_reasons")]
@@ -1628,6 +1680,12 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         f"{null['seeds']} seeds on the same boards: expected "
         f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])}, simulated 95% band "
         f"{_ci(null['band95'])}.")
+    add("")
+    add("This is the LEGACY shared null, matched to the incumbent's entry rate. Because it")
+    add("is one fixed expectation subtracted from every arm, the `vs random (incumbent p)`")
+    add("column is arithmetically `net - one constant` and therefore carries no information")
+    add("beyond net. The load-bearing comparison is `vs random (own entry rate)`, rebuilt per")
+    add("arm; the walk-forward likewise selects and confirms on each policy's own null.")
     add("")
     wf = doc["walk_forward"]
     add("## Walk-forward (confirmatory)")
@@ -2468,8 +2526,9 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(promotion, dict) or promotion.get("promoted") is not False:
         raise ValueError("a digest must carry promoted: false")
     keep = ("arm", "policy", "repeat", "kind", "boards", "entered", "entry_rate",
-            "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_first_row",
-            "vs_incumbent", "vs_regime", "null_percentile", "failure_reasons", "heals")
+            "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_random_own",
+            "vs_first_row", "vs_incumbent", "vs_regime", "null_percentile",
+            "null_percentile_own", "failure_reasons", "heals")
     wf = doc.get("walk_forward") or {}
     standings = []
     for row in doc.get("standings", []):
