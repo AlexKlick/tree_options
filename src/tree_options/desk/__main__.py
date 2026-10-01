@@ -53,6 +53,16 @@
         DESK_FORWARD_DIR/verify/<D>.json (no wire; idempotent). Exit codes as
         forward-minutes' 0/6.
 
+    forward-coverage [--session D]
+        Eight-clock coverage EVIDENCE for D's captured bars (the
+        RESTART-THRESHOLD C1 schedule 10:00..15:15 ET, not forward-verify's
+        three outcome clocks) into DESK_FORWARD_DIR/coverage/<D>.json, no
+        wire. For every clock: contracts with a bar in [C, C+15min) ET,
+        the missing named with their reason. Prints raw numbers and
+        boolean facts only -- the qualifying threshold stays the
+        operator's sealed call. Exit 0 table written, 3 no bars document
+        for D (run forward-minutes), 4 no selection in the forward store.
+
     update-events [--horizon N] [--dry-run]
         Earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 only when
         DESK_SEC_UA is set) and the macro seal/Fed-page check. Exit 0,
@@ -191,6 +201,7 @@ from tree_options.desk import (  # noqa: E402
     econ_jobs,
     eod_equity,
     events,
+    forward_coverage,
     forward_minutes,
     http,
     indices,
@@ -341,6 +352,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     fv.add_argument("--session", type=date.fromisoformat,
                     help="default: the latest session whose 16:15 ET cutoff has passed")
+    fco = sub.add_parser(
+        "forward-coverage",
+        help="eight-clock coverage evidence for a captured session (no wire; decides nothing)",
+    )
+    fco.add_argument("--session", type=date.fromisoformat,
+                     help="default: the latest session whose 16:15 ET cutoff has passed")
     from tree_options.desk import production
 
     production.register(sub)
@@ -643,6 +660,23 @@ def _forward_verify(args: argparse.Namespace, *, clock: store.Clock,
     verdict = forward_minutes.verify_session(session, now=now)
     print(verdict.line())
     return verdict.exit_code
+
+
+def _forward_coverage(args: argparse.Namespace, *, clock: store.Clock,
+                      cal: ClosingCalendar) -> int:
+    now = clock()
+    session = args.session or latest_completed_session(now, cal)
+    try:
+        doc = forward_coverage.score_session(session, now=now)
+    except forward_coverage.CoverageInputError as exc:
+        print(f"forward-coverage: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except ValueError as exc:  # a bars document that is not one (fixed text)
+        print(f"forward-coverage: {exc}", file=sys.stderr)
+        return 1
+    for line in forward_coverage.render_lines(doc):
+        print(line)
+    return 0
 
 
 def _probe_clock_tier(
@@ -979,6 +1013,8 @@ def run_cli(
             return _forward_minutes(args, client=forward_client, clock=clock, cal=cal)
         if args.command == "forward-verify":
             return _forward_verify(args, clock=clock, cal=cal)
+        if args.command == "forward-coverage":
+            return _forward_coverage(args, clock=clock, cal=cal)
         if args.command == "update-events":
             return _update_events(
                 args,
