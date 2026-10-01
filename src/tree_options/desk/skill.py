@@ -913,8 +913,7 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
             "menu_block": base_block, "components": list(COMPONENTS),
             "random_control": ("the random picker's excess, participation, horizon, direction "
                                "and selection are 0 by construction; its total is BASE"),
-            "no_price": dict(no_price.as_dict()) if no_price is not None
-                         else {"total": 0, "by_arm": {}, "by_reason": {}},
+            "no_price": dict(no_price.as_dict()) if no_price is not None else None,
             "arms": doc_arms,
             "power": power_table(book, boards, horizons, options=opts)}
 
