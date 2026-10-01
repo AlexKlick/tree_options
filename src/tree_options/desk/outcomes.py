@@ -82,6 +82,14 @@ TABLE_SCHEMA = "desk-outcome-table/1"
 EXIT_MODES = ("intraday", "eod", "hold:1", "hold:3", "hold:5", "hold:10", "expiry")
 STATUSES = ("closed", "marked_at_end", "no_fill", "no_price")
 STRUCTURES = ("put_credit", "put_debit", "call_credit", "call_debit")
+# The three ET instants a candidate's outcome is measured at (the v2 corpus's
+# fill clocks; forward_minutes.DECISION_CLOCKS must stay equal to this - a
+# test pins the equality and forces a revisit if either side ever moves).
+# Distinct from the EIGHT observation clocks the A2 chain tier captures
+# (desk.intraday_action_graph.SCHEDULE): fills are measured at these three,
+# the book is observed at eight. (Formatting pinned by the forward-minutes
+# guard test: it greps this exact literal.)
+decision_clocks_et=("10:00", "10:15", "15:15")
 BULLISH = frozenset({"put_credit", "call_debit"})
 AGE_S = 15 * 60  # replay's freshness / entry-delay limit (seconds)
 SPOT_AGE_S = 30 * 60  # parity prints may be up to 30 minutes old

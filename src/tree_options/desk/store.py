@@ -70,6 +70,20 @@ from tree_options.trex.discovery.market import Transport
 SCHEMA = "desk-chain/1"
 MANIFEST_SCHEMA = "desk-chain-manifest/1"
 RAW_KEEP_SESSIONS = 20
+# A2 clock tier (CBOE delayed feed, proven intraday-live 2026-10-01): a
+# clock snapshot is "fresh for its clock" when the payload's own
+# source_as_of lands inside [clock, clock + CLOCK_WINDOW). The probe
+# measured ~2-4 min publication lag, so captures fire at clock+3.
+EOD = "eod"
+CLOCK_WINDOW_S = 600
+
+
+def clock_instant(session: date, clock: str) -> datetime:
+    """A decision clock like "10:00" -> its ET instant on ``session``."""
+    hh, mm = clock.split(":")
+    return datetime(
+        session.year, session.month, session.day, int(hh), int(mm), tzinfo=ET
+    )
 # completeness floors: a partially published payload must stay retryable
 # (KO's real chain on 2026-09-22: 1038 rows over 18 expiries, 89% bid)
 MIN_PER_RIGHT = 10
@@ -149,8 +163,11 @@ class ChainStore:
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def chain_path(self, session: date, sym: str) -> Path:
-        return self.root / "chains" / session.isoformat() / f"{sym}.json.gz"
+    def chain_path(self, session: date, sym: str, *, clock: str = "eod") -> Path:
+        # clock tier (A2): a separate namespace under chains/; every eod
+        # reader keeps reading chains/<D>/<SYM>.json.gz byte-for-byte
+        base = "chains" if clock == EOD else f"chains/clock={clock}"
+        return self.root / base / session.isoformat() / f"{sym}.json.gz"
 
     def conflict_path(self, session: date, sym: str) -> Path:
         return self.root / "chains" / session.isoformat() / f"{sym}.conflict.json.gz"
@@ -172,8 +189,11 @@ class ChainStore:
                     newer += 1
         return newer < RAW_KEEP_SESSIONS
 
-    def manifest_path(self, session: date) -> Path:
-        return self.root / "manifest" / f"{session.isoformat()}.json"
+    def manifest_path(self, session: date, *, clock: str = EOD) -> Path:
+        # one manifest per clock tier: the eod history stays at manifest/<D>.json
+        # and a clock tier's gaps live under manifest/clock=<C>/ untouched
+        base = "manifest" if clock == EOD else f"manifest/clock={clock}"
+        return self.root / base / f"{session.isoformat()}.json"
 
     @property
     def gaps_path(self) -> Path:
@@ -246,9 +266,15 @@ def _late_close(parsed: ParsedChain, close: datetime) -> bool:
     return any(t and datetime.fromisoformat(t) > close for t in parsed.columns["last_time"])
 
 
-def validate(parsed: ParsedChain, session: date, cal: ClosingCalendar) -> Verdict:
+def validate(
+    parsed: ParsedChain, session: date, cal: ClosingCalendar, *, clock: str = EOD
+) -> Verdict:
     """Every piece of session evidence must point at D, and the chain must
-    look complete, before a snapshot may become D's immutable record."""
+    look complete, before a snapshot may become D's immutable record.
+    A non-eod ``clock`` replaces the settle checks with SELF-freshness: the
+    payload's own capture instant must land inside the clock's window (a
+    delayed publication carrying pre-clock content is stale, not D's clock
+    observation)."""
     us = underlying_session(parsed)
     if us is None:
         return Verdict("invalid", "underlying has no last-trade time to date the payload", None)
@@ -256,6 +282,28 @@ def validate(parsed: ParsedChain, session: date, cal: ClosingCalendar) -> Verdic
         return Verdict("stale", f"underlying last traded {us}, not {session} yet", us)
     if us > session:
         return Verdict("missing", f"feed already moved past {session} to {us}", us)
+    if clock != EOD:
+        inst = clock_instant(session, clock)
+        if parsed.source_as_of < inst:
+            return Verdict(
+                "stale",
+                f"source_as_of {parsed.source_as_of.isoformat()} predates the "
+                f"{clock} clock (delayed publication has not rolled yet)",
+                us,
+            )
+        if parsed.source_as_of >= shift_instant(inst, CLOCK_WINDOW_S):
+            return Verdict(
+                "stale",
+                f"source_as_of {parsed.source_as_of.isoformat()} is past the "
+                f"{clock} clock window (+{CLOCK_WINDOW_S // 60} min)",
+                us,
+            )
+        if parsed.n == 0:
+            return Verdict("incomplete", "no parseable option rows", us)
+        why = _completeness(parsed)
+        if why:
+            return Verdict("incomplete", why, us)
+        return Verdict("ok", "", us)
     later = sorted({t[:10] for t in parsed.columns["last_time"] if t and t[:10] > us.isoformat()})
     if later:
         return Verdict("missing", f"option trades dated after {session} ({later[-1]})", us)
@@ -291,13 +339,21 @@ def validate(parsed: ParsedChain, session: date, cal: ClosingCalendar) -> Verdic
 
 
 def build_document(
-    parsed: ParsedChain, session: date, raw_sha256: str, fetched_at: datetime
+    parsed: ParsedChain,
+    session: date,
+    raw_sha256: str,
+    fetched_at: datetime,
+    *,
+    clock: str = EOD,
 ) -> dict[str, Any]:
     return {
         "header": {
             "schema": SCHEMA,
             "session": session.isoformat(),
             "underlying": parsed.underlying,
+            # additive (A2), NO schema bump: old and new documents share
+            # desk-chain/1 and readers never fork the version
+            "clock": clock,
             "source": SOURCE,
             "source_as_of": parsed.source_as_of.isoformat(),
             "fetched_at": fetched_at.isoformat(),
@@ -370,6 +426,7 @@ def record_symbol(
     cal: ClosingCalendar,
     dry_run: bool = False,
     recheck: bool = False,
+    tier: str = EOD,
     before_fetch: Callable[[], None] = lambda: None,
 ) -> SymbolResult:
     try:
@@ -382,6 +439,7 @@ def record_symbol(
             cal=cal,
             dry_run=dry_run,
             recheck=recheck,
+            tier=tier,
             before_fetch=before_fetch,
         )
     except OSError as exc:  # a write failure stays per-symbol (and retryable next run)
@@ -398,9 +456,10 @@ def _record_symbol(
     cal: ClosingCalendar,
     dry_run: bool,
     recheck: bool,
+    tier: str,
     before_fetch: Callable[[], None],
 ) -> SymbolResult:
-    path = store.chain_path(session, sym)
+    path = store.chain_path(session, sym, clock=tier)
     existing: dict[str, Any] | None = None
     repair = False
     if path.exists():
@@ -434,12 +493,16 @@ def _record_symbol(
         parsed = parse_chain(raw, sym)
     except ChainParseError as exc:
         return SymbolResult("invalid", 0, raw_sha, str(exc))
-    verdict = validate(parsed, session, cal)
+    verdict = validate(parsed, session, cal, clock=tier)
 
     if existing is None and verdict.status == "ok" and not dry_run:
-        # evidence first: the hash-addressed raw bytes, then the immutable chain
-        _write_raw(store, session, sym, raw, raw_sha)
-        doc = encode_document(build_document(parsed, session, raw_sha, fetched_at))
+        # evidence first: the hash-addressed raw bytes, then the immutable
+        # chain. The clock tier keeps NO raw evidence: 8 clocks x 37 names
+        # x ~5.8 MB would be ~1.7 GB/day for bytes the tier never re-reads;
+        # the document's raw_sha256 still pins each capture's content.
+        if tier == EOD:
+            _write_raw(store, session, sym, raw, raw_sha)
+        doc = encode_document(build_document(parsed, session, raw_sha, fetched_at, clock=tier))
         if atomic_create_bytes(path, doc):
             return SymbolResult("ok", parsed.n, raw_sha, "")
         existing = _existing(store, session, sym)  # lost a race: compare like a recheck
@@ -490,13 +553,20 @@ def append_gaps(store: ChainStore, lines: Iterable[dict[str, Any]]) -> None:
 
 
 def update_manifest(
-    store: ChainStore, session: date, results: dict[str, SymbolResult], now: datetime
+    store: ChainStore,
+    session: date,
+    results: dict[str, SymbolResult],
+    now: datetime,
+    *,
+    clock: str = EOD,
 ) -> None:
     doc = store.read_manifest(session) or {
         "schema": MANIFEST_SCHEMA,
         "session": session.isoformat(),
         "symbols": {},
     }
+    if clock != EOD:
+        doc["clock"] = clock
     symbols: dict[str, Any] = doc["symbols"]
     for sym, r in results.items():
         old = symbols.get(sym)
@@ -510,7 +580,7 @@ def update_manifest(
             "at": now.isoformat(),
         }
     doc["updated_at"] = now.isoformat()
-    atomic_write_json(store.manifest_path(session), doc)
+    atomic_write_json(store.manifest_path(session, clock=clock), doc)
 
 
 def finalize_prior(store: ChainStore, session: date, cal: Calendar, now: datetime) -> None:
@@ -586,9 +656,13 @@ def record_session(
     dry_run: bool = False,
     recheck: bool = False,
     pace_s: float = PACE_S,
+    tier: str = EOD,
 ) -> RunSummary:
     """Record every symbol for ``session`` (per-symbol isolation, paced),
-    then (unless dry-run) the manifest, gaps and raw retention."""
+    then (unless dry-run) the manifest, gaps and raw retention. A non-eod
+    ``tier`` writes only its own chain namespace and its own manifest: the
+    eod session-close bookkeeping (finalize/gaps/raw pruning) is not the
+    clock tier's to touch."""
     results: dict[str, SymbolResult] = {}
     fetched = [False]
 
@@ -607,14 +681,28 @@ def record_session(
             cal=cal,
             dry_run=dry_run,
             recheck=recheck,
+            tier=tier,
             before_fetch=pace,
         )
     summary = RunSummary(session, results)
     if dry_run:
         return summary
     now = clock()
-    finalize_prior(store, session, cal, now)
-    update_manifest(store, session, results, now)
+    if tier == EOD:
+        finalize_prior(store, session, cal, now)
+        update_manifest(store, session, results, now)
+        append_gaps(
+            store,
+            [
+                _gap(now, session, sym, r.status, r.detail)
+                for sym, r in results.items()
+                if r.status in GAP_STATUSES
+            ],
+        )
+        prune_raw(store)
+    else:
+        update_manifest(store, session, results, now, clock=tier)
+    return summary
     append_gaps(
         store,
         [

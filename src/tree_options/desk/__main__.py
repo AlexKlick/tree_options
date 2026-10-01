@@ -219,6 +219,13 @@ def _parser() -> argparse.ArgumentParser:
     rc = sub.add_parser("record-chains", help="record the CBOE delayed option chains")
     rc.add_argument("--session", type=date.fromisoformat)
     rc.add_argument(
+        "--clock",
+        help=(
+            "record the intraday A2 clock tier: a decision clock (HH:MM ET) "
+            "or 'auto' (the open clock from the 8-clock schedule)"
+        ),
+    )
+    rc.add_argument(
         "--symbols",
         help=f"comma-separated (default: the {len(CHAIN_UNIVERSE)}-name chain universe)",
     )
@@ -618,6 +625,44 @@ def _forward_verify(args: argparse.Namespace, *, clock: store.Clock,
     return verdict.exit_code
 
 
+def _probe_clock_tier(
+    target_clock: str,
+    session: date,
+    *,
+    transport: Transport,
+    sleep: store.Sleep,
+    clock: store.Clock,
+    cal: ClosingCalendar,
+    attempts: int = 30,
+    interval_s: float = 20.0,
+) -> tuple[bool, str]:
+    """The delayed feed publishes on a ~1-min cadence with ~2-4 min lag
+    (A0 probe 2026-10-01). Captures fire at clock+3; this probe waits, with
+    ONE symbol, until the publication has rolled to the clock's content
+    BEFORE sweeping the universe (a sweep that starts early records every
+    name as stale and burns the window)."""
+    from tree_options.desk import store as store_mod
+
+    inst = store_mod.clock_instant(session, target_clock)
+    deadline = store_mod.shift_instant(inst, store_mod.CLOCK_WINDOW_S)
+    for attempt in range(attempts):
+        try:
+            raw = store_mod.fetch_raw("SPY", transport)
+            parsed = store_mod.parse_chain(raw, "SPY")
+        except Exception as exc:  # probe failures retry; the sweep reports its own
+            sleep(interval_s)
+            continue
+        if inst <= parsed.source_as_of < deadline:
+            return True, ""
+        if clock() >= deadline:
+            return False, (
+                f"probe never saw the {target_clock} clock content before the "
+                f"+{store_mod.CLOCK_WINDOW_S // 60} min window closed"
+            )
+        sleep(interval_s)
+    return False, f"probe gave up after {attempts} attempts waiting for {target_clock}"
+
+
 def _record_chains(
     args: argparse.Namespace,
     *,
@@ -627,6 +672,63 @@ def _record_chains(
     cal: ClosingCalendar,
 ) -> int:
     now = clock()
+    if args.clock is not None:
+        from tree_options.desk import store as store_mod
+        from tree_options.desk.intraday_action_graph import SCHEDULE
+
+        now_et = now.astimezone(store_mod.ET)
+        session = now_et.date()
+        if not cal.is_session(session):
+            print(f"record-chains: {session} is not an NYSE session", file=sys.stderr)
+            return 2
+        target = args.clock
+        if target == "auto":
+            open_clocks = [
+                c
+                for c in SCHEDULE
+                if store_mod.clock_instant(session, c) <= now_et
+                < store_mod.shift_instant(
+                    store_mod.clock_instant(session, c), store_mod.CLOCK_WINDOW_S
+                )
+            ]
+            if not open_clocks:
+                print(
+                    "record-chains: no decision clock is open "
+                    f"({now_et:%H:%M} ET, schedule {','.join(SCHEDULE)})",
+                    file=sys.stderr,
+                )
+                return 0
+            target = open_clocks[-1]
+        elif target not in SCHEDULE:
+            print(
+                f"record-chains: --clock {target} is not a decision clock "
+                f"({','.join(SCHEDULE)})",
+                file=sys.stderr,
+            )
+            return 2
+        ready, why = _probe_clock_tier(
+            target, session, transport=transport, sleep=sleep, clock=clock, cal=cal
+        )
+        if not ready:
+            print(f"record-chains: {why}", file=sys.stderr)
+            return 1
+        symbols = list(CHAIN_UNIVERSE)
+        if args.symbols:
+            symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        summary = store_mod.record_session(
+            session,
+            symbols,
+            store=store_mod.ChainStore(paths.store_root()),
+            transport=transport,
+            clock=clock,
+            sleep=sleep,
+            cal=cal,
+            dry_run=args.dry_run,
+            tier=target,
+        )
+        rc = store_mod.exit_code(summary)
+        print(f"[clock {target}] " + summary.line(rc))
+        return rc
     if args.session is None:
         session = latest_completed_session(now, cal)
     elif not cal.is_session(args.session):

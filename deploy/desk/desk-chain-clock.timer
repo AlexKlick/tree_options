@@ -1,0 +1,22 @@
+[Unit]
+Description=Options desk: A2 clock-tier captures at the eight decision clocks (clock+3, feed lag ~2-4 min)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/CAMPAIGN-EXIT-20260930.md
+
+[Timer]
+# the decision clocks (SCHEDULE, intraday_action_graph.py): 10:00, 10:45,
+# 11:30, 12:15, 13:00, 13:45, 14:30, 15:15 ET. The 2026-10-01 A0 probe
+# measured ~1-min rolling publications with ~2-4 min content lag, so each
+# capture fires at clock+3 and the probe waits for the roll if needed.
+OnCalendar=*-*-* 10:03:00 America/New_York
+OnCalendar=*-*-* 10:48:00 America/New_York
+OnCalendar=*-*-* 11:33:00 America/New_York
+OnCalendar=*-*-* 12:18:00 America/New_York
+OnCalendar=*-*-* 13:03:00 America/New_York
+OnCalendar=*-*-* 13:48:00 America/New_York
+OnCalendar=*-*-* 14:33:00 America/New_York
+OnCalendar=*-*-* 15:18:00 America/New_York
+Persistent=false
+Unit=desk-chain-clock.service
+
+[Install]
+WantedBy=timers.target
