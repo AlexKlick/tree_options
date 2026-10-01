@@ -666,8 +666,9 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
                          **monitor(excess[ordered], population or len(boards),
                                    alpha=options.alpha, bound=bound, eb_c=options.eb_c)},
     }
-    doc["no_price"] = no_price_doc
-    doc["boards_dropped_unpriced"] = int(no_price_doc["total"])
+    doc["no_price"] = no_price_doc if no_price is not None else None
+    doc["boards_dropped_unpriced"] = (int(no_price_doc["total"]) if no_price is not None
+                                      else None)
     doc["cost_provenance"] = cost_provenance
     dropped = int(no_price_doc["total"])
     prefix = f"NO PRICE ({dropped} dropped): " if dropped else ""
@@ -684,8 +685,9 @@ def _drop_unpriced(boards: Sequence[Board], decisions: Sequence[tuple[str | None
     The counts live in the returned report and are the SAME object the
     ledger produced, so the doc and the ledger cannot disagree and a caller
     cannot hand in a stale copied report. A missing ledger yields an empty
-    report rather than an absent key: a digest that omits ``no_price`` cannot
-    be told apart from one that never looked.
+    report for the drop logic but the per-arm DOC carries ``None`` (never an
+    invented zero): "never looked" must stay distinct from "looked, nothing
+    refused".
     """
     report: Mapping[str, Any] = (dict(no_price.for_arm(arm)) if no_price is not None
                                  else {"total": 0, "snapshots": [], "reasons": {}})

@@ -315,9 +315,13 @@ def test_provenance_reaches_the_digest_and_still_disclaims_the_fill_clock() -> N
 # ------------------------------------------------------------- fail-closed guards
 
 
-def test_a_digest_with_no_ledger_reports_zero_drops_rather_than_omitting_the_key() -> None:
-    """The key is ALWAYS present. A digest that omits it when nothing went
-    wrong cannot be told apart from one that never looked."""
+def test_a_digest_with_no_ledger_serves_none_never_an_invented_zero() -> None:
+    """The key is ALWAYS present; its VALUE distinguishes the states.
+
+    Ruling 2026-10-01: no ledger passed = never looked = ``None``. Serving
+    zeros for that state collapsed 'never looked' into 'looked, nothing
+    refused'; a real (even empty) ledger is the only thing allowed to report
+    zero drops."""
     with measured_symbols(("SPY", "XLF")):
         the_model = model()
         book = skill.ValueBook(price_every_board(the_model, mc().NoPriceLedger()),
@@ -325,9 +329,15 @@ def test_a_digest_with_no_ledger_reports_zero_drops_rather_than_omitting_the_key
     doc = skill.arm_skill(
         book, boards(), DECISIONS, window=boards(),
         options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1)
-    assert doc["no_price"]["total"] == 0
-    assert doc["boards_dropped_unpriced"] == 0
+    assert doc["no_price"] is None
+    assert doc["boards_dropped_unpriced"] is None
     assert doc["cost_provenance"] is None, "never invent provenance that was not supplied"
+    looked = skill.arm_skill(
+        book, boards(), DECISIONS, window=boards(),
+        options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1,
+        no_price=mc().NoPriceLedger())
+    assert looked["no_price"]["total"] == 0
+    assert looked["boards_dropped_unpriced"] == 0
 
 
 def test_arm_skill_and_skill_section_take_the_no_price_parameters() -> None:
