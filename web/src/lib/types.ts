@@ -1145,6 +1145,12 @@ export interface OptionsRecorded {
   /** [expiry, dte, atm_iv, n_strikes, how] rows. */
   atm_term: [string, number, number, number, string][] | null
   slice: OptionsSliceRow[] | null
+  /** The session's captured decision clocks ("HH:MM", ascending; A2).
+   *  Absent when the session has none — an eod-only store. */
+  clocks?: string[]
+  /** The clock the slice was served from ("HH:MM"); present only when the
+   *  request asked for one (clock=latest resolves to it here). */
+  clock?: string
 }
 
 export interface Iv30History {

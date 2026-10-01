@@ -2,9 +2,12 @@
 // RECORDED surface — features cards as metric tiles, the ATM chain slice
 // (call | strike | put) and the ATM term structure — plus the long IV30
 // history. When the discovery lane's live envelope warms, a source toggle
-// swaps the slice table onto it; until then a muted hint says so. Every
-// degrade is honest: no recorded chains, cards-only sessions, thin rank
-// histories, and withheld earnings moves all render their reason.
+// swaps the slice table onto it; until then a muted hint says so. The
+// session's captured decision clocks (A2) sit between recorded and live:
+// one chip per clock, refetching that clock's intraday slice while the
+// cards stay session-eod. Every degrade is honest: no recorded chains,
+// cards-only sessions, thin rank histories, and withheld earnings moves
+// all render their reason.
 
 import { useEffect, useState } from 'react'
 import { getSymbolOptions } from '../../lib/api'
@@ -189,14 +192,23 @@ function ExpiryRows({ group }: { group: ExpiryGroup }) {
 export function OptionsPanel({ sym }: { sym: string }) {
   const [rungs, setRungs] = useState(5) // strike ladder width around ATM
   const [expiries, setExpiries] = useState(6) // nearest expiries kept
-  const poll = usePoll(() => getSymbolOptions(sym, rungs, expiries), 60_000)
-  const [source, setSource] = useState<'recorded' | 'live'>('recorded')
+  // 'clock' = one of the session's captured decision clocks (A2); the
+  // slice refetches from that clock's namespace, cards/features stay eod
+  const [source, setSource] = useState<'recorded' | 'clock' | 'live'>('recorded')
+  const [clock, setClock] = useState<string | null>(null)
+  const poll = usePoll(
+    () =>
+      source === 'clock' && clock
+        ? getSymbolOptions(sym, rungs, expiries, clock)
+        : getSymbolOptions(sym, rungs, expiries),
+    60_000,
+  )
   const o: SymbolOptions | null = poll.data
   // control changes refetch at once (the poll's fetcher is always fresh)
   useEffect(() => {
     void poll.refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rungs, expiries])
+  }, [rungs, expiries, source, clock])
 
   if (o === null) {
     return (
@@ -227,6 +239,7 @@ export function OptionsPanel({ sym }: { sym: string }) {
   const r = o.recorded
   const rank = r.cards.iv_rank
   const earnings = r.cards.earnings
+  const clocks = r.clocks ?? []
   const sliceRows = source === 'live' && live ? live.slice : r.slice
   const recordedAge =
     r.age_seconds === null || r.age_seconds === undefined
@@ -239,7 +252,9 @@ export function OptionsPanel({ sym }: { sym: string }) {
           ? ` · ttl ${live.ttl_seconds}s`
           : '') +
         ` · ±${rungs} rungs · nearest ${expiries} expiries`
-      : `recorded${recordedAge} · ±${rungs} rungs around ATM · nearest ${expiries} expiries`
+      : source === 'clock' && clock
+        ? `clock ${clock} ET capture · cards/features stay session-eod (${r.session}) · ±${rungs} rungs around ATM · nearest ${expiries} expiries`
+        : `recorded${recordedAge} · ±${rungs} rungs around ATM · nearest ${expiries} expiries`
 
   return (
     <>
@@ -307,6 +322,20 @@ export function OptionsPanel({ sym }: { sym: string }) {
         >
           Recorded {r.session}
         </button>
+        {clocks.map((c) => (
+          <button
+            key={c}
+            type="button"
+            className="chip"
+            aria-pressed={source === 'clock' && clock === c}
+            onClick={() => {
+              setClock(c)
+              setSource('clock')
+            }}
+          >
+            {c} ET
+          </button>
+        ))}
         <button
           type="button"
           className={`chip${live ? '' : ' chip-alt'}`}
@@ -359,7 +388,9 @@ export function OptionsPanel({ sym }: { sym: string }) {
           <p className="muted">
             {source === 'live'
               ? 'no live slice rows in the envelope yet'
-              : `cards only — no recorded chain slice for ${r.session}`}
+              : source === 'clock' && clock
+                ? `no clock ${clock} capture for ${r.session}`
+                : `cards only — no recorded chain slice for ${r.session}`}
           </p>
         </div>
       )}

@@ -14,17 +14,23 @@ manual build whose last session trails the chain store): the ``first`` /
 "fixed" here. ``live`` is the discovery lane's ``viewchain`` envelope
 (delayed CBOE chain reduced to ATM+/-15 rungs, both rights) rendered in
 the recorded row shape; no envelope keeps it null.
+
+Beside the eod surface sits the A2 clock dimension: ``clock=HH:MM``
+serves that decision clock's intraday capture (``chains/clock=<C>/<D>/``)
+as the SLICE only — features, cards and the ATM term stay eod, and the
+clock header's at-capture ``current_price`` is the spot.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from tree_options.desk.store import read_chain
+from tree_options.desk.store import EOD, ChainStore, read_chain
 from tree_options.trex.discovery.market import MarketCache, nearest_rung
 from tree_options.trex.series import decimate_pairs, level_extent
 from tree_options.trex_web.discovery_view import _age
@@ -35,6 +41,9 @@ MIN_WINDOW, MAX_WINDOW = 0, 15
 DEFAULT_MAX_EXPIRIES = 6
 MIN_MAX_EXPIRIES, MAX_MAX_EXPIRIES = 1, 12
 FEATURES_LOOKBACK = 10  # sessions walked back for a features+chain match
+# the A2 clock dimension: a decision clock like "13:00" (ET), or "latest"
+LATEST_CLOCK = "latest"
+CLOCK_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 IV30_MAX_POINTS = 400
 IV30_SOURCE = "iv-history/vwap_atm.json (IVHIST-001, manual build)"
 CARD_KEYS = (
@@ -121,12 +130,50 @@ def _find_features(store_root: Path, sym: str) -> list[tuple[str, dict[str, Any]
     return found
 
 
-def _read_chain_quiet(store_root: Path, sym: str, session: str) -> dict[str, Any] | None:
-    path = store_root / "chains" / session / f"{sym}.json.gz"
+def _read_chain_quiet(
+    store_root: Path, sym: str, session: str, *, clock: str = EOD
+) -> dict[str, Any] | None:
+    # ChainStore owns the namespace layout: eod keeps chains/<D>/<SYM>.json.gz
+    # byte-for-byte; a decision clock reads chains/clock=<C>/<D>/<SYM>.json.gz
+    path = ChainStore(Path(store_root)).chain_path(
+        date.fromisoformat(session), sym, clock=clock
+    )
     try:
         return read_chain(path)
     except (OSError, ValueError):
         return None
+
+
+def session_clocks(store_root: Path, sym: str, session: str) -> list[str]:
+    """The decision clocks captured for (session, sym), ascending: every
+    ``chains/clock=<C>/<D>/`` namespace holding the name's snapshot. The
+    eod namespace is not a clock, and no captures -> ``[]`` — the cockpit
+    then offers the eod surface only."""
+    clocks: list[str] = []
+    chains = Path(store_root) / "chains"
+    if not chains.is_dir():
+        return clocks
+    for path in chains.glob(f"clock=*/{session}/{sym}.json.gz"):
+        if path.is_file():
+            clocks.append(path.parent.parent.name.removeprefix("clock="))
+    return sorted(clocks)
+
+
+def _chain_spot(chain: dict[str, Any] | None, *, clock: bool) -> float | None:
+    """The chain header's underlying quote as a spot. An eod chain settles
+    on ``close``; a clock capture is mid-session, where ``close`` is the
+    vendor's stale daily print — the at-capture ``current_price`` is the
+    observation that clock actually saw."""
+    if chain is None:
+        return None
+    quote = chain.get("header", {}).get("underlying_quote")
+    if not isinstance(quote, dict):
+        return None
+    if clock:
+        live = _num(quote.get("current_price"))
+        if live is not None:
+            return live
+    return _num(quote.get("close"))
 
 
 # ------------------------------------------------------------------- slice
@@ -357,19 +404,35 @@ def options_payload(
     max_expiries: int,
     now: datetime,
     market_cache_dir: Path | None = None,
+    clock: str | None = None,
 ) -> dict[str, Any]:
     """The /api/market/{sym}/options body: the recorded surface (cards +
-    atm_term + slice), the iv30 history, and the live viewchain section."""
+    atm_term + slice), the iv30 history, and the live viewchain section.
+
+    ``clock`` ("HH:MM", or ``latest``) swaps ONLY the slice onto that
+    decision clock's capture (``chains/clock=<C>/<D>/``, A2): features,
+    cards and the ATM term stay the eod surface, and the clock header's
+    at-capture ``current_price`` is the spot the slice windows around. An
+    absent ``clock`` is the eod behavior byte-for-byte; ``latest`` resolves
+    to the newest clock captured for the newest session carrying the name
+    (no captures -> the eod surface, never a mislabeled one)."""
     w, cap = clamp_params(window, max_expiries)
     warnings: list[str] = []
     candidates = _find_features(store_root, sym)
     session: str | None = None
     name: dict[str, Any] | None = None
     chain: dict[str, Any] | None = None
+    want_clock: str | None = None
     if candidates:
         session, name = candidates[0]
+        if clock == LATEST_CLOCK:
+            captured = session_clocks(store_root, sym, session)
+            want_clock = captured[-1] if captured else None
+        elif clock is not None:
+            want_clock = clock
+        tier = want_clock if want_clock is not None else EOD
         for d, n in candidates:
-            doc = _read_chain_quiet(store_root, sym, d)
+            doc = _read_chain_quiet(store_root, sym, d, clock=tier)
             if doc is not None:
                 if d != session:
                     warnings.append(
@@ -379,17 +442,20 @@ def options_payload(
                 session, name, chain = d, n, doc
                 break
         else:
+            wanted = f"clock={want_clock} capture" if want_clock else "recorded chain"
             warnings.append(
-                f"no recorded chain for {sym} in the newest "
+                f"no {wanted} for {sym} in the newest "
                 f"{len(candidates)} feature sessions; cards only (slice null)"
             )
     available = session is not None
     recorded: dict[str, Any] | None = None
     if session is not None and name is not None:
         spot = _num(name.get("spot"))
-        if spot is None and chain is not None:
-            quote = chain.get("header", {}).get("underlying_quote")
-            spot = _num(quote.get("close")) if isinstance(quote, dict) else None
+        header_spot = _chain_spot(chain, clock=want_clock is not None)
+        if want_clock is not None and header_spot is not None:
+            spot = header_spot  # the at-capture price windows the clock slice
+        elif spot is None:
+            spot = header_spot
         slice_rows: list[dict[str, Any]] | None = None
         if chain is not None and spot is not None:
             slice_rows = _slice_rows(chain, session, spot, w, cap)
@@ -403,6 +469,14 @@ def options_payload(
             "atm_term": name.get("atm_term"),
             "slice": slice_rows,
         }
+        # the chips the UI offers: the session's captured clocks. Absent
+        # when there are none, so a clock-less store's eod payload is
+        # byte-identical to the pre-clock contract
+        captured = session_clocks(store_root, sym, session)
+        if captured:
+            recorded["clocks"] = captured
+        if want_clock is not None and chain is not None:
+            recorded["clock"] = want_clock  # echo: `latest` resolves here
     return {
         "now": now.isoformat(),
         "symbol": sym,

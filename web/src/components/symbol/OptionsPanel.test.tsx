@@ -222,4 +222,78 @@ describe('OptionsPanel', () => {
       ).toBeTruthy(),
     )
   })
+
+  it('offers no clock chips when the session has no captures (eod only)', async () => {
+    mocked.mockResolvedValue(base) // recorded.clocks absent
+    render(<OptionsPanel sym="TEST" />)
+    await waitFor(() => expect(screen.getByText('IV30')).toBeTruthy())
+    const sourceGroup = screen.getByRole('group', { name: 'Slice source' })
+    expect([...sourceGroup.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+      'Recorded 2026-06-03',
+      'Live · not warmed',
+    ])
+  })
+
+  it('renders one chip per captured clock between recorded and live; selecting refetches that clock', async () => {
+    const clockSlice: OptionsSliceRow[] = [
+      { exp: '2026-06-12', dte: 9, right: 'C', strike: 101, atm: true,
+        bid: 5.9, ask: 6.4, mid: 6.15, iv: 0.25, delta: 0.5, gamma: 0.01,
+        theta: -0.02, vega: 0.03, oi: 1200, volume: 10 },
+      { exp: '2026-06-12', dte: 9, right: 'P', strike: 101, atm: true,
+        bid: 5.0, ask: 5.5, mid: 5.25, iv: 0.25, delta: -0.48, gamma: 0.01,
+        theta: -0.02, vega: 0.03, oi: 1200, volume: 10 },
+    ]
+    mocked.mockResolvedValue({
+      ...base,
+      recorded: { ...base.recorded!, clocks: ['10:00', '13:00'] },
+    })
+    render(<OptionsPanel sym="TEST" />)
+    const group = await screen.findByRole('group', { name: 'Slice source' })
+    await waitFor(() =>
+      expect([...group.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+        'Recorded 2026-06-03',
+        '10:00 ET',
+        '13:00 ET',
+        'Live · not warmed',
+      ]),
+    )
+    // eod default: the plain 3-arg fetch, no clock param
+    expect(mocked).toHaveBeenLastCalledWith('TEST', 5, 6)
+    // the clock capture's slice replaces the table once selected
+    mocked.mockResolvedValue({
+      ...base,
+      recorded: {
+        ...base.recorded!,
+        clocks: ['10:00', '13:00'],
+        clock: '13:00',
+        spot: 101.5,
+        slice: clockSlice,
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '13:00 ET' }))
+    await waitFor(() => expect(mocked).toHaveBeenLastCalledWith('TEST', 5, 6, '13:00'))
+    expect(
+      screen.getByText(/clock 13:00 ET capture · cards\/features stay session-eod/),
+    ).toBeTruthy()
+    // one expiry group -> one paired strike row carrying the marker
+    await waitFor(() => expect(screen.getAllByText('101 · atm').length).toBe(1))
+    // back to recorded: the eod fetch again
+    fireEvent.click(screen.getByRole('button', { name: 'Recorded 2026-06-03' }))
+    await waitFor(() => expect(mocked).toHaveBeenLastCalledWith('TEST', 5, 6))
+    expect(screen.getByText(/recorded · data /)).toBeTruthy()
+  })
+
+  it('degrades a missing clock capture honestly', async () => {
+    mocked.mockResolvedValue({
+      ...base,
+      warnings: ['no clock=13:00 capture for TEST in the newest 10 feature sessions; cards only (slice null)'],
+      recorded: { ...base.recorded!, clocks: ['13:00'], slice: null },
+    })
+    render(<OptionsPanel sym="TEST" />)
+    await waitFor(() => expect(screen.getByText(/cards only \(slice null\)/)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: '13:00 ET' }))
+    await waitFor(() =>
+      expect(screen.getByText('no clock 13:00 capture for 2026-06-03')).toBeTruthy(),
+    )
+  })
 })
