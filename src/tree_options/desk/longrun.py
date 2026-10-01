@@ -80,6 +80,16 @@ STOP_FILE = "STOP"
 CAPITAL = 5000.0
 MAX_FINALISTS = 2
 MIN_RANDOM_SEEDS = 200
+#: pre-registered floor on EVALUATED entries in the confirmatory test window.
+#: The confirmatory CI is a bootstrap over SESSIONS, so a policy that enters a
+#: handful of times can carry it: run 20260929T094303Z let
+#: refl-trend-persistent-bullish-trend pass Holm p 0.0040 and a vs_random CI of
+#: [+540.97, +2398.67] on a test net_total of exactly $0.00 - it entered 35
+#: times over the whole 240-session run, 20 of them unevaluable, and netted
+#: nothing at all in the 29 sessions being judged. 30 is roughly one evaluated
+#: entry per test session at the desk's observed entry rate for an arm that
+#: actually trades.
+MIN_TEST_ENTRIES = 30
 EXACT_SIGN_FLIP_MAX = 16
 KINDS = ("model", "rule", "control")
 STRUCTURES = ("put_credit", "call_debit", "put_debit", "call_credit")
@@ -114,8 +124,13 @@ PREREGISTERED_RULE = (
     "AND a 95% CI lower bound > 0; (4) on the test sessions its paired diff "
     "vs the incumbent has a 95% CI lower bound > 0; (5) stability on the test "
     "sessions: the two halves agree in sign and no single dropped session "
-    "flips the sign of the diff vs random. Promotion itself stays the "
-    "operator's decision.")
+    "flips the sign of the diff vs random; (6) it actually traded in the "
+    "window being judged: its net_total on the test sessions is > 0 AND it has "
+    "at least 30 evaluated entries there. Clause (6) was added 2026-09-30 "
+    "because clauses (1)-(5) can all be satisfied by NOT trading - a policy "
+    "that abstains nets $0.00, which beats a random-null expectation that is "
+    "negative, and a few lucky fills can carry a session bootstrap. Promotion "
+    "itself stays the operator's decision.")
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,47}$")
 
@@ -1073,10 +1088,28 @@ def default_cutoff(sessions: Sequence[str]) -> str | None:
 def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
                  sessions: Sequence[str], *, incumbent: str | None, cutoff: str | None,
                  metric: str, max_finalists: int, draws: int, seed: int,
-                 alpha: float, aa_valid: bool, embargo: int = 1) -> dict[str, Any]:
+                 alpha: float, aa_valid: bool, embargo: int = 1,
+                 test_entries: Mapping[str, np.ndarray],
+                 min_test_entries: int = MIN_TEST_ENTRIES,
+                 own_expected: Mapping[str, np.ndarray] | None = None) -> dict[str, Any]:
     """Rank candidates on tune sessions (<= cutoff) by the pre-declared metric,
     keep at most MAX_FINALISTS, test them ONCE on the sessions >= ``embargo``
-    sessions after the cutoff session (score_run passes purged series)."""
+    sessions after the cutoff session (score_run passes purged series).
+
+    ``own_expected`` supplies a per-policy null matched to THAT policy's own
+    entry rate; the selection metric and the confirmatory vs-random test both
+    use it when present. Ranking candidates on a null built for a different
+    (higher) entry rate hands a low-entry-rate policy a constant credit it did
+    not earn, so the shared ``expected`` is only a fallback.
+
+    ``test_entries`` is REQUIRED, per policy, the per-session count of
+    evaluated entries aligned to ``sessions``: without it the confirmatory
+    window's trade count is unknowable and clause (6) of the pre-registered
+    rule cannot be checked. A net of $0.00 is ambiguous on its own (a session
+    with no entry nets 0, and so does a $0 fill), so the floor is fed real
+    counts rather than inferred from the series. Refusing to default is the
+    point: a promotion rule that silently skips a clause when a caller forgets
+    it is the defect this clause exists to close."""
     if not sessions:
         return {"status": "not_applicable", "reason": "no scored sessions"}
     cutoff = cutoff or default_cutoff(sessions)
@@ -1086,7 +1119,14 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
     base = {"cutoff": cutoff, "metric": metric,
             "tune_sessions": int(tune.sum()), "test_sessions": int(test.sum()),
             "embargo_sessions": max(1, embargo),
-            "embargoed_sessions": int((~tune & ~test).sum())}
+            "embargoed_sessions": int((~tune & ~test).sum()),
+            "null_scope": "per_policy_own_entry_rate" if own_expected else "shared_incumbent"}
+
+    def null_for(name: str) -> np.ndarray:
+        if own_expected is not None and name in own_expected:
+            return own_expected[name]
+        return expected
+
     if not tune.any() or not test.any() or not pooled:
         return {"status": "not_applicable", **base,
                 "reason": "the cutoff leaves no tune or no test sessions, or no candidates"}
@@ -1094,7 +1134,7 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
     ranking: list[dict[str, Any]] = []
     for name in sorted(pooled):
         series = pooled[name]
-        diff = series[tune] - expected[tune]
+        diff = series[tune] - null_for(name)[tune]
         if metric == "total":
             value = float(series[tune].sum())
         elif metric == "diff_vs_random":
@@ -1110,18 +1150,20 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
     pvalues: dict[str, float] = {}
     for entry in finalists:
         name = entry["policy"]
-        series, exp = pooled[name][test], expected[test]
+        series, exp = pooled[name][test], null_for(name)[test]
         vs_random = paired(series, exp, draws=draws, seed=seed)
         vs_incumbent = (paired(series, pooled[incumbent][test], draws=draws, seed=seed)
                         if incumbent is not None and incumbent in pooled and name != incumbent
                         else None)
         lo, hi = bootstrap_ci(series, draws=draws, seed=seed)
         pvalues[name] = vs_random["p_one_sided"]
+        entered = round(float(test_entries[name][test].sum())) if name in test_entries else 0
         results.append({"policy": name, "tune_metric": entry["metric_value"],
                         "test": {"net_total": round(float(series.sum()), 2),
                                  "net_ci95": [lo, hi], "vs_random": vs_random,
                                  "vs_incumbent": vs_incumbent,
-                                 "stability": stability(series - exp, test_sessions)}})
+                                 "stability": stability(series - exp, test_sessions)},
+                        "test_entries": entered})
     adjusted = holm(pvalues)
     for result in results:
         name = result["policy"]
@@ -1136,12 +1178,18 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
                                             else test_doc["vs_incumbent"]["ci95"][0] > 0),
             "half_split_signs_agree": bool(stab["half_split"]["signs_agree"]),
             "no_drop_one_sign_flip": stab["drop_one_sign_flips"] == 0,
+            # clause (6): it has to have traded, and traded enough for the
+            # session bootstrap to mean something. Without these two an arm
+            # that abstained in the test window read $0.00 - which beats any
+            # negative null expectation - and passed every clause above.
+            "test_net_positive": test_doc["net_total"] > 0,
+            "test_entries_at_least_floor": result["test_entries"] >= min_test_entries,
         }
         result["rule_check"] = checks
         result["eligible_for_operator_review"] = (
             name != incumbent and all(v is True for v in checks.values()))
     return {"status": "ok", **base, "max_finalists": cap, "ranking": ranking,
-            "finalists": results,
+            "finalists": results, "min_test_entries": min_test_entries,
             "note": ("finalists were chosen on the tune sessions only; the test "
                      "figures are the single confirmatory look")}
 
@@ -1215,9 +1263,19 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
               receipts_files: Mapping[str, str] | None = None, run_id: str = "",
               plan_created: str | None = None, complete: bool = True,
+              amendments: Sequence[Mapping[str, Any]] | None = None,
               clock: Clock = _utcnow,
-              skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """The digest document. Pure over its inputs (fixed seeds throughout)."""
+              skill_options: Mapping[str, Any] | None = None,
+              no_price: Any = None,
+              cost_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The digest document. Pure over its inputs (fixed seeds throughout).
+
+    ``no_price`` is the refusal ledger the pricing seam recorded into. It
+    MUST be forwarded to ``skill_section``: a run in which every board was
+    refused produces zero-profit rows through ``ValueBook.values``, and
+    without the ledger those rows are indistinguishable from a strategy that
+    broke even. See the ``NO PRICE (N dropped):`` verdict prefix.
+    """
     draws, seed = protocol.draws, protocol.seed
     scored = [b for b in boards
               if all(receipts.get(a.name, {}).get(b.snapshot, {}).get("ok") for a in arms)]
@@ -1229,12 +1287,14 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         net: list[float] = []
         gross: list[float] = []
         entered = unevaluable = 0
+        entry_flags: list[float] = []
         for board, (choice, horizon) in zip(scored, decisions, strict=True):
             value = None
             if choice is not None:
                 entered += 1
                 value = outcomes.get(board.snapshot, choice, horizon)
                 unevaluable += value is None
+            entry_flags.append(1.0 if value is not None else 0.0)  # EVALUATED entries
             gross.append(0.0 if value is None else value[0])
             net.append(0.0 if value is None else value[1])
         mine = receipts.get(arm.name, {})
@@ -1242,6 +1302,7 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "arm": arm, "decisions": decisions, "net": net, "entered": entered,
             "unevaluable": unevaluable,
             "sessions": session_sums(board_sessions, net, sessions),
+            "entry_sessions": session_sums(board_sessions, entry_flags, sessions),
             "gross_total": float(sum(gross)),
             "failures": sum(1 for b in boards if b.snapshot in mine
                             and not mine[b.snapshot].get("ok")),
@@ -1271,12 +1332,23 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     first_row = next((a.name for a in arms if a.policy.name == FIRST_ROW), None)
     regime = next((a.name for a in arms if a.policy.name == REGIME), None)
     incumbent_ref = incumbent_arms[0] if incumbent_arms else None
+    # The incumbent-matched null above is a LEGACY comparison kept for continuity.
+    # The load-bearing column is vs_random_own: a null at THIS arm's own entry
+    # rate, so an arm is never measured against a picker that traded a different
+    # fraction of the window than it did (a low-entry-rate arm used to be handed
+    # a large constant credit simply because the shared null entered ~0.9).
+    own_nulls: dict[str, NullResult] = {}
+    for arm in arms:
+        rate = (per_arm[arm.name]["entered"] / len(scored)) if scored else 0.0
+        own_nulls[arm.name] = random_null(board_sessions, sessions, options, rate,
+                                          seeds=protocol.random_seeds, seed=seed)
     standings: list[dict[str, Any]] = []
     for arm in arms:
         data = per_arm[arm.name]
         series = data["sessions"]
         total = float(series.sum())
         evaluated = data["entered"] - data["unevaluable"]
+        own = own_nulls[arm.name]
         chosen_options: list[np.ndarray] = []
         realized = 0.0
         for board, (choice, horizon), value in zip(scored, data["decisions"], data["net"],
@@ -1296,6 +1368,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "gross_total": round(data["gross_total"], 2),
             "net_per_evaluated_entry": round(total / evaluated, 2) if evaluated else None,
             "vs_random": paired(series, expected, draws=draws, seed=seed),
+            "vs_random_own": {**paired(series, own.expected_sessions, draws=draws, seed=seed),
+                              "p_enter": round(own.p_enter, 4)},
             "vs_first_row": (paired(series, per_arm[first_row]["sessions"], draws=draws,
                                     seed=seed)
                              if first_row is not None and arm.name != first_row else None),
@@ -1306,16 +1380,17 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "vs_regime": (paired(series, per_arm[regime]["sessions"], draws=draws, seed=seed)
                           if regime is not None and arm.name != regime else None),
             "null_percentile": round(float(np.mean(null.totals < total)), 4),
+            "null_percentile_own": round(float(np.mean(own.totals < total)), 4),
             "pick_null": pick_null(realized, chosen_options, seeds=protocol.random_seeds,
                                    seed=seed),
-            "stability_vs_random": stability(series - expected, sessions),
+            "stability_vs_random": stability(series - own.expected_sessions, sessions),
             "receipts": (receipts_files or {}).get(arm.name),
             **({"failure_reasons": data["failure_reasons"]}
                if data["failure_reasons"] else {}),  # additive: a clean arm shows none
             **({"heals": data["heals"]}
                if data["heals"] else {}),  # additive: a clean arm shows no heal tally
         })
-    standings.sort(key=lambda r: (-r["vs_random"]["ci95"][0], r["arm"]))
+    standings.sort(key=lambda r: (-r["vs_random_own"]["ci95"][0], r["arm"]))
 
     aa = aa_check(per_arm, incumbent_arms, draws=draws, seed=seed)
     # purged walk-forward (desk.purge): selection never sees post-cutoff prices
@@ -1325,6 +1400,10 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     window = sorted({b.session for b in boards})
     selection = {a.name: per_arm[a.name]["sessions"] for a in arms}
     sel_expected, purge_doc = expected, None
+    # Per-policy purged nulls at each policy's OWN entry rate, for the same
+    # reason as the standings: the walk-forward both SELECTS on and CONFIRMS
+    # with this null, so a shared high-rate null decides finalists.
+    own_sel_expected: dict[str, np.ndarray] = {}
     if cutoff is not None:
         by_arm: dict[str, dict[str, int]] = {}
         for arm in arms:
@@ -1335,22 +1414,41 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         sel_expected, null_counts = purge.purged_null(scored, sessions, horizons, outcomes.get,
                                                       outcomes.exit_at, cutoff, null.p_enter,
                                                       window)
+        policy_rates: dict[str, list[float]] = {}
+        for arm in arms:
+            if arm.policy.kind in ("model", "rule"):
+                policy_rates.setdefault(arm.policy.name, []).append(
+                    per_arm[arm.name]["entered"] / len(scored) if scored else 0.0)
+        own_null_counts: dict[str, dict[str, int]] = {}
+        for policy_name, rates in policy_rates.items():
+            own_sel_expected[policy_name], own_null_counts[policy_name] = purge.purged_null(
+                scored, sessions, horizons, outcomes.get, outcomes.exit_at, cutoff,
+                float(np.mean(rates)), window)
         purge_doc = {"rule": purge.RULE, "cutoff": cutoff, "by_arm": by_arm,
                      "random_null": null_counts,
+                     "random_null_own_entry_rate": own_null_counts,
                      "own_coverage": {a.name: purge.own_coverage(
                          boards, receipts.get(a.name, {}), outcomes.get, outcomes.exit_at,
                          cutoff, window) for a in arms}}
     pooled: dict[str, np.ndarray] = {}
+    # per-policy evaluated entries, SUMMED over that policy's arms (pooled above
+    # averages their nets, but the trade count the promotion floor reads is the
+    # number of fills behind that net)
+    entry_pooled: dict[str, np.ndarray] = {}
     for policy_name in sorted({a.policy.name for a in arms
                                if a.policy.kind in ("model", "rule")}):
         members = [selection[a.name] for a in arms if a.policy.name == policy_name]
+        counts = [per_arm[a.name]["entry_sessions"] for a in arms if a.policy.name == policy_name]
         pooled[policy_name] = np.mean(np.vstack(members), axis=0) if sessions \
+            else np.zeros(0)
+        entry_pooled[policy_name] = np.sum(np.vstack(counts), axis=0) if sessions \
             else np.zeros(0)
     wf = walk_forward(pooled, sel_expected, sessions, incumbent=protocol.incumbent,
                       cutoff=cutoff, metric=protocol.metric,
                       max_finalists=protocol.max_finalists, draws=draws, seed=seed,
                       alpha=protocol.alpha, aa_valid=bool(aa["valid"]),
-                      embargo=protocol.embargo_sessions)
+                      embargo=protocol.embargo_sessions, test_entries=entry_pooled,
+                      own_expected=own_sel_expected or None)
     if purge_doc is not None:
         wf["purge"] = purge_doc
     bench = benchmark_rows(benchmarks or {}, sessions, capital=protocol.capital,
@@ -1362,14 +1460,17 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         from tree_options.desk import skill
 
         skill_doc = skill.skill_section(boards, arms, receipts, outcomes, protocol,
-                                        options=skill_options)
+                                        options=skill_options,
+                                        no_price=no_price,
+                                        cost_provenance=cost_provenance)
     except Exception as error:
         skill_doc = {"status": "error", "error": f"{type(error).__name__}: {str(error)[:200]}"}
     return {
         "schema": DIGEST_SCHEMA,
         "untrusted_note": UNTRUSTED_NOTE,
         "promotion": {"promoted": False, "rule": PREREGISTERED_RULE,
-                      "pre_registered_at": plan_created},
+                      "pre_registered_at": plan_created,
+                      "amendments": [dict(entry) for entry in (amendments or ())]},
         "headline": headline,
         "evaluation_valid": bool(aa["valid"]),
         "complete": complete,
@@ -1491,6 +1592,13 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
     add(f"Promoted: {promotion['promoted']} (pre-registered at "
         f"{promotion.get('pre_registered_at')})")
     add("")
+    amended = list(promotion.get("amendments") or ())
+    if amended:
+        add(f"> WEAK PROVENANCE: {len(amended)} arm-roster change(s) were attempted after this "
+            f"run's pre-registration, so the arms below are NOT the arms that were registered "
+            f"before any scoring: " + ", ".join(str(e.get("arm")) for e in amended)
+            + " (see plan.json amendments).")
+        add("")
     protocol = doc["protocol"]
     boards = doc["boards"]
     add("## Protocol")
@@ -1509,24 +1617,32 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         f"{protocol['metric']}; max finalists {protocol['max_finalists']}; "
         f"alpha {protocol['alpha']}")
     add("")
-    add("## Standings (net $, 95% session-bootstrap CI; ordered by the vs-random CI low)")
+    add("## Standings (net $, 95% session-bootstrap CI)")
+    add("")
+    add("Ordered by **vs random (own entry rate)** — the null is rebuilt at each arm's own")
+    add("entry rate, so it is not the incumbent's rate subtracted from everyone. The")
+    add("`vs random (incumbent p)` column is the legacy shared-null comparison, kept for")
+    add("continuity: it is net minus ONE constant, so it ranks identically to net and")
+    add("flatters any arm that enters less than the incumbent.")
     add("")
     add("| arm | kind | entered | unevaluable | failures | net total [95% CI] | "
-        f"vs random | vs first_row | vs incumbent | vs {REGIME} | null pctile |")
-    add("|---|---|---|---|---|---|---|---|---|---|---|")
+        f"vs random (own entry rate) | vs random (incumbent p) | vs first_row | "
+        f"vs incumbent | vs {REGIME} | null pctile (own) |")
+    add("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in doc["standings"]:
         add(f"| {row['arm']} | {row['kind']} | {row['entered']} | {row['unevaluable']} | "
             f"{row['failures']} | {row['net_total']:+.2f} {_ci(row['net_ci95'])} | "
-            f"{_pair(row['vs_random'])} | {_pair(row['vs_first_row'])} | "
+            f"{_pair(row['vs_random_own'])} | {_pair(row['vs_random'])} | "
+            f"{_pair(row['vs_first_row'])} | "
             f"{_pair(row['vs_incumbent'])} | {_pair(row.get('vs_regime'))} | "
-            f"{row['null_percentile']:.3f} |")
+            f"{row['null_percentile_own']:.3f} |")
     null = doc["random_null"]
     add(f"| random (p_enter {null['p_enter']:.3f}) | control | - | - | - | "
-        f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])} | - | - | - | - | - |")
+        f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])} | - | - | - | - | - | - |")
     for bench in doc["benchmarks"]:
         if bench.get("status") == "ok":
             add(f"| {bench['name']} buy-and-hold | benchmark | - | - | - | "
-                f"{bench['net_total']:+.2f} {_ci(bench['net_ci95'])} | - | - | - | - | - |")
+                f"{bench['net_total']:+.2f} {_ci(bench['net_ci95'])} | - | - | - | - | - | - |")
     add("")
     tallies = [(row["arm"], row["failure_reasons"]) for row in doc["standings"]
                if row.get("failure_reasons")]
@@ -1576,6 +1692,12 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])}, simulated 95% band "
         f"{_ci(null['band95'])}.")
     add("")
+    add("This is the LEGACY shared null, matched to the incumbent's entry rate. Because it")
+    add("is one fixed expectation subtracted from every arm, the `vs random (incumbent p)`")
+    add("column is arithmetically `net - one constant` and therefore carries no information")
+    add("beyond net. The load-bearing comparison is `vs random (own entry rate)`, rebuilt per")
+    add("arm; the walk-forward likewise selects and confirms on each policy's own null.")
+    add("")
     wf = doc["walk_forward"]
     add("## Walk-forward (confirmatory)")
     add("")
@@ -1589,7 +1711,8 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         for f in wf["finalists"]:
             test = f["test"]
             add(f"- {f['policy']}: tune metric {f['tune_metric']:+.2f}; test net "
-                f"{test['net_total']:+.2f} {_ci(test['net_ci95'])}; vs random "
+                f"{test['net_total']:+.2f} {_ci(test['net_ci95'])} over "
+                f"{f.get('test_entries', 0)} evaluated test entries; vs random "
                 f"{_pair(test['vs_random'])}; Holm p {f['holm_p']:.4f}; vs incumbent "
                 f"{_pair(test['vs_incumbent'])}; eligible for operator review: "
                 f"{f['eligible_for_operator_review']}")
@@ -1646,10 +1769,45 @@ def boards_fingerprint(boards: Sequence[Board]) -> str:
     return digest.hexdigest()
 
 
+def _roster_amendments(before: Sequence[Mapping[str, Any]],
+                       after: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One record per pre-registered arm the new roster adds, drops or retunes.
+
+    ``pre_registered_before_any_scoring`` is False for every one of them: an
+    arm that only appears on a resume was, by construction, not in the
+    registration written before the run started scoring, and this harness
+    cannot prove otherwise after the fact. The record says so instead of
+    leaving the digest to imply it."""
+    was = {str(doc["name"]): dict(doc) for doc in before}
+    now = {str(doc["name"]): dict(doc) for doc in after}
+    records: list[dict[str, Any]] = []
+    for name in sorted(was.keys() | now.keys()):
+        if was.get(name) == now.get(name):
+            continue
+        verb = ("added" if name not in was else
+                "removed" if name not in now else "changed")
+        records.append({"arm": name, "reason": f"{verb} after the pre-registration",
+                        "pre_registered_before_any_scoring": False})
+    return records
+
+
 def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec],
           protocol: Protocol, meta: Mapping[str, Any] | None, clock: Clock) -> dict[str, Any]:
     """Write plan.json + boards.jsonl on first start; on resume refuse changed
-    boards (the pairing) or a changed protocol (the pre-registration)."""
+    boards (the pairing), a changed protocol, or a changed arm roster -- all
+    three are the pre-registration, and none of them may be edited in place.
+
+    A refused roster change is still recorded: ``plan["amendments"]`` is
+    append-only and every attempt to add, drop or retune an arm after the
+    registration lands there before the run refuses to continue. Nothing is
+    ever removed from it, so the record of what the run's own arms were when
+    the results were produced survives on disk.
+
+    A plan written before this record existed cannot be shown to carry the
+    roster it was started with (an earlier resume could have rewritten it in
+    place with nothing to show), so its arms are marked unverifiable rather
+    than the run being blocked: the digest then says the provenance is weak
+    instead of the run being silently taken at its word."""
     path = run_dir / "plan.json"
     fingerprint = boards_fingerprint(boards)
     policy_docs = [{"name": p.name, "kind": p.kind, "repeats": p.repeats,
@@ -1663,7 +1821,25 @@ def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec]
         if plan.get("protocol") != protocol.to_json():
             raise ValueError("the protocol is pre-registered in plan.json and cannot change "
                              "on resume")
-        plan["policies"] = policy_docs
+        if "amendments" not in plan:
+            amendments = [{"added_at": clock().isoformat(), "arm": str(doc["name"]),
+                           "reason": "roster provenance unverifiable: this plan predates the "
+                                     "append-only amendment record, so an earlier resume may "
+                                     "have rewritten the roster in place",
+                           "pre_registered_before_any_scoring": False} for doc in policy_docs]
+        else:
+            amendments = [dict(entry) for entry in (plan.get("amendments") or ())]
+            if plan.get("policies") != policy_docs:
+                added = _roster_amendments(plan.get("policies") or (), policy_docs)
+                stamped = clock().isoformat()
+                for record in added:  # append-only, then refuse: the trace is the point
+                    amendments.append({"added_at": stamped, **record})
+                _write_json(path, {**plan, "amendments": amendments})
+                raise ValueError(
+                    "the arm roster is pre-registered in plan.json and cannot change on resume ("
+                    + ", ".join(f"{r['arm']} {r['reason']}" for r in added)
+                    + "); the attempt is recorded in plan.json amendments -- start a new run dir")
+        plan["amendments"] = amendments
         plan["resumed_at"] = clock().isoformat()
         _write_json(path, plan)
         return dict(plan)
@@ -1671,7 +1847,7 @@ def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec]
     plan = {"schema": PLAN_SCHEMA, "run_id": run_dir.name, "created": clock().isoformat(),
             "boards": len(boards), "boards_fingerprint": fingerprint,
             "sessions": {"count": len(sessions), "first": sessions[0], "last": sessions[-1]},
-            "policies": policy_docs, "protocol": protocol.to_json(),
+            "policies": policy_docs, "amendments": [], "protocol": protocol.to_json(),
             "preregistered_rule": PREREGISTERED_RULE, "untrusted_note": UNTRUSTED_NOTE,
             "meta": dict(meta or {})}
     with (run_dir / "boards.jsonl").open("w", encoding="utf-8") as stream:
@@ -1718,7 +1894,9 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
                 monotonic: Callable[[], float] = time.monotonic,
                 clock: Clock = _utcnow,
                 skill_options: Mapping[str, Any] | None = None,
-                reports: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None
+                reports: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
+                no_price: Any = None,
+                cost_provenance: Mapping[str, Any] | None = None,
                 ) -> dict[str, Any]:
     """Execute (or resume) every missing (arm, board), then score and digest.
 
@@ -1763,7 +1941,9 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
             digest = score_run(boards, scored_arms, scored_receipts, outcomes, protocol,
                                benchmarks=benchmarks, receipts_files=files,
                                run_id=run_dir.name, plan_created=plan.get("created"),
-                               complete=complete, clock=clock, skill_options=skill_options)
+                               amendments=plan.get("amendments"),
+                               complete=complete, clock=clock, skill_options=skill_options,
+                               no_price=no_price, cost_provenance=cost_provenance)
         except Exception:
             executor.status = "scoring_failed"
             executor.write_progress()
@@ -2020,8 +2200,12 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     """Net-of-cost, leg-synced outcomes per horizon. With ``table`` (an
     ``desk outcome-table`` JSONL) the lookup is free; otherwise each
     (snapshot, candidate, horizon) is computed live from the v2 index with
-    the default CostModel and ``sync`` minutes, memoized. A missing horizon
-    (rules that do not choose one) uses ``default_horizon``."""
+    the cost model named by ``params["cost_model"]`` -- ``flat`` (the frozen
+    $14.60 baseline) or ``measured`` (per moneyness) -- and ``sync`` minutes,
+    memoized. Under ``measured`` a candidate the model cannot price is
+    REFUSED and recorded in the shared ``NoPriceLedger`` rather than scored as
+    a zero-profit trade. A missing horizon (rules that do not choose one)
+    uses ``default_horizon``."""
     from tree_options.desk import outcomes
 
     default_horizon = str(params.get("default_horizon", "intraday"))
@@ -2048,7 +2232,21 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     state = ctx.shared.get("v2")
     if state is None:
         raise ValueError("the v2 outcome plug-in needs a table or the v2 boards plug-in")
-    costs = outcomes.CostModel()
+    # The cost model is an EXPLICIT choice, never a silent default. `flat` is
+    # the frozen $14.60 baseline the 25-arm digest is calibrated on;
+    # `measured` prices per moneyness from the measured surface.
+    model_name = str(params.get("cost_model", "flat"))
+    if model_name == "flat":
+        costs: Any = outcomes.CostModel()
+    elif model_name == "measured":
+        from tree_options.desk.cost import NoPriceLedger, SpreadCostModel
+        costs = SpreadCostModel.measured()
+        # A refusal must be COUNTED here, not swallowed: the live path is the
+        # one place the measured model will actually run, and an uncounted
+        # refusal scores as a zero-profit trade.
+        ctx.shared.setdefault("no_price", NoPriceLedger())
+    else:
+        raise ValueError(f"cost_model must be 'flat' or 'measured', not {model_name!r}")
     sync = params.get("sync", 2)
     memo: dict[tuple[str, str, str], dict[str, Any] | None] = {}
 
@@ -2061,8 +2259,9 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
             doc = outcomes.candidate_outcome(
                 state["index"], date.fromisoformat(day_text), clock, candidate_id,
                 exit_mode=mode, costs=costs,
-                leg_sync_minutes=None if sync in (None, "off") else int(sync))
-            memo[key] = (None if doc is None or doc.get("status") == "no_fill"
+                leg_sync_minutes=None if sync in (None, "off") else int(sync),
+                no_price=ctx.shared.get("no_price"))
+            memo[key] = (None if doc is None or doc.get("status") in ("no_fill", "no_price")
                          or doc.get("net") is None
                          else {"gross": float(doc["gross"]), "net": float(doc["net"]),
                                "exit_at": doc.get("exit_at")})
@@ -2236,6 +2435,21 @@ def new_run_dir(root: Path, now: datetime) -> Path:
             suffix += 1
 
 
+def _cost_provenance(ctx: PluginContext) -> dict[str, Any] | None:
+    """The corpus-level provenance of the cost model, or ``None`` if flat.
+
+    The outcome plug-in records which model it used in ``ctx.shared``
+    (``_v2_outcome`` sets ``no_price`` only for the measured model), so this
+    reports the model that ACTUALLY priced the run rather than a constant.
+    Nothing here is invented: under the flat model the field is absent, and
+    the digest says so by omission.
+    """
+    if ctx.shared.get("no_price") is None:
+        return None
+    from tree_options.desk.cost import CostProvenance
+    return CostProvenance.measured_corpus().as_dict()
+
+
 def run_from_config(config_path: Path, *, run_dir: Path | None = None,
                     limit: int | None = None, score_only: bool = False,
                     concurrency: int | None = None, shared: Mapping[str, Any] | None = None,
@@ -2295,7 +2509,9 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
                        quota_ok=quota_ok, protocol=protocol, settings=settings,
                        benchmarks=benchmarks, meta=meta, score_only=score_only,
                        sleep=sleep, clock=clock, skill_options=cfg.get("skill"),
-                       reports=reports)
+                       reports=reports,
+                       no_price=ctx.shared.get("no_price"),
+                       cost_provenance=_cost_provenance(ctx))
 
 
 # ------------------------------------------------------------------ cockpit
@@ -2360,8 +2576,9 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(promotion, dict) or promotion.get("promoted") is not False:
         raise ValueError("a digest must carry promoted: false")
     keep = ("arm", "policy", "repeat", "kind", "boards", "entered", "entry_rate",
-            "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_first_row",
-            "vs_incumbent", "vs_regime", "null_percentile", "failure_reasons", "heals")
+            "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_random_own",
+            "vs_first_row", "vs_incumbent", "vs_regime", "null_percentile",
+            "null_percentile_own", "failure_reasons", "heals")
     wf = doc.get("walk_forward") or {}
     standings = []
     for row in doc.get("standings", []):
@@ -2378,11 +2595,13 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
             "standings": standings,
             "walk_forward": {k: wf.get(k) for k in ("status", "cutoff", "metric",
                                                      "max_finalists", "tune_sessions",
-                                                     "test_sessions", "reason")}
+                                                     "test_sessions", "reason",
+                                                     "min_test_entries")}
             | {"finalists": [{"policy": f.get("policy"), "holm_p": f.get("holm_p"),
                               "test": {k: f.get("test", {}).get(k)
                                        for k in ("net_total", "net_ci95", "vs_random",
                                                  "vs_incumbent")},
+                              "test_entries": f.get("test_entries"),
                               "eligible_for_operator_review":
                                   f.get("eligible_for_operator_review")}
                              for f in wf.get("finalists", [])]},
