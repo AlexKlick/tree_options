@@ -59,9 +59,9 @@ A release is `~/.local/state/trex-premarket/releases/<short-sha>/`:
    premarket.py --check` must print `"status": "PASS"`.
 9. MANUAL — edit `~/.config/systemd/user/trex-web.service.d/90-premarket-workspace.conf`:
    all four release paths (WorkingDirectory, PYTHONPATH, ExecStartPre,
-   ExecStart) AND the `[Unit]` Description pin (the live drop-in still says
-   "pinned a6f6d7d" while pointing at f8d7600 — do not repeat that). Then
-   `systemctl --user daemon-reload`.
+   ExecStart) AND the `[Unit]` Description, which names a release too (found
+   stale on 2026-10-01: it said "pinned a6f6d7d" while the paths said
+   f8d7600). Then `systemctl --user daemon-reload`.
 10. MANUAL — `systemctl --user restart trex-web.service`. (The 08:00 runner
     also restarts it when the running owner's `/proc/<pid>/cwd` differs from
     the release, and reuses it when it already matches.)
@@ -71,7 +71,7 @@ A release is `~/.local/state/trex-premarket/releases/<short-sha>/`:
     ExecStartPre PASS.
 12. MANUAL when repinning the morning runner too: `~/.config/systemd/user/
     trex-premarket.service` pins the release path in four places of its own
-    (it still points at `cc91b783` while the web drop-in is at `f8d7600` —
+    (still at `cc91b783` on 2026-10-01 while the web drop-in was at f8d7600 —
     repin both together or the 08:00 job verifies the OLD release), then
     `daemon-reload`.
 13. Receipts: every runner mode (`--check/--prepare/--preview/--run`) writes a
