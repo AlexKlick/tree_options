@@ -31,6 +31,7 @@ export function AppShell({
   footerExtra,
   footerSource,
   showRuntimeBanners = true,
+  contextLabel = 'trex · read-only cockpit',
   children,
 }: {
   title: string
@@ -38,13 +39,14 @@ export function AppShell({
   footerExtra?: ReactNode
   footerSource?: ReactNode
   showRuntimeBanners?: boolean
+  contextLabel?: string
   children: ReactNode
 }) {
   return (
     <div className="shell">
       <header>
         <div>
-          <div className="eyebrow">trex · read-only cockpit</div>
+          <div className="eyebrow">{contextLabel}</div>
           <h1>{title}</h1>
           <nav className="nav" aria-label="Sections">
             <a href="#/" aria-current={title === 'Plans' ? 'page' : undefined}>
@@ -74,6 +76,8 @@ export function AppShell({
             >
               Action model
             </a>
+            <a href="#/quant" aria-current={title === 'Quant lab' ? 'page' : undefined}>Quant lab</a>
+            <a href="#/workspace" aria-current={title === 'Research and paper' ? 'page' : undefined}>Research and paper</a>
             <a
               href="#/trade-floor"
               aria-current={title === 'Trade floor' ? 'page' : undefined}

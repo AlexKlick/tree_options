@@ -4,6 +4,7 @@ future-data boundary. Every oracle is hand-derived from the declared
 semantics (month starts, u + h <= t eligibility, the h-th observed row
 after the origin row), never from an implementation expression.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -42,27 +43,25 @@ def _month_block(year: int, month: int, n: int) -> list[date]:
 
 class TestMonthOriginGrid:
     def test_hand_grid_with_history_exclusion(self) -> None:
-        sessions = (_month_block(2024, 1, 10)
-                    + _month_block(2024, 2, 10)
-                    + _month_block(2024, 3, 10))
+        sessions = _month_block(2024, 1, 10) + _month_block(2024, 2, 10) + _month_block(2024, 3, 10)
         # h = 5, min_history = 3 ELIGIBLE PAIRS (u + 5 <= t -> t - 4):
         #   t = 0  : -4 -> 0 pairs  -> excluded insufficient_history
         #   t = 10 : 6 pairs, target index 15 <= 29 -> origin
         #   t = 20 : 16 pairs, target index 25 <= 29 -> origin
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=3)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=3
+        )
         assert grid.origins == (10, 20)
         assert grid.excluded == ((0, "insufficient_history"),)
         assert grid.total == 3
         assert grid.reasons() == {"insufficient_history": 1}
 
     def test_target_beyond_data_is_excluded_not_dropped(self) -> None:
-        sessions = (_month_block(2024, 1, 10)
-                    + _month_block(2024, 2, 10)
-                    + _month_block(2024, 3, 3))
+        sessions = _month_block(2024, 1, 10) + _month_block(2024, 2, 10) + _month_block(2024, 3, 3)
         # last index 22: t = 20 needs 25 -> beyond; t = 10 fine.
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=3)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=3
+        )
         assert grid.origins == (10,)
         assert dict(grid.excluded) == {
             0: "insufficient_history",
@@ -71,14 +70,16 @@ class TestMonthOriginGrid:
         assert grid.total == 3
 
     def test_window_bounds_the_cohort(self) -> None:
-        sessions = (_month_block(2024, 1, 10)
-                    + _month_block(2024, 2, 10)
-                    + _month_block(2024, 3, 10))
+        sessions = _month_block(2024, 1, 10) + _month_block(2024, 2, 10) + _month_block(2024, 3, 10)
         # A month start BEFORE first_eval is not part of the declared
         # evaluation cohort (not counted, not excluded).
-        grid = month_origin_grid(sessions, first_eval=date(2024, 2, 1),
-                                 last_eval=date(2024, 2, 28), horizon=5,
-                                 min_history=3)
+        grid = month_origin_grid(
+            sessions,
+            first_eval=date(2024, 2, 1),
+            last_eval=date(2024, 2, 28),
+            horizon=5,
+            min_history=3,
+        )
         assert grid.origins == (10,)
         assert grid.excluded == ()
         assert grid.total == 1
@@ -86,11 +87,15 @@ class TestMonthOriginGrid:
 
 def _authority_sessions() -> list[date]:
     doc = json.loads(
-        (REPO / "data" / "calendar" / "trex"
-         / "nyse_sessions_2018_01_02_2028_12_29.json").read_text())
-    return sorted(date.fromisoformat(s) for s in doc["sessions"]
-                  if date(2024, 12, 1) <= date.fromisoformat(s)
-                  <= date(2025, 3, 1))
+        (
+            REPO / "data" / "calendar" / "trex" / "nyse_sessions_2018_01_02_2028_12_29.json"
+        ).read_text()
+    )
+    return sorted(
+        date.fromisoformat(s)
+        for s in doc["sessions"]
+        if date(2024, 12, 1) <= date.fromisoformat(s) <= date(2025, 3, 1)
+    )
 
 
 class TestSessionAuthorityTargets:
@@ -103,55 +108,78 @@ class TestSessionAuthorityTargets:
         sessions = _authority_sessions()
         closes = tuple(100.0 + i for i in range(len(sessions)))
         stub = bind(_constant_model, h=5, taus=QUANTILE_GRID)
-        grid = month_origin_grid(sessions, first_eval=date(2025, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="stub",
-                             model=stub)
-        by_origin = {r.origin_date: r for r in run.ledger
-                     if r.status == "evaluated"}
+        grid = month_origin_grid(
+            sessions, first_eval=date(2025, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="stub",
+            model=stub,
+        )
+        by_origin = {r.origin_date: r for r in run.ledger if r.status == "evaluated"}
         assert by_origin[date(2025, 1, 2)].target_date == date(2025, 1, 10)
 
     def test_h20_target_lands_on_feb_3(self) -> None:
         sessions = _authority_sessions()
         closes = tuple(100.0 + i for i in range(len(sessions)))
         stub = bind(_constant_model, h=20, taus=QUANTILE_GRID)
-        grid = month_origin_grid(sessions, first_eval=date(2025, 1, 1),
-                                 last_eval=None, horizon=20, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=20,
-                             taus=QUANTILE_GRID, model_name="stub",
-                             model=stub)
-        by_origin = {r.origin_date: r for r in run.ledger
-                     if r.status == "evaluated"}
+        grid = month_origin_grid(
+            sessions, first_eval=date(2025, 1, 1), last_eval=None, horizon=20, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=20,
+            taus=QUANTILE_GRID,
+            model_name="stub",
+            model=stub,
+        )
+        by_origin = {r.origin_date: r for r in run.ledger if r.status == "evaluated"}
         assert by_origin[date(2025, 1, 2)].target_date == date(2025, 2, 3)
 
 
-def _constant_model(closes: tuple[float, ...], *, h: int,
-                    taus: tuple[float, ...]) -> tuple[float, ...]:
+def _constant_model(
+    closes: tuple[float, ...], *, h: int, taus: tuple[float, ...]
+) -> tuple[float, ...]:
     _ = closes, h
     return tuple(math.log(90.0 + 5.0 * k) for k in range(len(taus)))
 
 
 class TestEvaluateModel:
     def _setup(self, n: int = 40) -> tuple[list[date], list[float]]:
-        sessions = _month_block(2024, 1, n // 3) \
-            + _month_block(2024, 2, n // 3) + _month_block(2024, 3, n // 3)
+        sessions = (
+            _month_block(2024, 1, n // 3)
+            + _month_block(2024, 2, n // 3)
+            + _month_block(2024, 3, n // 3)
+        )
         closes = [100.0 + i for i in range(len(sessions))]
         return sessions, closes
 
     def test_off_by_one_target_is_the_hth_row_after_origin(self) -> None:
         sessions, closes = self._setup()
         stub = bind(_constant_model, h=5, taus=QUANTILE_GRID)
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="stub",
-                             model=stub)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="stub",
+            model=stub,
+        )
         for row in run.ledger:
             if row.status != "evaluated":
                 continue
             t = sessions.index(row.origin_date)
-            assert row.actual == closes[t + 5]      # NOT t + 6
+            assert row.actual == closes[t + 5]  # NOT t + 6
             assert row.target_date == sessions[t + 5]
 
     def test_future_data_boundary_is_the_slice(self) -> None:
@@ -162,25 +190,33 @@ class TestEvaluateModel:
 
         def spy(closes_in: tuple[float, ...]) -> tuple[float, ...]:
             seen.append(len(closes_in))
-            return tuple(math.log(95.0 + 2.0 * k)
-                         for k in range(len(QUANTILE_GRID)))
+            return tuple(math.log(95.0 + 2.0 * k) for k in range(len(QUANTILE_GRID)))
 
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        evaluate_model(sessions, closes, grid=grid, horizon=5,
-                       taus=QUANTILE_GRID, model_name="spy", model=spy)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        evaluate_model(
+            sessions, closes, grid=grid, horizon=5, taus=QUANTILE_GRID, model_name="spy", model=spy
+        )
         for t in grid.origins:
-            assert t + 1 in seen      # exactly through the origin
+            assert t + 1 in seen  # exactly through the origin
         assert max(seen) <= len(sessions)
 
     def test_training_count_counts_completed_pairs(self) -> None:
         sessions, closes = self._setup()
         stub = bind(_constant_model, h=5, taus=QUANTILE_GRID)
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="stub",
-                             model=stub)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="stub",
+            model=stub,
+        )
         for row in run.ledger:
             t = sessions.index(row.origin_date)
             # eligible pairs u + 5 <= t, floored at zero for early rows
@@ -192,16 +228,22 @@ class TestEvaluateModel:
 
         def flaky(closes_in: tuple[float, ...]) -> tuple[float, ...] | None:
             calls.append(len(closes_in))
-            if len(calls) == 2:      # fail exactly one origin
+            if len(calls) == 2:  # fail exactly one origin
                 return None
-            return tuple(math.log(95.0 + 2.0 * k)
-                         for k in range(len(QUANTILE_GRID)))
+            return tuple(math.log(95.0 + 2.0 * k) for k in range(len(QUANTILE_GRID)))
 
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="flaky",
-                             model=flaky)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="flaky",
+            model=flaky,
+        )
         assert run.failure_reasons == {"fit_failed": 1}
         assert run.n_evaluated == len(grid.origins) - 1
         # the failed origin still records the actual it would have scored
@@ -215,16 +257,24 @@ class TestEvaluateModel:
         def unordered(closes_in: tuple[float, ...]) -> tuple[float, ...]:
             calls.append(len(closes_in))
             if len(calls) == 2:
-                return tuple(math.log(110.0 - 5.0 * k)   # DESCENDING
-                             for k in range(len(QUANTILE_GRID)))
-            return tuple(math.log(90.0 + 5.0 * k)
-                         for k in range(len(QUANTILE_GRID)))
+                return tuple(
+                    math.log(110.0 - 5.0 * k)  # DESCENDING
+                    for k in range(len(QUANTILE_GRID))
+                )
+            return tuple(math.log(90.0 + 5.0 * k) for k in range(len(QUANTILE_GRID)))
 
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="unordered",
-                             model=unordered)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="unordered",
+            model=unordered,
+        )
         assert run.failure_reasons == {"quantile_ordering": 1}
 
     def test_non_finite_fails(self) -> None:
@@ -235,14 +285,20 @@ class TestEvaluateModel:
             calls.append(len(closes_in))
             if len(calls) == 2:
                 return (float("nan"),) * len(QUANTILE_GRID)
-            return tuple(math.log(90.0 + 5.0 * k)
-                         for k in range(len(QUANTILE_GRID)))
+            return tuple(math.log(90.0 + 5.0 * k) for k in range(len(QUANTILE_GRID)))
 
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="nan",
-                             model=nan_once)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="nan",
+            model=nan_once,
+        )
         assert run.failure_reasons == {"non_finite": 1}
 
     def test_ledger_losses_follow_pinball_orientation(self) -> None:
@@ -256,14 +312,20 @@ class TestEvaluateModel:
 
         def wide(closes_in: tuple[float, ...]) -> tuple[float, ...]:
             _ = closes_in
-            return tuple(math.log(80.0 + 30.0 * k)
-                         for k in range(len(QUANTILE_GRID)))
+            return tuple(math.log(80.0 + 30.0 * k) for k in range(len(QUANTILE_GRID)))
 
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="wide",
-                             model=wide)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="wide",
+            model=wide,
+        )
         rows = [r for r in run.ledger if r.status == "evaluated"]
         assert rows
         saw_over = saw_under = False
@@ -271,16 +333,14 @@ class TestEvaluateModel:
             y = row.actual
             assert y is not None
             assert len(row.losses_by_tau) == len(QUANTILE_GRID)
-            for tau, q, got in zip(QUANTILE_GRID, row.quantiles,
-                                   row.losses_by_tau, strict=True):
+            for tau, q, got in zip(QUANTILE_GRID, row.quantiles, row.losses_by_tau, strict=True):
                 if y >= q:
                     saw_over = True
                     expected = tau * (y - q)
                 else:
                     saw_under = True
                     expected = (1.0 - tau) * (q - y)
-                assert got == pytest.approx(expected), (row.origin_date,
-                                                        tau)
+                assert got == pytest.approx(expected), (row.origin_date, tau)
         assert saw_over and saw_under
         # LITERAL pins, independent of any shared expression: the wide
         # stub's levels are exactly (80, 110, 140, 170, 200) and the
@@ -293,10 +353,8 @@ class TestEvaluateModel:
         #   tau .95, q 200: 0.05 * (200 - 118) =  4.1
         first = rows[0]
         assert first.actual == pytest.approx(118.0)
-        assert first.quantiles == pytest.approx(
-            (80.0, 110.0, 140.0, 170.0, 200.0))
-        assert first.losses_by_tau == pytest.approx(
-            (1.9, 2.0, 11.0, 13.0, 4.1))
+        assert first.quantiles == pytest.approx((80.0, 110.0, 140.0, 170.0, 200.0))
+        assert first.losses_by_tau == pytest.approx((1.9, 2.0, 11.0, 13.0, 4.1))
 
     def test_exp_overflow_is_a_counted_non_finite_failure(self) -> None:
         # Finite log-quantiles whose LEVELS overflow exp: a counted
@@ -307,16 +365,22 @@ class TestEvaluateModel:
 
         def huge(closes_in: tuple[float, ...]) -> tuple[float, ...]:
             calls.append(len(closes_in))
-            if len(calls) == 2:      # exactly one origin overflows
+            if len(calls) == 2:  # exactly one origin overflows
                 return (1000.0, 1000.1, 1000.2, 1000.3, 1000.4)
-            return tuple(math.log(90.0 + 5.0 * k)
-                         for k in range(len(QUANTILE_GRID)))
+            return tuple(math.log(90.0 + 5.0 * k) for k in range(len(QUANTILE_GRID)))
 
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="huge",
-                             model=huge)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="huge",
+            model=huge,
+        )
         assert run.failure_reasons == {"non_finite": 1}
         assert run.n_evaluated == len(grid.origins) - 1
         failed = [r for r in run.ledger if r.status == "failed"]
@@ -325,13 +389,21 @@ class TestEvaluateModel:
     def test_tally_identity_is_enforced(self) -> None:
         # A tally whose arithmetic does not close is a defect, not a
         # display: the identity assert must fire.
-        run = ModelRun(model="broken", actuals=(1.0, 2.0, 3.0),
-                       failure_reasons={"fit_failed": 1},
-                       ledger=(LedgerRow(
-                           origin_date=date(2024, 1, 1),
-                           target_date=date(2024, 2, 1),
-                           training_count=1, status="excluded",
-                           reason="insufficient_history", actual=None),))
+        run = ModelRun(
+            model="broken",
+            actuals=(1.0, 2.0, 3.0),
+            failure_reasons={"fit_failed": 1},
+            ledger=(
+                LedgerRow(
+                    origin_date=date(2024, 1, 1),
+                    target_date=date(2024, 2, 1),
+                    training_count=1,
+                    status="excluded",
+                    reason="insufficient_history",
+                    actual=None,
+                ),
+            ),
+        )
         with pytest.raises(AssertionError, match="tally identity"):
             # 3 evaluated + 1 excluded + 1 failed = 5; total 6 does not
             # close — the identity assert must fire.
@@ -345,14 +417,20 @@ class TestEvaluateModel:
             calls.append(len(closes_in))
             if len(calls) == 1:
                 return None
-            return tuple(math.log(90.0 + 5.0 * k)
-                         for k in range(len(QUANTILE_GRID)))
+            return tuple(math.log(90.0 + 5.0 * k) for k in range(len(QUANTILE_GRID)))
 
-        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
-                                 last_eval=None, horizon=5, min_history=1)
-        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
-                             taus=QUANTILE_GRID, model_name="flaky",
-                             model=flaky)
+        grid = month_origin_grid(
+            sessions, first_eval=date(2024, 1, 1), last_eval=None, horizon=5, min_history=1
+        )
+        run = evaluate_model(
+            sessions,
+            closes,
+            grid=grid,
+            horizon=5,
+            taus=QUANTILE_GRID,
+            model_name="flaky",
+            model=flaky,
+        )
         tally = run.tally(total=grid.total, floor=12)
         # month starts: 0 (excluded insufficient_history), 13 (failed),
         # 26 (evaluated) on the 39-session setup — the identity itself
@@ -370,8 +448,7 @@ class TestForwardFan:
         assert fan is not None
         assert fan[0] < fan[-1]
 
-        def none_model(closes_in: tuple[float, ...]
-                       ) -> tuple[float, ...] | None:
+        def none_model(closes_in: tuple[float, ...]) -> tuple[float, ...] | None:
             _ = closes_in
             return None
 
@@ -379,8 +456,13 @@ class TestForwardFan:
 
         def unordered(closes_in: tuple[float, ...]) -> tuple[float, ...]:
             _ = closes_in
-            return (math.log(110.0), math.log(100.0), math.log(105.0),
-                    math.log(103.0), math.log(108.0))
+            return (
+                math.log(110.0),
+                math.log(100.0),
+                math.log(105.0),
+                math.log(103.0),
+                math.log(108.0),
+            )
 
         assert forward_fan((100.0, 101.0), unordered) is None
 

@@ -31,19 +31,23 @@ def _checked_bytes(path: Path, expected: str) -> bytes:
     return raw
 
 
-def _model_result(game_dir: Path, name: str, model: str, prompt_sha: str,
-                  hidden: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _model_result(
+    game_dir: Path, name: str, model: str, prompt_sha: str, hidden: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     receipt = json.loads((game_dir / f"{name}.receipt.json").read_text())
-    if (receipt.get("requested_model") != model or receipt.get("exit_code") != 0
-            or receipt.get("is_error") is not False or model not in receipt.get("modelUsage_keys", [])
-            or receipt.get("prompt", {}).get("sha256") != prompt_sha):
+    if (
+        receipt.get("requested_model") != model
+        or receipt.get("exit_code") != 0
+        or receipt.get("is_error") is not False
+        or model not in receipt.get("modelUsage_keys", [])
+        or receipt.get("prompt", {}).get("sha256") != prompt_sha
+    ):
         raise ValueError(f"{name}: provider receipt incomplete or inconsistent")
     raw = _checked_bytes(game_dir / f"{name}.raw.json", receipt["raw"]["sha256"])
     response = json.loads(raw)
     if not isinstance(response.get("result"), str) or response.get("is_error") is not False:
         raise ValueError(f"{name}: raw response invalid")
-    proposal_raw = _checked_bytes(game_dir / f"{name}.proposal.json",
-                                  receipt["proposal"]["sha256"])
+    proposal_raw = _checked_bytes(game_dir / f"{name}.proposal.json", receipt["proposal"]["sha256"])
     proposal = json.loads(proposal_raw)
     result_text = response["result"].strip()
     fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", result_text, re.DOTALL)
@@ -54,11 +58,15 @@ def _model_result(game_dir: Path, name: str, model: str, prompt_sha: str,
         raise ValueError(f"{name}: malformed selection")
     if any(not isinstance(item, str) for item in proposal["selected_ids"]):
         raise ValueError(f"{name}: selection IDs must be strings")
-    return {"model": model, "raw_sha256": _sha(raw),
-            "proposal_sha256": _sha(proposal_raw),
-            "selected_ids": proposal["selected_ids"],
-            "policy": proposal.get("policy"), "caveats": proposal.get("caveats"),
-            "score": score(hidden, proposal["selected_ids"])}
+    return {
+        "model": model,
+        "raw_sha256": _sha(raw),
+        "proposal_sha256": _sha(proposal_raw),
+        "selected_ids": proposal["selected_ids"],
+        "policy": proposal.get("policy"),
+        "caveats": proposal.get("caveats"),
+        "score": score(hidden, proposal["selected_ids"]),
+    }
 
 
 def main() -> int:
@@ -77,30 +85,44 @@ def main() -> int:
         raise ValueError("sealed outcomes differ from source")
     if manifest.get("baseline") != score(hidden, list(hidden)):
         raise ValueError("baseline drift")
-    results = {name: _model_result(game_dir, name, model, manifest["prompt_sha256"], hidden)
-               for name, model in MODELS.items()}
+    results = {
+        name: _model_result(game_dir, name, model, manifest["prompt_sha256"], hidden)
+        for name, model in MODELS.items()
+    }
     simple_rules = {
         "no_trade": [],
-        "put_credit_only": [row["id"] for row in packet["blind_candidates"]
-                            if row["structure"] == "put_credit"],
-        "xsmom_only": [row["id"] for row in packet["blind_candidates"]
-                       if row["signal"] == "xsmom_top3"],
-        "xsmom_defined_spreads": [row["id"] for row in packet["blind_candidates"]
-                                  if row["signal"] == "xsmom_top3"
-                                  and row["structure"] in ("call_debit", "put_credit")],
+        "put_credit_only": [
+            row["id"] for row in packet["blind_candidates"] if row["structure"] == "put_credit"
+        ],
+        "xsmom_only": [
+            row["id"] for row in packet["blind_candidates"] if row["signal"] == "xsmom_top3"
+        ],
+        "xsmom_defined_spreads": [
+            row["id"]
+            for row in packet["blind_candidates"]
+            if row["signal"] == "xsmom_top3" and row["structure"] in ("call_debit", "put_credit")
+        ],
     }
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
-                          text=True, capture_output=True).stdout.strip()
-    dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, check=True,
-                                text=True, capture_output=True).stdout)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain"], cwd=ROOT, check=True, text=True, capture_output=True
+        ).stdout
+    )
     report = {
-        "schema": "desk-model-game-scoreboard/2", "source_sha256": manifest["source_sha256"],
-        "prompt_sha256": manifest["prompt_sha256"], "code_head": head,
+        "schema": "desk-model-game-scoreboard/2",
+        "source_sha256": manifest["source_sha256"],
+        "prompt_sha256": manifest["prompt_sha256"],
+        "code_head": head,
         "code_dirty": dirty,
         "scorer_sha256": _sha(Path(__file__).read_bytes()),
         "game_engine_sha256": _sha((ROOT / "src/tree_options/desk/model_game.py").read_bytes()),
-        "training_rows": len(packet["training"]), "blind_rows": len(hidden),
-        "baseline_accept_all": manifest["baseline"], "models": results,
+        "training_rows": len(packet["training"]),
+        "blind_rows": len(hidden),
+        "baseline_accept_all": manifest["baseline"],
+        "models": results,
         "simple_rules": {name: score(hidden, ids) for name, ids in simple_rules.items()},
         "limitations": [
             "only 13 blind evaluable rows from a selected and incomplete daily-VWAP cache",
@@ -115,10 +137,17 @@ def main() -> int:
     with path.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write("\n")
-    print(json.dumps({"scoreboard": str(path), "baseline": report["baseline_accept_all"],
-                      "models": {name: result["score"] for name, result in results.items()},
-                      "simple_rules": report["simple_rules"]},
-                     sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "scoreboard": str(path),
+                "baseline": report["baseline_accept_all"],
+                "models": {name: result["score"] for name, result in results.items()},
+                "simple_rules": report["simple_rules"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

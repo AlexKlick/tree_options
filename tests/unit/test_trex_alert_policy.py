@@ -57,8 +57,15 @@ class TestMarketHours:
 class TestQuietHours:
     @pytest.mark.parametrize(
         ("hm", "expected"),
-        [((22, 0), True), ((23, 30), True), ((3, 0), True), ((6, 59), True),
-         ((7, 0), False), ((12, 0), False), ((21, 59), False)],
+        [
+            ((22, 0), True),
+            ((23, 30), True),
+            ((3, 0), True),
+            ((6, 59), True),
+            ((7, 0), False),
+            ((12, 0), False),
+            ((21, 59), False),
+        ],
     )
     def test_window_wraps_midnight(self, hm: tuple[int, int], expected: bool) -> None:
         assert QUIET.contains(_at(MT, *WED, *hm)) is expected
@@ -114,8 +121,14 @@ HEALTHY = frozenset({"ok"})
 
 def _push(status: str, prior: dict[str, object], urg: Urgency) -> tuple[object, dict[str, object]]:
     return next_push(
-        status=status, now=NOW, prior=prior, urgency=urg, bad=BAD, healthy=HEALTHY,
-        alarm=lambda: ("t: down", "it is down"), recovery=lambda: ("t: back", "it is back"),
+        status=status,
+        now=NOW,
+        prior=prior,
+        urgency=urg,
+        bad=BAD,
+        healthy=HEALTHY,
+        alarm=lambda: ("t: down", "it is down"),
+        recovery=lambda: ("t: back", "it is back"),
     )
 
 
@@ -168,8 +181,11 @@ class TestCodexFixes:
         """P2: a reminder failing at 16:11 lost its 5-min retry once the
         cadence went from 1 h to 4 h at 16:15."""
         normal = Urgency("default", REMIND_EVERY_S, quiet=False)
-        prior = {"last_notified_status": "down", "last_notified_at": NOW - REMIND_MARKET_S - 300,
-                 "notify_failed_at": NOW - 301}
+        prior = {
+            "last_notified_status": "down",
+            "last_notified_at": NOW - REMIND_MARKET_S - 300,
+            "notify_failed_at": NOW - 301,
+        }
         push, book = _push("down", prior, normal)
         assert push is not None and book["last_notified_at"] == NOW
 

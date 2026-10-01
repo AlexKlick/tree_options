@@ -132,9 +132,13 @@ _NEVER_OBSERVED = datetime.fromtimestamp(0, UTC)
 
 
 def collect_canary_screening(
-    broker: IbkrSupervisedBroker, effect: SupervisedEffect, *,
-    profile: CapitalProfile, mandate_account_id: str,
-    inputs: OperatorCanaryInputs, clock: Callable[[], datetime] | None = None,
+    broker: IbkrSupervisedBroker,
+    effect: SupervisedEffect,
+    *,
+    profile: CapitalProfile,
+    mandate_account_id: str,
+    inputs: OperatorCanaryInputs,
+    clock: Callable[[], datetime] | None = None,
 ) -> CanaryScreening:
     """Observe, then screen. Never places, cancels or modifies an order.
 
@@ -143,8 +147,11 @@ def collect_canary_screening(
     """
     clock = clock or (lambda: datetime.now(UTC))
     structure = effect.structure
-    evidence: dict[str, Any] = {"schema": SCREENING_SCHEMA,
-                                "intent_id": effect.intent_id, "structure_id": structure.id}
+    evidence: dict[str, Any] = {
+        "schema": SCREENING_SCHEMA,
+        "intent_id": effect.intent_id,
+        "structure_id": structure.id,
+    }
     blockers: list[str] = list(broker.paper_blockers(effect.account_id))
     evidence["session_blockers"] = list(blockers)
 
@@ -158,16 +165,19 @@ def collect_canary_screening(
     except Exception as error:
         return _unreadable("positions", error, blockers, evidence)
     try:
-        foreign = [t for t in ib._ib.reqAllOpenOrders()
-                   if getattr(t.contract, "secType", "") in ("BAG", "OPT")
-                   and not str(getattr(t.order, "orderRef", "") or "").startswith(
-                       SUPERVISED_REF_PREFIX)]
+        foreign = [
+            t
+            for t in ib._ib.reqAllOpenOrders()
+            if getattr(t.contract, "secType", "") in ("BAG", "OPT")
+            and not str(getattr(t.order, "orderRef", "") or "").startswith(SUPERVISED_REF_PREFIX)
+        ]
     except Exception as error:
         return _unreadable("all_client_open_orders", error, blockers, evidence)
     # Ruling 3b: the flat-book rule covers the canary's own underlying only.
     positions = [p for p in held if p.symbol == structure.underlying]
-    working = [t for t in foreign
-               if str(getattr(t.contract, "symbol", "") or "") == structure.underlying]
+    working = [
+        t for t in foreign if str(getattr(t.contract, "symbol", "") or "") == structure.underlying
+    ]
 
     contract_verified = True
     try:
@@ -185,24 +195,31 @@ def collect_canary_screening(
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("clock must return timezone-aware datetimes")
     now = now.astimezone(UTC)
-    evidence.update({
-        "checked_at": now.isoformat(),
-        "observed_account_id": observed_account,
-        "account_observed_at": account_at.isoformat(),
-        "rulings": RULINGS,
-        "account_positions": sorted(f"{p.symbol}:{p.sec_type}:{p.con_id}:{p.qty}" for p in held),
-        "positions": sorted(f"{p.symbol}:{p.sec_type}:{p.con_id}:{p.qty}" for p in positions),
-        "account_working_orders": sorted(str(getattr(t.order, "orderId", "?")) for t in foreign),
-        "working_orders": sorted(str(getattr(t.order, "orderId", "?")) for t in working),
-        "package_quote": None if quote is None else [str(quote.bid), str(quote.ask)],
-        "quote_observed_at": None if quote_at is None else quote_at.isoformat(),
-        "modeled_margin": str(modeled_margin(effect)),
-        "assignment_exposure": str(assignment_exposure(effect)),
-    })
+    evidence.update(
+        {
+            "checked_at": now.isoformat(),
+            "observed_account_id": observed_account,
+            "account_observed_at": account_at.isoformat(),
+            "rulings": RULINGS,
+            "account_positions": sorted(
+                f"{p.symbol}:{p.sec_type}:{p.con_id}:{p.qty}" for p in held
+            ),
+            "positions": sorted(f"{p.symbol}:{p.sec_type}:{p.con_id}:{p.qty}" for p in positions),
+            "account_working_orders": sorted(
+                str(getattr(t.order, "orderId", "?")) for t in foreign
+            ),
+            "working_orders": sorted(str(getattr(t.order, "orderId", "?")) for t in working),
+            "package_quote": None if quote is None else [str(quote.bid), str(quote.ask)],
+            "quote_observed_at": None if quote_at is None else quote_at.isoformat(),
+            "modeled_margin": str(modeled_margin(effect)),
+            "assignment_exposure": str(assignment_exposure(effect)),
+        }
+    )
 
     facts = CanaryFacts(
-        intent_sha256=package_intent_sha256(profile, structure, mandate_account_id,
-                                            inputs.owner_epoch),
+        intent_sha256=package_intent_sha256(
+            profile, structure, mandate_account_id, inputs.owner_epoch
+        ),
         observed_account_id=observed_account,
         mandate_account_id=mandate_account_id,
         paper_gateway_verified=not evidence["session_blockers"],
@@ -233,8 +250,9 @@ def collect_canary_screening(
     return CanaryScreening(blockers=unique, facts=facts, evidence=evidence)
 
 
-def _unreadable(view: str, error: BaseException, blockers: list[str],
-                evidence: dict[str, Any]) -> CanaryScreening:
+def _unreadable(
+    view: str, error: BaseException, blockers: list[str], evidence: dict[str, Any]
+) -> CanaryScreening:
     evidence[f"{view}_error"] = repr(error)
     unique = tuple(dict.fromkeys([*blockers, f"broker_view_unreadable:{view}"]))
     evidence["blockers"] = list(unique)

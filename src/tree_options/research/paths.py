@@ -97,11 +97,13 @@ def assert_no_overlap_with_desk(*, workspace: Path | None = None) -> None:
     if workspace is not None:
         targets.append(("workspace", workspace))
     else:
-        targets.extend((
-            ("workspace", workspace_root()),
-            ("adapter_dir", adapter_dir()),
-            ("cache_dir", cache_dir()),
-        ))
+        targets.extend(
+            (
+                ("workspace", workspace_root()),
+                ("adapter_dir", adapter_dir()),
+                ("cache_dir", cache_dir()),
+            )
+        )
     for label, path in targets:
         resolved = _resolve_strict(path)
         for desk_root in forbidden:

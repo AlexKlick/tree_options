@@ -92,7 +92,7 @@ def _check(cfg: ScanConfig) -> None:
 
 
 def llm_chain(raw: str) -> list[str]:
-    """"local,zai" -> ["local", "zai"] (whitespace/case tolerant)."""
+    """ "local,zai" -> ["local", "zai"] (whitespace/case tolerant)."""
     return [part.strip().lower() for part in raw.split(",") if part.strip()]
 
 

@@ -18,6 +18,7 @@ through ``desk.contracts.canonical`` (allow_nan=False); the harness
 demotes non-finite model outputs to FAILED origins before metrics are
 computed, so a non-finite metric is unreachable by construction.
 """
+
 from __future__ import annotations
 
 import math
@@ -58,9 +59,8 @@ def pinball_losses(
     q = np.asarray(q_fore, dtype=float)
     t = np.asarray(taus, dtype=float)
     if q.ndim != 2 or q.shape[0] != y.shape[0] or q.shape[1] != t.shape[0]:
-        raise ValueError(
-            f"shape mismatch: y {y.shape}, q {q.shape}, taus {t.shape}")
-    err = y[:, None] - q                       # (n, K)
+        raise ValueError(f"shape mismatch: y {y.shape}, q {q.shape}, taus {t.shape}")
+    err = y[:, None] - q  # (n, K)
     losses = np.maximum(t * err, (t - 1.0) * err)
     means = losses.mean(axis=0)
     return {float(tau): float(m) for tau, m in zip(taus, means, strict=True)}
@@ -108,8 +108,7 @@ def empirical_coverage(
     return int(inside.sum()), int(y.shape[0])
 
 
-def wilson_interval(hits: int, n: int,
-                    z: float = Z_95) -> tuple[float, float]:
+def wilson_interval(hits: int, n: int, z: float = Z_95) -> tuple[float, float]:
     """Wilson score interval for a binomial proportion — a BINOMIAL
     approximation: origins are time-ordered and their coverage
     indicators may be dependent, which this interval does not capture
@@ -152,8 +151,7 @@ def coverage_bootstrap_ci(
         return None
     return block_bootstrap_ci(
         finite,
-        statistic=lambda sample: (
-            sum(sample) / len(sample) if sample else None),
+        statistic=lambda sample: sum(sample) / len(sample) if sample else None,
         block_size=block_size,
         iterations=iterations,
         seed=seed,
@@ -193,21 +191,36 @@ def skill_matched(
         raise ValueError("paired sequences must share a length")
     n = len(model_paired)
     if n < paired_floor:
-        return {"paired_n": n, "loss_paired": None, "bench_paired": None,
-                "pinball_skill": None,
-                "reason": REASON_PAIRED_COHORT_INSUFFICIENT}
+        return {
+            "paired_n": n,
+            "loss_paired": None,
+            "bench_paired": None,
+            "pinball_skill": None,
+            "reason": REASON_PAIRED_COHORT_INSUFFICIENT,
+        }
     loss = sum(model_paired) / n
     bench = sum(bench_paired) / n
     if bench <= 0.0:
-        return {"paired_n": n, "loss_paired": loss, "bench_paired": bench,
-                "pinball_skill": None,
-                "reason": REASON_BENCH_LOSS_NONPOSITIVE}
-    return {"paired_n": n, "loss_paired": loss, "bench_paired": bench,
-            "pinball_skill": 1.0 - loss / bench, "reason": None}
+        return {
+            "paired_n": n,
+            "loss_paired": loss,
+            "bench_paired": bench,
+            "pinball_skill": None,
+            "reason": REASON_BENCH_LOSS_NONPOSITIVE,
+        }
+    return {
+        "paired_n": n,
+        "loss_paired": loss,
+        "bench_paired": bench,
+        "pinball_skill": 1.0 - loss / bench,
+        "reason": None,
+    }
 
 
 def dm_on_differentials(
-    d: Sequence[float], *, lag: int,
+    d: Sequence[float],
+    *,
+    lag: int,
 ) -> DMResult | None:
     """Thin pass-through to ``desk.stats.dm_test``. ``d`` is the
     per-origin loss differential bench - model over the matched origins;

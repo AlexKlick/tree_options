@@ -8,6 +8,7 @@ literal (``test_spec_wire_literal_is_pinned_once``) is the campaign's
 one allowed literal pin: the spec dict is the hashed request surface, so
 pinning it pins the reproducibility of every forecast run id.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -61,56 +62,64 @@ class TestParse:
         # The spec is the hashed request: an unknown field is a different
         # request and must never silently alias an existing run id.
         with pytest.raises(ValueError, match="outside the spec surface"):
-            forecast_from_dict({
-                "source": "index:VIX", "horizon": 5,
-                "evaluation_start": "2018-02-01", "models": ["ar1"],
-            })
+            forecast_from_dict(
+                {
+                    "source": "index:VIX",
+                    "horizon": 5,
+                    "evaluation_start": "2018-02-01",
+                    "models": ["ar1"],
+                }
+            )
 
-    @pytest.mark.parametrize("missing", ["source", "horizon",
-                                         "evaluation_start"])
+    @pytest.mark.parametrize("missing", ["source", "horizon", "evaluation_start"])
     def test_missing_required_field_refused(self, missing: str) -> None:
-        body = {"source": "index:VIX", "horizon": 5,
-                "evaluation_start": "2018-02-01"}
+        body = {"source": "index:VIX", "horizon": 5, "evaluation_start": "2018-02-01"}
         del body[missing]
         with pytest.raises(ValueError, match=f"missing '{missing}'"):
             forecast_from_dict(body)
 
     def test_unknown_source_refused_with_the_known_list(self) -> None:
         with pytest.raises(ValueError, match="unknown forecast source"):
-            forecast_from_dict({"source": "nope", "horizon": 5,
-                                "evaluation_start": "2018-02-01"})
+            forecast_from_dict({"source": "nope", "horizon": 5, "evaluation_start": "2018-02-01"})
 
     @pytest.mark.parametrize("bad", [True, 5.0, "5", None])
     def test_non_integer_horizon_refused(self, bad: object) -> None:
         # bool is rejected even though isinstance(True, int): a wire
         # boolean is never a session count.
         with pytest.raises(ValueError, match="'horizon' must be"):
-            forecast_from_dict({"source": "index:VIX", "horizon": bad,
-                                "evaluation_start": "2018-02-01"})
+            forecast_from_dict(
+                {"source": "index:VIX", "horizon": bad, "evaluation_start": "2018-02-01"}
+            )
 
     @pytest.mark.parametrize("bad", [0, -5])
     def test_non_positive_horizon_refused(self, bad: int) -> None:
         with pytest.raises(ValueError, match="must be positive"):
-            forecast_from_dict({"source": "index:VIX", "horizon": bad,
-                                "evaluation_start": "2018-02-01"})
+            forecast_from_dict(
+                {"source": "index:VIX", "horizon": bad, "evaluation_start": "2018-02-01"}
+            )
 
     def test_bad_iso_date_refused(self) -> None:
         with pytest.raises(ValueError, match="not an ISO date"):
-            forecast_from_dict({"source": "index:VIX", "horizon": 5,
-                                "evaluation_start": "Feb 1 2018"})
+            forecast_from_dict(
+                {"source": "index:VIX", "horizon": 5, "evaluation_start": "Feb 1 2018"}
+            )
 
     def test_inverted_window_refused(self) -> None:
         with pytest.raises(ValueError, match="precedes"):
-            forecast_from_dict({
-                "source": "index:VIX", "horizon": 5,
-                "evaluation_start": "2018-06-01",
-                "evaluation_end": "2018-02-01",
-            })
+            forecast_from_dict(
+                {
+                    "source": "index:VIX",
+                    "horizon": 5,
+                    "evaluation_start": "2018-06-01",
+                    "evaluation_end": "2018-02-01",
+                }
+            )
 
     def test_spec_fields_surface_is_frozen(self) -> None:
         # The wire surface names exactly the spec dataclass fields with
         # defaults — derived from the dataclass, not restated by hand.
         import dataclasses
+
         names = {f.name for f in dataclasses.fields(ForecastSpec)}
         assert set(FORECAST_SPEC_FIELDS) == names
 
@@ -121,9 +130,12 @@ class TestRunId:
     the hash binding contract, checked by mutation."""
 
     def _rid(self, **overrides: str) -> str:
-        base = dict(series_sha256="s" * 64, calendar_sha256="c" * 64,
-                    session_authority_sha256="a" * 64,
-                    engine_sha256="e" * 64)
+        base = dict(
+            series_sha256="s" * 64,
+            calendar_sha256="c" * 64,
+            session_authority_sha256="a" * 64,
+            engine_sha256="e" * 64,
+        )
         return forecast_run_id(_spec(), **{**base, **overrides})
 
     def test_identical_inputs_same_id(self) -> None:
@@ -133,12 +145,18 @@ class TestRunId:
         ref = self._rid()
         # spec change
         changed_spec = ForecastSpec(
-            source=ForecastSourceId.INDEX_VIX, horizon=20,
-            evaluation_start=date(2018, 2, 1))
-        assert forecast_run_id(
-            changed_spec, series_sha256="s" * 64, calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64,
-            engine_sha256="e" * 64) != ref
+            source=ForecastSourceId.INDEX_VIX, horizon=20, evaluation_start=date(2018, 2, 1)
+        )
+        assert (
+            forecast_run_id(
+                changed_spec,
+                series_sha256="s" * 64,
+                calendar_sha256="c" * 64,
+                session_authority_sha256="a" * 64,
+                engine_sha256="e" * 64,
+            )
+            != ref
+        )
         # data revision
         assert self._rid(series_sha256="t" * 64) != ref
         # comparison-calendar change (declared scope)
@@ -168,8 +186,7 @@ class TestConstants:
 
     def test_tally_identity(self) -> None:
         assert tally_identity_ok(total=10, evaluated=7, excluded=2, failed=1)
-        assert not tally_identity_ok(total=10, evaluated=7, excluded=2,
-                                     failed=2)
+        assert not tally_identity_ok(total=10, evaluated=7, excluded=2, failed=2)
 
 
 def test_spec_wire_literal_is_pinned_once() -> None:

@@ -135,9 +135,7 @@ def _after_next_report(store_root: Path, paper_dir: Path, sym: str, now: datetim
     raw = cal.get(sym) if cal is not None else None
     if not isinstance(raw, list):
         return None
-    future = [
-        x for x in sorted(y for y in raw if isinstance(y, str)) if x > now.date().isoformat()
-    ]
+    future = [x for x in sorted(y for y in raw if isinstance(y, str)) if x > now.date().isoformat()]
     return future[1] if len(future) > 1 else None
 
 
@@ -284,9 +282,7 @@ def _queue_section(queue_dir: Path, sym: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------- paper positions
 
 
-def _paper_positions(
-    state_root: Path, plans_root: Path, sym: str
-) -> list[dict[str, Any]]:
+def _paper_positions(state_root: Path, plans_root: Path, sym: str) -> list[dict[str, Any]]:
     """The paper book's structures on the name, open first then by plan id
     (the status field lets the UI filter; closed rows stay for history)."""
     rows: list[dict[str, Any]] = []
@@ -328,9 +324,9 @@ def _cards_section(paper_dir: Path, sym: str) -> dict[str, Any] | None:
     except OSError:
         return None
     pattern = re.compile(rf"\b{re.escape(sym)}\b")
-    lines = [
-        line for line in raw.decode("utf-8", "replace").splitlines() if pattern.search(line)
-    ][:LEDGER_MAX_LINES]
+    lines = [line for line in raw.decode("utf-8", "replace").splitlines() if pattern.search(line)][
+        :LEDGER_MAX_LINES
+    ]
     return {"lines": lines, "ledger_sha256_12": hashlib.sha256(raw).hexdigest()[:12]}
 
 
@@ -338,9 +334,7 @@ def _canonical_section(heading: str) -> str | None:
     """A recognized research heading -> its canonical section label; the
     campaign section keeps its dated slug (``campaign-2026-09``)."""
     for known in RESEARCH_SECTIONS:
-        if heading == known or heading.startswith(f"{known} ") or heading.startswith(
-            f"{known}("
-        ):
+        if heading == known or heading.startswith(f"{known} ") or heading.startswith(f"{known}("):
             return known
     if heading.startswith("campaign"):
         return heading.split()[0]
@@ -382,9 +376,7 @@ def _research_section(paper_dir: Path, sym: str) -> dict[str, Any] | None:
         entries.append({"section": section, "line": line})
         dates.extend(_ISO_DATE.findall(line))
     ledger_date = (
-        max(dates)
-        if dates
-        else datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+        max(dates) if dates else datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
     )
     return {
         "ledger_date": ledger_date,

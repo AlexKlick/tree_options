@@ -109,10 +109,13 @@ def main() -> int:
                 break
         else:
             wire.append((ticker, reference))
-    plan = {"selected": len(selection["contracts"]), "seeded": sum(
-        s.startswith("seed:") for s in sources.values()),
+    plan = {
+        "selected": len(selection["contracts"]),
+        "seeded": sum(s.startswith("seed:") for s in sources.values()),
         "cached": sum(s.startswith("cache:") for s in sources.values()),
-        "wire_needed": len(wire), "wire_minutes_at_5_per_min": round(len(wire) / 5, 1)}
+        "wire_needed": len(wire),
+        "wire_minutes_at_5_per_min": round(len(wire) / 5, 1),
+    }
     print(json.dumps({"plan": plan}), flush=True)
     if args.plan:
         return 0
@@ -127,23 +130,45 @@ def main() -> int:
             missing.append(ticker)
             continue
         if _structural_capture_active():
-            raise RuntimeError("structural Massive capture resumed; stopping before another request")
+            raise RuntimeError(
+                "structural Massive capture resumed; stopping before another request"
+            )
         before = client.stats.requests
         try:
             body = client.get_json(_path(ticker, reference, args.end), PARAMS)
         except MassiveNotEntitledError as error:
-            print(json.dumps({"refused": "not entitled", "ticker": ticker,
-                              "detail": str(error)[:200]}), flush=True)
+            print(
+                json.dumps(
+                    {"refused": "not entitled", "ticker": ticker, "detail": str(error)[:200]}
+                ),
+                flush=True,
+            )
             return 4
         used += client.stats.requests - before
         series[ticker] = bu.verify_body(ticker, body)
         sources[ticker] = f"wire:{reference}:{args.end}"
         if position % 20 == 0 or position == len(wire):
-            print(json.dumps({"fetched": position, "of": len(wire), "wire_requests": used,
-                              "at": datetime.now(UTC).isoformat()}), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "fetched": position,
+                        "of": len(wire),
+                        "wire_requests": used,
+                        "at": datetime.now(UTC).isoformat(),
+                    }
+                ),
+                flush=True,
+            )
     if missing and not args.allow_missing:
-        print(json.dumps({"incomplete": len(missing), "wire_requests": used,
-                          "note": "fetched bodies are cached; re-run with a budget to resume"}))
+        print(
+            json.dumps(
+                {
+                    "incomplete": len(missing),
+                    "wire_requests": used,
+                    "note": "fetched bodies are cached; re-run with a budget to resume",
+                }
+            )
+        )
         return 3
 
     start = date.fromisoformat(selection["window_start"])
@@ -154,14 +179,22 @@ def main() -> int:
         path = args.indices / f"{bu.IV_INDEX[name]}.csv"
         files[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
         closes[name] = bu.iv_closes(indices.read_store(path), start - timedelta(days=45), args.end)
-    iv_context = {"source": "CBOE 30-day implied-vol index closes (desk-store indices/<X>.csv)",
-                  "index_for": {n: bu.IV_INDEX[n] for n in underlyings}, "files": files,
-                  "exposure": "a board sees the close of the latest date strictly before "
-                              "its session", "closes": closes}
+    iv_context = {
+        "source": "CBOE 30-day implied-vol index closes (desk-store indices/<X>.csv)",
+        "index_for": {n: bu.IV_INDEX[n] for n in underlyings},
+        "files": files,
+        "exposure": "a board sees the close of the latest date strictly before its session",
+        "closes": closes,
+    }
     bundle = bu.assemble_bundle(
-        selection, series, iv_context,
+        selection,
+        series,
+        iv_context,
         selection_sha256=hashlib.sha256(selection_raw).hexdigest(),
-        captured_at=datetime.now(UTC).isoformat(), wire_requests=used, sources=sources)
+        captured_at=datetime.now(UTC).isoformat(),
+        wire_requests=used,
+        sources=sources,
+    )
     bundle["seed_files"] = seed_files
     bundle["missing_tickers"] = sorted(set(bundle["missing_tickers"]) | set(missing))
     data = json.dumps(bundle, sort_keys=True, separators=(",", ":"), default=str).encode()
@@ -169,13 +202,19 @@ def main() -> int:
     partial = args.out.with_name(args.out.name + ".partial")
     partial.write_bytes(data)
     partial.replace(args.out)
-    summary = {"out": str(args.out), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-               "requested": bundle["requested"], "found": bundle["found"],
-               "missing": len(bundle["missing_tickers"]), "empty_after_listing":
-               len(bundle["empty_after_listing"]), "bars": sum(
-                   len(c["results"]) for c in bundle["contracts"].values()),
-               "bars_dropped_before_listing": bundle["bars_dropped_before_listing"],
-               "wire_requests": used, "plan": plan}
+    summary = {
+        "out": str(args.out),
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "requested": bundle["requested"],
+        "found": bundle["found"],
+        "missing": len(bundle["missing_tickers"]),
+        "empty_after_listing": len(bundle["empty_after_listing"]),
+        "bars": sum(len(c["results"]) for c in bundle["contracts"].values()),
+        "bars_dropped_before_listing": bundle["bars_dropped_before_listing"],
+        "wire_requests": used,
+        "plan": plan,
+    }
     Path(f"{args.out}.summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary), flush=True)
     return 0

@@ -434,8 +434,10 @@ class SupervisedGateway(FakeGateway):
         self.is_connected = True
         self.accounts = [account]
         self.account_values: dict[str, str] = {
-            "NetLiquidation": "1000000.00", "TotalCashValue": "1000000.00",
-            "BuyingPower": "4000000.00"}
+            "NetLiquidation": "1000000.00",
+            "TotalCashValue": "1000000.00",
+            "BuyingPower": "4000000.00",
+        }
         self.status_script: list[str] = ["Submitted"]
         self.reject_code = 0
         self.foreign_open: list[Any] = []
@@ -452,8 +454,10 @@ class SupervisedGateway(FakeGateway):
         return list(self.accounts)
 
     def accountValues(self) -> list[Any]:
-        return [SimpleNamespace(tag=tag, value=value, account=self.accounts[0])
-                for tag, value in self.account_values.items()]
+        return [
+            SimpleNamespace(tag=tag, value=value, account=self.accounts[0])
+            for tag, value in self.account_values.items()
+        ]
 
     def placeOrder(self, contract: Any, order: Any) -> FakeTrade:
         trade = super().placeOrder(contract, order)
@@ -468,8 +472,9 @@ class SupervisedGateway(FakeGateway):
 
     def _log(self, trade: Any) -> None:
         code = self.reject_code if trade.orderStatus.status in ("Inactive", "Cancelled") else 0
-        trade.log.append(SimpleNamespace(time=None, status=trade.orderStatus.status,
-                                         message="", errorCode=code))
+        trade.log.append(
+            SimpleNamespace(time=None, status=trade.orderStatus.status, message="", errorCode=code)
+        )
 
     def sleep(self, seconds: float) -> None:
         super().sleep(seconds)

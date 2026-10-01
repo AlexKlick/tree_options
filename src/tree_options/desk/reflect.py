@@ -100,19 +100,37 @@ ROLE_RULE_MIN = 20  # characters of actual rule after the role sentence
 
 #: (key, lens) of the seed theorists; K > 6 cycles them as second takes
 PERSONAS: tuple[tuple[str, str], ...] = (
-    ("trend", "a trend-following theorist: edges come from trading in the direction of "
-              "persistent multi-session moves and staying out when the trend is unclear"),
-    ("meanrev", "a mean-reversion theorist: stretched short-horizon moves partially reverse, "
-                "so fading extremes (and not chasing them) is the edge"),
-    ("volprem", "a volatility-premium theorist: option sellers are paid for bearing variance, "
-                "so credit structures, strike distance and realized volatility decide P&L"),
-    ("costmin", "a cost-minimizer: a fixed round-trip cost eats small-edge trades, so fewer, "
-                "larger-payoff trades held long enough to beat the cost are what survive"),
-    ("patience", "a patience/holding theorist: the holding horizon, not the entry, decides "
-                 "P&L; time in the trade and when to exit are the edge"),
-    ("contrarian", "a contrarian to the policies' own biases: find each policy's systematic "
-                   "habit (row position, favourite horizon, favourite direction or structure) "
-                   "that the hindsight shows is costly, and design a policy that counters it"),
+    (
+        "trend",
+        "a trend-following theorist: edges come from trading in the direction of "
+        "persistent multi-session moves and staying out when the trend is unclear",
+    ),
+    (
+        "meanrev",
+        "a mean-reversion theorist: stretched short-horizon moves partially reverse, "
+        "so fading extremes (and not chasing them) is the edge",
+    ),
+    (
+        "volprem",
+        "a volatility-premium theorist: option sellers are paid for bearing variance, "
+        "so credit structures, strike distance and realized volatility decide P&L",
+    ),
+    (
+        "costmin",
+        "a cost-minimizer: a fixed round-trip cost eats small-edge trades, so fewer, "
+        "larger-payoff trades held long enough to beat the cost are what survive",
+    ),
+    (
+        "patience",
+        "a patience/holding theorist: the holding horizon, not the entry, decides "
+        "P&L; time in the trade and when to exit are the edge",
+    ),
+    (
+        "contrarian",
+        "a contrarian to the policies' own biases: find each policy's systematic "
+        "habit (row position, favourite horizon, favourite direction or structure) "
+        "that the hindsight shows is costly, and design a policy that counters it",
+    ),
 )
 
 REFLECT_TASK = (
@@ -128,40 +146,52 @@ REFLECT_TASK = (
     f"{POLICY_PLACEHOLDER} in board_task and nothing else - the caps, costs, horizon menu and "
     "the JSON reply contract stay fixed, so never describe a reply format and never use "
     "braces; it MUST begin with the role sentence every policy uses, "
-    f"\"{ROLE_TEMPLATE}\" (<style> names your policy's style in a few words), followed by "
+    f'"{ROLE_TEMPLATE}" (<style> names your policy\'s style in a few words), followed by '
     "your rule; name only the horizons intraday, eod, hold:5, expiry; use only what the board "
     "shows (aliased underlyings, their returns and realized vol, time of day, the row "
     "fields); never mention dates, months, years, the session ordinal or real ticker "
-    "symbols. Return STRICT JSON {\"name\": \"<2-4 word kebab-case label>\", \"hypothesis\": "
-    "\"<ONE falsifiable sentence: what beats the random-row baseline and why>\", "
-    "\"evidence\": \"<the dossier statistics it rests on, citing policy names and numbers>\", "
-    f"\"prompt\": \"<the role sentence, then the rule; at most {PROMPT_MAX} characters>\", "
-    "\"expected_effect\": \"<the entry rate, horizon and direction mix you expect, and the "
-    "held-out result that would FALSIFY the hypothesis>\"}. No other text.")
+    'symbols. Return STRICT JSON {"name": "<2-4 word kebab-case label>", "hypothesis": '
+    '"<ONE falsifiable sentence: what beats the random-row baseline and why>", '
+    '"evidence": "<the dossier statistics it rests on, citing policy names and numbers>", '
+    f'"prompt": "<the role sentence, then the rule; at most {PROMPT_MAX} characters>", '
+    '"expected_effect": "<the entry rate, horizon and direction mix you expect, and the '
+    'held-out result that would FALSIFY the hypothesis>"}. No other text.'
+)
 
 FEEDBACK = (
     "Your previous reply was rejected ({reasons}). Return a corrected STRICT JSON object with "
     "the keys name, hypothesis, evidence, prompt, expected_effect and no other text; if it "
-    "was a near-duplicate, propose a genuinely different mechanism.")
+    "was a near-duplicate, propose a genuinely different mechanism."
+)
 
 LEGEND: dict[str, Any] = {
-    "split": ("TRAIN split only: every board, decision and outcome here comes from the earlier "
-              "sessions; outcomes realized only after the split are withheld"),
+    "split": (
+        "TRAIN split only: every board, decision and outcome here comes from the earlier "
+        "sessions; outcomes realized only after the split are withheld"
+    ),
     "horizons": list(HORIZONS),
-    "aggregate": ("per policy over its train decisions: entry_rate; horizon, direction and "
-                  "structure mix of its entries; row_position (row0_share vs "
-                  "uniform_row0_share, the share a position-blind picker gives the first "
-                  "row; mean_relative_position 0 = first row, 1 = last, 0.5 = unbiased); "
-                  "outcomes in net dollars after the fixed round-trip cost; "
-                  "pnl_by_structure_horizon over its evaluated entries"),
-    "samples": ("decisions sampled over the strata win, loss, skip_would_win (skipped a board "
-                "whose random-row mean was > 0) and skip_right (random-row mean <= 0)"),
+    "aggregate": (
+        "per policy over its train decisions: entry_rate; horizon, direction and "
+        "structure mix of its entries; row_position (row0_share vs "
+        "uniform_row0_share, the share a position-blind picker gives the first "
+        "row; mean_relative_position 0 = first row, 1 = last, 0.5 = unbiased); "
+        "outcomes in net dollars after the fixed round-trip cost; "
+        "pnl_by_structure_horizon over its evaluated entries"
+    ),
+    "samples": (
+        "decisions sampled over the strata win, loss, skip_would_win (skipped a board "
+        "whose random-row mean was > 0) and skip_right (random-row mean <= 0)"
+    ),
     "board": "the rows exactly as the policy saw them; cols name each row's fields; the row "
-             "index is the rendered position",
-    "net_by_row": ("per board row, the realized net dollars at each horizon in the order of "
-                   "horizons; null = no fill (no trade possible, counts 0); \"x\" = withheld"),
-    "board_mean": ("the random-row baseline: the mean net over every (row, horizon) option of "
-                   "the board, no fill = 0, withheld options excluded"),
+    "index is the rendered position",
+    "net_by_row": (
+        "per board row, the realized net dollars at each horizon in the order of "
+        'horizons; null = no fill (no trade possible, counts 0); "x" = withheld'
+    ),
+    "board_mean": (
+        "the random-row baseline: the mean net over every (row, horizon) option of "
+        "the board, no fill = 0, withheld options excluded"
+    ),
     "board_mean_at_chosen_horizon": "the mean net of every row at the horizon chosen",
     "best": "the hindsight-best (row, horizon); null when no option beat 0 (skipping)",
     "regret": "the best achievable (skip = 0 included) minus the realized net",
@@ -172,19 +202,38 @@ Cell = float | str | None  # realized net | WITHHELD | None (no fill)
 QuotaFn = Callable[[], tuple[bool, str]]
 
 _ISO_DATE = re.compile(r"\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b")
-_MONTHS = ("January|February|March|April|June|July|August|September|October|November|"
-           "December")
+_MONTHS = "January|February|March|April|June|July|August|September|October|November|December"
 _MONTH_NAME = re.compile(rf"\b(?:{_MONTHS})\b")
-_MONTH_DAY = re.compile(r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|"
-                        r"July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
-                        r"Dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?\b")
+_MONTH_DAY = re.compile(
+    r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|"
+    r"July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+    r"Dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?\b"
+)
 _YEAR = re.compile(r"(?<![\d.$+-])(?:19|20)\d{2}(?![\d.])")
 _DATE_PROXY = re.compile(r"session[_ ]ordinal", re.IGNORECASE)
 _INDEX_NAMES = re.compile(r"s&p\s*500|\bnasdaq\b|\brussell\b|\bdow jones\b", re.IGNORECASE)
 _CASHTAG = re.compile(r"\$[A-Z]{1,5}\b")
-KNOWN_TICKERS = frozenset({
-    "SPY", "QQQ", "IWM", "DIA", "SPX", "NDX", "RUT", "VIX", "XSP", "AAPL", "MSFT", "NVDA",
-    "TSLA", "AMZN", "GOOGL", "GOOG", "META"})
+KNOWN_TICKERS = frozenset(
+    {
+        "SPY",
+        "QQQ",
+        "IWM",
+        "DIA",
+        "SPX",
+        "NDX",
+        "RUT",
+        "VIX",
+        "XSP",
+        "AAPL",
+        "MSFT",
+        "NVDA",
+        "TSLA",
+        "AMZN",
+        "GOOGL",
+        "GOOG",
+        "META",
+    }
+)
 _HOLD = re.compile(r"hold\s*:\s*(\d+)", re.IGNORECASE)
 _ABBREV = re.compile(r"\b(?:e\.g|i\.e|vs|etc|approx|cf|incl|min|max)\.", re.IGNORECASE)
 _SENTENCE_BREAK = re.compile(r"[.!?]\s+[A-Z(\"']")
@@ -266,8 +315,7 @@ def load_outcome_table(path: Path, snapshots: set[str]) -> OutcomeTable:
     return OutcomeTable(cells, frozenset(tickers))
 
 
-def cell(table: OutcomeTable, snapshot: str, candidate: str, horizon: str,
-         cutoff: date) -> Cell:
+def cell(table: OutcomeTable, snapshot: str, candidate: str, horizon: str, cutoff: date) -> Cell:
     """A train outcome as the reflection may see it: the realized net, None
     (no fill) or WITHHELD (absent, or its exit falls after the cutoff)."""
     row = table.cells.get((snapshot, candidate, horizon))
@@ -337,8 +385,9 @@ def load_run(run_dir: Path, cutoff: str | date) -> RunView:
     if not isinstance(config, dict) or not isinstance(config.get("policies"), list):
         raise ValueError(f"{run_dir}: config.json has no policies list")
     specs = longrun.policies_from_config(config["policies"], builtin=False)
-    policies = [PolicyArms(s.name, s.prompt, tuple(s.arm_names()))
-                for s in specs if s.kind == "model"]
+    policies = [
+        PolicyArms(s.name, s.prompt, tuple(s.arm_names())) for s in specs if s.kind == "model"
+    ]
     if not policies:
         raise ValueError(f"{run_dir}: no model policy to reflect on")
     boards: dict[str, TrainBoard] = {}
@@ -352,7 +401,8 @@ def load_run(run_dir: Path, cutoff: str | date) -> RunView:
             if session > cut:
                 continue  # a held-out board is never retained
             boards[str(doc["snapshot"])] = TrainBoard(
-                str(doc["snapshot"]), session, list(doc["rows"]), dict(doc.get("context") or {}))
+                str(doc["snapshot"]), session, list(doc["rows"]), dict(doc.get("context") or {})
+            )
     receipts: dict[str, dict[str, dict[str, Any]]] = {}
     failed: dict[str, int] = {}
     for policy in policies:
@@ -404,50 +454,118 @@ def _mean(values: Sequence[float]) -> float | None:
     return float(statistics.fmean(values)) if values else None
 
 
-def decision_of(policy: str, arm: str, rec: Mapping[str, Any], board: TrainBoard,
-                table: OutcomeTable, cutoff: date) -> Decision:
+def decision_of(
+    policy: str,
+    arm: str,
+    rec: Mapping[str, Any],
+    board: TrainBoard,
+    table: OutcomeTable,
+    cutoff: date,
+) -> Decision:
     """One receipt in hindsight against every (row, horizon) of its board."""
     ids = board.ids
     cells = [[cell(table, board.snapshot, rid, h, cutoff) for h in HORIZONS] for rid in ids]
     options = [v for row in cells for c in row if (v := _value(c)) is not None]
     board_mean = _mean(options)
-    realized_cells = [(i, h, c) for i, row in enumerate(cells)
-                      for h, c in zip(HORIZONS, row, strict=True) if isinstance(c, float)]
-    top = max(realized_cells, key=lambda t: (t[2], -t[0], -HORIZONS.index(t[1])),
-              default=None)
+    realized_cells = [
+        (i, h, c)
+        for i, row in enumerate(cells)
+        for h, c in zip(HORIZONS, row, strict=True)
+        if isinstance(c, float)
+    ]
+    top = max(realized_cells, key=lambda t: (t[2], -t[0], -HORIZONS.index(t[1])), default=None)
     best = top if top is not None and top[2] > 0 else None
     best_value = best[2] if best is not None else 0.0
     choice = rec.get("choice")
     horizon = rec.get("horizon")
     note = str(rec.get("note") or "")
     if choice is None:
-        stratum = ("unevaluable" if board_mean is None
-                   else "skip_would_win" if board_mean > 0 else "skip_right")
-        return Decision(policy, arm, board, None, None, None, note, cells,
-                        0.0 if board_mean is not None else None, stratum, board_mean, None,
-                        best, (best_value if board_mean is not None else None))
+        stratum = (
+            "unevaluable"
+            if board_mean is None
+            else "skip_would_win"
+            if board_mean > 0
+            else "skip_right"
+        )
+        return Decision(
+            policy,
+            arm,
+            board,
+            None,
+            None,
+            None,
+            note,
+            cells,
+            0.0 if board_mean is not None else None,
+            stratum,
+            board_mean,
+            None,
+            best,
+            (best_value if board_mean is not None else None),
+        )
     if str(choice) not in ids or horizon not in HORIZONS:
-        return Decision(policy, arm, board, str(choice), None, None, note, cells, None,
-                        "unevaluable", board_mean, None, best, None)
+        return Decision(
+            policy,
+            arm,
+            board,
+            str(choice),
+            None,
+            None,
+            note,
+            cells,
+            None,
+            "unevaluable",
+            board_mean,
+            None,
+            best,
+            None,
+        )
     row = ids.index(str(choice))
     column = HORIZONS.index(str(horizon))
     at_h = [v for r in cells if (v := _value(r[column])) is not None]
     chosen = cells[row][column]
     if isinstance(chosen, float):
-        return Decision(policy, arm, board, str(choice), row, str(horizon), note, cells, chosen,
-                        "win" if chosen > 0 else "loss", board_mean, _mean(at_h), best,
-                        best_value - chosen)
-    return Decision(policy, arm, board, str(choice), row, str(horizon), note, cells, None,
-                    "unevaluable", board_mean, _mean(at_h), best, None)
+        return Decision(
+            policy,
+            arm,
+            board,
+            str(choice),
+            row,
+            str(horizon),
+            note,
+            cells,
+            chosen,
+            "win" if chosen > 0 else "loss",
+            board_mean,
+            _mean(at_h),
+            best,
+            best_value - chosen,
+        )
+    return Decision(
+        policy,
+        arm,
+        board,
+        str(choice),
+        row,
+        str(horizon),
+        note,
+        cells,
+        None,
+        "unevaluable",
+        board_mean,
+        _mean(at_h),
+        best,
+        None,
+    )
 
 
-def policy_decisions(view: RunView, policy: PolicyArms,
-                     table: OutcomeTable) -> list[Decision]:
+def policy_decisions(view: RunView, policy: PolicyArms, table: OutcomeTable) -> list[Decision]:
     out: list[Decision] = []
     for arm in policy.arms:
         for snapshot, rec in sorted(view.receipts.get(arm, {}).items()):
-            out.append(decision_of(policy.name, arm, rec, view.boards[snapshot], table,
-                                   view.cutoff))
+            out.append(
+                decision_of(policy.name, arm, rec, view.boards[snapshot], table, view.cutoff)
+            )
     return out
 
 
@@ -455,28 +573,39 @@ def _count(values: Sequence[Any]) -> dict[str, int]:
     return dict(sorted(Counter(str(v) for v in values).items()))
 
 
-def aggregate(decisions: Sequence[Decision], *, train_boards: int,
-              failed: int = 0) -> dict[str, Any]:
+def aggregate(
+    decisions: Sequence[Decision], *, train_boards: int, failed: int = 0
+) -> dict[str, Any]:
     """A policy's behaviour and outcomes on its train decisions."""
     entries = [d for d in decisions if d.entered and d.row is not None]
     evaluated = [d for d in entries if d.realized is not None]
     skips = [d for d in decisions if not d.entered]
     arms = sorted({d.arm for d in decisions})
     rows = [d.board.rows[d.row] for d in entries if d.row is not None]
-    rel = [d.row / (len(d.board.rows) - 1) for d in entries
-           if d.row is not None and len(d.board.rows) > 1]
+    rel = [
+        d.row / (len(d.board.rows) - 1)
+        for d in entries
+        if d.row is not None and len(d.board.rows) > 1
+    ]
     nets = [d.realized for d in evaluated if d.realized is not None]
     by_cell: dict[str, list[float]] = {}
     for d in evaluated:
         key = f"{d.board.rows[d.row or 0].get('structure')}|{d.horizon}"
         by_cell.setdefault(key, []).append(float(d.realized or 0.0))
-    withheld = [d for d in entries if d.realized is None and d.row is not None
-                and d.horizon is not None
-                and d.cells[d.row][HORIZONS.index(d.horizon)] == WITHHELD]
+    withheld = [
+        d
+        for d in entries
+        if d.realized is None
+        and d.row is not None
+        and d.horizon is not None
+        and d.cells[d.row][HORIZONS.index(d.horizon)] == WITHHELD
+    ]
     skip_means = [d.board_mean for d in skips if d.board_mean is not None]
     regrets = [d.regret for d in decisions if d.regret is not None]
     doc: dict[str, Any] = {
-        "train_boards": train_boards, "decided": len(decisions), "failed_receipts": failed,
+        "train_boards": train_boards,
+        "decided": len(decisions),
+        "failed_receipts": failed,
         "entered": len(entries),
         "entry_rate": round(len(entries) / len(decisions), 3) if decisions else None,
         "horizon_mix": _count([d.horizon for d in entries]),
@@ -484,44 +613,66 @@ def aggregate(decisions: Sequence[Decision], *, train_boards: int,
         "structure_mix": _count([row.get("structure") for row in rows]),
         "row_position": {
             "row0_share": round(sum(d.row == 0 for d in entries) / len(entries), 3)
-            if entries else None,
-            "uniform_row0_share": (round(statistics.fmean(1 / len(d.board.rows)
-                                                          for d in entries), 3)
-                                   if entries else None),
+            if entries
+            else None,
+            "uniform_row0_share": (
+                round(statistics.fmean(1 / len(d.board.rows) for d in entries), 3)
+                if entries
+                else None
+            ),
             "mean_relative_position": round(statistics.fmean(rel), 3) if rel else None,
         },
         "outcomes": {
             "evaluated_entries": len(evaluated),
-            "no_fill_entries": sum(1 for d in entries if d.realized is None
-                                   and d.row is not None and d.horizon is not None
-                                   and d.cells[d.row][HORIZONS.index(d.horizon)] is None),
+            "no_fill_entries": sum(
+                1
+                for d in entries
+                if d.realized is None
+                and d.row is not None
+                and d.horizon is not None
+                and d.cells[d.row][HORIZONS.index(d.horizon)] is None
+            ),
             "withheld_entries": len(withheld),
             "net_total": _round(sum(nets), 1) if nets else 0.0,
             "net_mean": _round(_mean(nets)),
             "win_rate": round(sum(n > 0 for n in nets) / len(nets), 3) if nets else None,
-            "pick_vs_board_mean_same_horizon": _round(sum(
-                float(d.realized or 0.0) - d.board_mean_h for d in evaluated
-                if d.board_mean_h is not None)),
+            "pick_vs_board_mean_same_horizon": _round(
+                sum(
+                    float(d.realized or 0.0) - d.board_mean_h
+                    for d in evaluated
+                    if d.board_mean_h is not None
+                )
+            ),
             "skips": len(skips),
             "random_entry_mean_on_skipped_boards": _round(_mean(skip_means)),
             "regret_mean": _round(_mean(regrets)),
         },
-        "strata": {name: sum(d.stratum == name for d in decisions)
-                   for name in (*STRATA, "unevaluable")},
+        "strata": {
+            name: sum(d.stratum == name for d in decisions) for name in (*STRATA, "unevaluable")
+        },
         "pnl_by_structure_horizon": {
-            key: {"n": len(v), "net": round(sum(v), 1), "mean": round(statistics.fmean(v), 1),
-                  "win_rate": round(sum(x > 0 for x in v) / len(v), 3)}
-            for key, v in sorted(by_cell.items())},
+            key: {
+                "n": len(v),
+                "net": round(sum(v), 1),
+                "mean": round(statistics.fmean(v), 1),
+                "win_rate": round(sum(x > 0 for x in v) / len(v), 3),
+            }
+            for key, v in sorted(by_cell.items())
+        },
     }
     if len(arms) > 1:
         doc["entry_rate_by_repeat"] = {
-            arm: round(sum(d.entered for d in decisions if d.arm == arm)
-                       / max(1, sum(d.arm == arm for d in decisions)), 3) for arm in arms}
+            arm: round(
+                sum(d.entered for d in decisions if d.arm == arm)
+                / max(1, sum(d.arm == arm for d in decisions)),
+                3,
+            )
+            for arm in arms
+        }
     return doc
 
 
-def universe(boards: Sequence[TrainBoard], table: OutcomeTable,
-             cutoff: date) -> dict[str, Any]:
+def universe(boards: Sequence[TrainBoard], table: OutcomeTable, cutoff: date) -> dict[str, Any]:
     """Base rates over every train board row at every horizon."""
     cells_by: dict[str, dict[str, list[Cell]]] = {"structure": {}, "direction": {}}
     board_means: list[float] = []
@@ -539,17 +690,21 @@ def universe(boards: Sequence[TrainBoard], table: OutcomeTable,
 
     def summary(values: list[Cell]) -> dict[str, Any]:
         nets = [c for c in values if isinstance(c, float)]
-        return {"realized": len(nets), "no_fill": sum(c is None for c in values),
-                "withheld": sum(c == WITHHELD for c in values),
-                "mean_net": _round(_mean(nets)),
-                "win_rate": round(sum(n > 0 for n in nets) / len(nets), 3) if nets else None}
+        return {
+            "realized": len(nets),
+            "no_fill": sum(c is None for c in values),
+            "withheld": sum(c == WITHHELD for c in values),
+            "mean_net": _round(_mean(nets)),
+            "win_rate": round(sum(n > 0 for n in nets) / len(nets), 3) if nets else None,
+        }
 
-    return {"boards": len(boards), "sessions": len({b.session for b in boards}),
-            "random_row_baseline_mean_per_board": _round(_mean(board_means), 2),
-            "by_structure_horizon": {k: summary(v)
-                                     for k, v in sorted(cells_by["structure"].items())},
-            "by_direction_horizon": {k: summary(v)
-                                     for k, v in sorted(cells_by["direction"].items())}}
+    return {
+        "boards": len(boards),
+        "sessions": len({b.session for b in boards}),
+        "random_row_baseline_mean_per_board": _round(_mean(board_means), 2),
+        "by_structure_horizon": {k: summary(v) for k, v in sorted(cells_by["structure"].items())},
+        "by_direction_horizon": {k: summary(v) for k, v in sorted(cells_by["direction"].items())},
+    }
 
 
 # ---------------------------------------------------------------- samples
@@ -585,7 +740,7 @@ def stratified_sample(decisions: Sequence[Decision], n: int, seed: int) -> list[
                 progressed = True
         if not progressed:
             break
-    taken = {name: pools[name][:quota[name]] for name in STRATA}
+    taken = {name: pools[name][: quota[name]] for name in STRATA}
     out: list[Decision] = []
     for i in range(max(quota.values(), default=0)):
         out.extend(taken[name][i] for name in STRATA if i < len(taken[name]))
@@ -600,16 +755,19 @@ def render_sample(label: str, d: Decision) -> dict[str, Any]:
     """A sampled decision as the theorists see it: no snapshot id, no date."""
     fields = list(lab.V2_ROW_FIELDS)
     return {
-        "id": label, "stratum": d.stratum, "context": d.board.context,
-        "board": {"cols": fields,
-                  "rows": [[row.get(k) for k in fields] for row in d.board.rows]},
-        "decision": (None if d.choice is None
-                     else {"row": d.row, "horizon": d.horizon}),
+        "id": label,
+        "stratum": d.stratum,
+        "context": d.board.context,
+        "board": {"cols": fields, "rows": [[row.get(k) for k in fields] for row in d.board.rows]},
+        "decision": (None if d.choice is None else {"row": d.row, "horizon": d.horizon}),
         "note": _scrub(d.note),
         "realized": _round(d.realized),
         "net_by_row": [[_fmt(c) for c in row] for row in d.cells],
-        "best": (None if d.best is None
-                 else {"row": d.best[0], "horizon": d.best[1], "net": round(d.best[2], 1)}),
+        "best": (
+            None
+            if d.best is None
+            else {"row": d.best[0], "horizon": d.best[1], "net": round(d.best[2], 1)}
+        ),
         "board_mean": _round(d.board_mean),
         "board_mean_at_chosen_horizon": _round(d.board_mean_h),
         "regret": _round(d.regret),
@@ -619,9 +777,15 @@ def render_sample(label: str, d: Decision) -> dict[str, Any]:
 # ------------------------------------------------------------------- pack
 
 
-def build_pack(view: RunView, table: OutcomeTable, *, samples_per_arm: int = DEFAULT_SAMPLES,
-               max_tokens: int = DEFAULT_MAX_PACK_TOKENS, seed: int = 20260929,
-               only: Sequence[str] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+def build_pack(
+    view: RunView,
+    table: OutcomeTable,
+    *,
+    samples_per_arm: int = DEFAULT_SAMPLES,
+    max_tokens: int = DEFAULT_MAX_PACK_TOKENS,
+    seed: int = 20260929,
+    only: Sequence[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """(pack, meta): the evidence every theorist reads, and its bookkeeping.
     The pack carries no date, snapshot id or ticker; samples are trimmed
     (largest dossier first, from its tail) until the estimate fits
@@ -642,25 +806,35 @@ def build_pack(view: RunView, table: OutcomeTable, *, samples_per_arm: int = DEF
         for d in picked:
             counter += 1
             rendered.append(render_sample(f"d{counter}", d))
-        dossiers.append({
-            "policy": policy.name,
-            "policy_sentence": policy.prompt or lab.POLICY_SENTENCE,
-            "default_sentence": policy.prompt is None,
-            "aggregate": aggregate(decisions, train_boards=len(boards),
-                                   failed=sum(view.failed.get(a, 0) for a in policy.arms)),
-            "samples": rendered})
+        dossiers.append(
+            {
+                "policy": policy.name,
+                "policy_sentence": policy.prompt or lab.POLICY_SENTENCE,
+                "default_sentence": policy.prompt is None,
+                "aggregate": aggregate(
+                    decisions,
+                    train_boards=len(boards),
+                    failed=sum(view.failed.get(a, 0) for a in policy.arms),
+                ),
+                "samples": rendered,
+            }
+        )
     base_rates = universe(boards, table, view.cutoff)
     expiry = [v for k, v in base_rates["by_structure_horizon"].items() if k.endswith("|expiry")]
     options = sum(v["realized"] + v["no_fill"] + v["withheld"] for v in expiry)
     withheld_pct = round(100 * sum(v["withheld"] for v in expiry) / options) if options else 0
     pack: dict[str, Any] = {
         "schema": DOSSIER_SCHEMA,
-        "caveat": (f"Outcomes exiting after the train split are withheld (x): {withheld_pct}% "
-                   "of the expiry options here, so the visible expiry stats skew to "
-                   "short-dated rows - discount them."),
+        "caveat": (
+            f"Outcomes exiting after the train split are withheld (x): {withheld_pct}% "
+            "of the expiry options here, so the visible expiry stats skew to "
+            "short-dated rows - discount them."
+        ),
         "legend": LEGEND,
         "split": {"train_sessions": len(view.sessions), "train_boards": len(boards)},
-        "universe": base_rates, "dossiers": dossiers}
+        "universe": base_rates,
+        "dossiers": dossiers,
+    }
     trimmed = 0
     while estimate_tokens(pack) > max_tokens:
         fattest = max(dossiers, key=lambda d: (len(d["samples"]), d["policy"]), default=None)
@@ -668,16 +842,21 @@ def build_pack(view: RunView, table: OutcomeTable, *, samples_per_arm: int = DEF
             break
         fattest["samples"].pop()
         trimmed += 1
-    meta = {"run_dir": str(view.run_dir), "run_id": view.run_dir.name,
-            "cutoff": view.cutoff.isoformat(),
-            "train_first_session": view.sessions[0].isoformat() if view.sessions else None,
-            "train_last_session": view.sessions[-1].isoformat() if view.sessions else None,
-            "samples_per_arm": samples_per_arm, "max_pack_tokens": max_tokens,
-            "trimmed_samples": trimmed, "seed": seed,
-            "pack_tokens_est": estimate_tokens(pack),
-            "dossier_tokens_est": {d["policy"]: estimate_tokens(d) for d in dossiers},
-            "universe_tokens_est": estimate_tokens(pack["universe"]),
-            "pack_sha256": hashlib.sha256(json.dumps(pack, sort_keys=True).encode()).hexdigest()}
+    meta = {
+        "run_dir": str(view.run_dir),
+        "run_id": view.run_dir.name,
+        "cutoff": view.cutoff.isoformat(),
+        "train_first_session": view.sessions[0].isoformat() if view.sessions else None,
+        "train_last_session": view.sessions[-1].isoformat() if view.sessions else None,
+        "samples_per_arm": samples_per_arm,
+        "max_pack_tokens": max_tokens,
+        "trimmed_samples": trimmed,
+        "seed": seed,
+        "pack_tokens_est": estimate_tokens(pack),
+        "dossier_tokens_est": {d["policy"]: estimate_tokens(d) for d in dossiers},
+        "universe_tokens_est": estimate_tokens(pack["universe"]),
+        "pack_sha256": hashlib.sha256(json.dumps(pack, sort_keys=True).encode()).hexdigest(),
+    }
     return pack, meta
 
 
@@ -698,8 +877,11 @@ def _sentences(text: str) -> int:
 
 
 def _dates(text: str, *, strict: bool) -> list[str]:
-    found = [m.group(0) for pattern in (_ISO_DATE, _MONTH_NAME, _MONTH_DAY)
-             for m in pattern.finditer(text)]
+    found = [
+        m.group(0)
+        for pattern in (_ISO_DATE, _MONTH_NAME, _MONTH_DAY)
+        for m in pattern.finditer(text)
+    ]
     if strict:
         found += [m.group(0) for m in _YEAR.finditer(text)]
         found += [m.group(0) for m in _DATE_PROXY.finditer(text)]
@@ -709,17 +891,25 @@ def _dates(text: str, *, strict: bool) -> list[str]:
 def _tickers(text: str, tickers: frozenset[str]) -> list[str]:
     names = sorted(KNOWN_TICKERS | tickers)
     pattern = re.compile(r"\b(?:" + "|".join(re.escape(t) for t in names) + r")\b")
-    return ([m.group(0) for m in pattern.finditer(text)]
-            + [m.group(0) for m in _INDEX_NAMES.finditer(text)]
-            + [m.group(0) for m in _CASHTAG.finditer(text)])
+    return (
+        [m.group(0) for m in pattern.finditer(text)]
+        + [m.group(0) for m in _INDEX_NAMES.finditer(text)]
+        + [m.group(0) for m in _CASHTAG.finditer(text)]
+    )
 
 
-_LIMITS = {"name": NAME_MAX, "hypothesis": HYPOTHESIS_MAX, "evidence": EVIDENCE_MAX,
-           "prompt": PROMPT_MAX, "expected_effect": EFFECT_MAX}
+_LIMITS = {
+    "name": NAME_MAX,
+    "hypothesis": HYPOTHESIS_MAX,
+    "evidence": EVIDENCE_MAX,
+    "prompt": PROMPT_MAX,
+    "expected_effect": EFFECT_MAX,
+}
 
 
-def validate_reply(reply: Mapping[str, Any], *,
-                   tickers: frozenset[str] = frozenset()) -> tuple[Proposal | None, list[str]]:
+def validate_reply(
+    reply: Mapping[str, Any], *, tickers: frozenset[str] = frozenset()
+) -> tuple[Proposal | None, list[str]]:
     """The proposal, or None with every reason it breaks the contract."""
     reasons: list[str] = []
     fields: dict[str, str] = {}
@@ -748,7 +938,7 @@ def validate_reply(reply: Mapping[str, Any], *,
         role = _ROLE.match(prompt)
         if role is None:
             reasons.append("contract:role_framing")
-        elif len(prompt[role.end():].strip()) < ROLE_RULE_MIN:
+        elif len(prompt[role.end() :].strip()) < ROLE_RULE_MIN:
             reasons.append("contract:no_rule_after_role")
         bad = sorted({f"hold:{n}" for n in _HOLD.findall(prompt) if n != "5"})
         if bad:
@@ -796,8 +986,9 @@ def _slug(text: str, limit: int) -> str:
 def board_task_template() -> str:
     """The fixed v2 board task with the policy sentence as a placeholder
     (built by board_prompt_v2 itself, so it never drifts from the board)."""
-    context = lab.BoardContext(public={}, aliases={}, spot={},
-                               as_of=datetime(2000, 1, 1, tzinfo=UTC))
+    context = lab.BoardContext(
+        public={}, aliases={}, spot={}, as_of=datetime(2000, 1, 1, tzinfo=UTC)
+    )
     content = lab.board_prompt_v2([], context, POLICY_PLACEHOLDER)[0]["content"]
     return str(json.loads(content)["task"])
 
@@ -810,15 +1001,21 @@ def personas(k: int) -> list[tuple[str, str]]:
         key, lens = PERSONAS[i % len(PERSONAS)]
         if i >= len(PERSONAS):
             key = f"{key}{i // len(PERSONAS) + 1}"
-            lens += ("; you are a second theorist of this school, so pursue a different "
-                     "mechanism than the most obvious one")
+            lens += (
+                "; you are a second theorist of this school, so pursue a different "
+                "mechanism than the most obvious one"
+            )
         out.append((key, lens))
     return out
 
 
 def theorist_messages(pack: Mapping[str, Any], persona: tuple[str, str]) -> list[dict[str, str]]:
-    payload = {"task": REFLECT_TASK, "board_task": board_task_template(), "evidence": pack,
-               "your_school": {"name": persona[0], "lens": persona[1]}}
+    payload = {
+        "task": REFLECT_TASK,
+        "board_task": board_task_template(),
+        "evidence": pack,
+        "your_school": {"name": persona[0], "lens": persona[1]},
+    }
     return [{"role": "user", "content": json.dumps(payload, separators=(",", ":"))}]
 
 
@@ -828,14 +1025,16 @@ class _Recorder:
     untouched) and keeps the raw reply (content, finish, usage) for the
     transcript. Request headers (the key) are never recorded."""
 
-    def __init__(self, base: PostTransport, *, max_tokens: int | None = None,
-                 effort: str | None = None) -> None:
+    def __init__(
+        self, base: PostTransport, *, max_tokens: int | None = None, effort: str | None = None
+    ) -> None:
         self.base = base
         self.max_tokens, self.effort = max_tokens, effort
         self.last: dict[str, Any] | None = None
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.last = None
         if self.max_tokens is not None or self.effort is not None:
             request = json.loads(body)
@@ -845,14 +1044,19 @@ class _Recorder:
                 request["reasoning_effort"] = self.effort
             body = json.dumps(request).encode()
         status, raw = self.base(url, body, headers, timeout)
-        record: dict[str, Any] = {"http_status": status, "max_tokens": self.max_tokens,
-                                  "reasoning_effort": self.effort}
+        record: dict[str, Any] = {
+            "http_status": status,
+            "max_tokens": self.max_tokens,
+            "reasoning_effort": self.effort,
+        }
         try:
             envelope = json.loads(raw)
             choice = envelope["choices"][0]
-            record.update(content=choice["message"].get("content"),
-                          finish_reason=choice.get("finish_reason"),
-                          usage=envelope.get("usage"))
+            record.update(
+                content=choice["message"].get("content"),
+                finish_reason=choice.get("finish_reason"),
+                usage=envelope.get("usage"),
+            )
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             record.update(content=None, raw_bytes=len(raw or b""))
         self.last = record
@@ -869,17 +1073,23 @@ class Accepted:
     model: str
 
 
-def run_panel(pack: Mapping[str, Any], *, k: int, provider: str = DEFAULT_PROVIDER,
-              transport: PostTransport | None = None, concurrency: int = 2,
-              max_attempts: int = DEFAULT_ATTEMPTS, timeout: float = DEFAULT_TIMEOUT_S,
-              max_tokens: int | None = DEFAULT_MAX_TOKENS,
-              effort: str | None = DEFAULT_EFFORT,
-              tickers: frozenset[str] = frozenset(),
-              existing: Mapping[str, str] | None = None,
-              sink: Callable[[dict[str, Any]], None] | None = None,
-              monotonic: Callable[[], float] = time.monotonic,
-              clock: Callable[[], datetime] = _utcnow
-              ) -> tuple[list[Accepted], list[dict[str, Any]]]:
+def run_panel(
+    pack: Mapping[str, Any],
+    *,
+    k: int,
+    provider: str = DEFAULT_PROVIDER,
+    transport: PostTransport | None = None,
+    concurrency: int = 2,
+    max_attempts: int = DEFAULT_ATTEMPTS,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    max_tokens: int | None = DEFAULT_MAX_TOKENS,
+    effort: str | None = DEFAULT_EFFORT,
+    tickers: frozenset[str] = frozenset(),
+    existing: Mapping[str, str] | None = None,
+    sink: Callable[[dict[str, Any]], None] | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+    clock: Callable[[], datetime] = _utcnow,
+) -> tuple[list[Accepted], list[dict[str, Any]]]:
     """K theorists, each up to ``max_attempts`` calls; returns the accepted
     proposals (slot order) and every call record (also streamed to ``sink``)."""
     if not 1 <= concurrency <= MAX_CONCURRENCY:
@@ -910,8 +1120,11 @@ def run_panel(pack: Mapping[str, Any], *, k: int, provider: str = DEFAULT_PROVID
             except LlmError as exc:
                 error = str(exc)[:200]
             latency = round(monotonic() - started, 3)
-            proposal, reasons = ((None, [f"call:{error}"]) if reply is None
-                                 else validate_reply(reply, tickers=tickers))
+            proposal, reasons = (
+                (None, [f"call:{error}"])
+                if reply is None
+                else validate_reply(reply, tickers=tickers)
+            )
             contract_ok = proposal is not None
             name = None
             with lock:
@@ -926,24 +1139,42 @@ def run_panel(pack: Mapping[str, Any], *, k: int, provider: str = DEFAULT_PROVID
                             name, n = f"{stem}-{n}", n + 1
                         longrun.PolicySpec(name, "model", prompt=proposal.prompt)  # name check
                         taken[name] = proposal.prompt
-                        accepted.append(Accepted(slot, persona[0], name, proposal, attempt,
-                                                 str(model)))
-                record = {"schema": CALL_SCHEMA, "at": clock().isoformat(), "slot": slot,
-                          "persona": persona[0], "attempt": attempt, "provider": provider,
-                          "model": model, "latency_s": latency, "messages": messages,
-                          "response": recorder.last, "parsed": reply, "error": error,
-                          "parse_ok": reply is not None, "contract_ok": contract_ok,
-                          "accepted": name, "reasons": reasons}
+                        accepted.append(
+                            Accepted(slot, persona[0], name, proposal, attempt, str(model))
+                        )
+                record = {
+                    "schema": CALL_SCHEMA,
+                    "at": clock().isoformat(),
+                    "slot": slot,
+                    "persona": persona[0],
+                    "attempt": attempt,
+                    "provider": provider,
+                    "model": model,
+                    "latency_s": latency,
+                    "messages": messages,
+                    "response": recorder.last,
+                    "parsed": reply,
+                    "error": error,
+                    "parse_ok": reply is not None,
+                    "contract_ok": contract_ok,
+                    "accepted": name,
+                    "reasons": reasons,
+                }
                 calls.append(record)
                 if sink is not None:
                     sink(record)
             if proposal is not None:
                 return
             feedback = {"role": "user", "content": FEEDBACK.format(reasons="; ".join(reasons))}
-            messages = [*first,
-                        *([{"role": "assistant", "content": json.dumps(reply)}]
-                          if reply is not None else []),
-                        feedback]
+            messages = [
+                *first,
+                *(
+                    [{"role": "assistant", "content": json.dumps(reply)}]
+                    if reply is not None
+                    else []
+                ),
+                feedback,
+            ]
 
     slots = list(enumerate(personas(k), start=1))
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
@@ -954,12 +1185,16 @@ def run_panel(pack: Mapping[str, Any], *, k: int, provider: str = DEFAULT_PROVID
     return accepted, calls
 
 
-def call_stats(calls: Sequence[Mapping[str, Any]], k: int,
-               accepted: Sequence[Accepted]) -> dict[str, Any]:
+def call_stats(
+    calls: Sequence[Mapping[str, Any]], k: int, accepted: Sequence[Accepted]
+) -> dict[str, Any]:
     latencies = sorted(float(c["latency_s"]) for c in calls)
-    usage = [c["response"]["usage"] for c in calls
-             if isinstance(c.get("response"), dict) and isinstance(c["response"].get("usage"),
-                                                                   dict)]
+    usage = [
+        c["response"]["usage"]
+        for c in calls
+        if isinstance(c.get("response"), dict) and isinstance(c["response"].get("usage"), dict)
+    ]
+
     def category(reason: str) -> str:
         if reason.startswith("call:"):
             return reason[:60]
@@ -970,20 +1205,34 @@ def call_stats(calls: Sequence[Mapping[str, Any]], k: int,
     reasons = Counter(category(r) for c in calls for r in c["reasons"])
     n = len(calls)
     return {
-        "theorists": k, "accepted": len(accepted), "calls": n,
+        "theorists": k,
+        "accepted": len(accepted),
+        "calls": n,
         "parse_ok": sum(1 for c in calls if c["parse_ok"]),
         "contract_ok": sum(1 for c in calls if c["contract_ok"]),
         "parse_rate": round(sum(1 for c in calls if c["parse_ok"]) / n, 3) if n else None,
         "contract_rate": round(sum(1 for c in calls if c["contract_ok"]) / n, 3) if n else None,
         "first_attempt_accepted": sum(1 for a in accepted if a.attempt == 1),
         "reasons": dict(sorted(reasons.items())),
-        "latency_s": ({"min": latencies[0], "median": round(statistics.median(latencies), 1),
-                       "max": latencies[-1], "total": round(sum(latencies), 1)}
-                      if latencies else None),
-        "usage": ({"prompt_tokens": sum(int(u.get("prompt_tokens") or 0) for u in usage),
-                   "completion_tokens": sum(int(u.get("completion_tokens") or 0)
-                                            for u in usage),
-                   "calls_with_usage": len(usage)} if usage else None),
+        "latency_s": (
+            {
+                "min": latencies[0],
+                "median": round(statistics.median(latencies), 1),
+                "max": latencies[-1],
+                "total": round(sum(latencies), 1),
+            }
+            if latencies
+            else None
+        ),
+        "usage": (
+            {
+                "prompt_tokens": sum(int(u.get("prompt_tokens") or 0) for u in usage),
+                "completion_tokens": sum(int(u.get("completion_tokens") or 0) for u in usage),
+                "calls_with_usage": len(usage),
+            }
+            if usage
+            else None
+        ),
     }
 
 
@@ -997,26 +1246,43 @@ def _quota_from_config(view: RunView) -> QuotaFn:
 
 
 def _default_out(run_id: str, now: datetime) -> Path:
-    return (Path.home() / ".local" / "state" / "trex-theory" / "reflect"
-            / f"{run_id}-reflect-{now.strftime('%Y%m%dT%H%M%SZ')}.json")
+    return (
+        Path.home()
+        / ".local"
+        / "state"
+        / "trex-theory"
+        / "reflect"
+        / f"{run_id}-reflect-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+    )
 
 
 def _sibling(out: Path, suffix: str) -> Path:
     return out.with_name(out.name.removesuffix(".json") + suffix)
 
 
-def run_reflect(run_dir: Path, *, cutoff: str | None = None, k: int = 6,
-                out: Path | None = None, table: Path | None = None,
-                provider: str = DEFAULT_PROVIDER, transport: PostTransport | None = None,
-                concurrency: int = 2, samples_per_arm: int = DEFAULT_SAMPLES,
-                max_pack_tokens: int = DEFAULT_MAX_PACK_TOKENS,
-                max_attempts: int = DEFAULT_ATTEMPTS, timeout: float = DEFAULT_TIMEOUT_S,
-                max_tokens: int | None = DEFAULT_MAX_TOKENS,
-                effort: str | None = DEFAULT_EFFORT,
-                seed: int = 20260929, only: Sequence[str] | None = None,
-                dry_run: bool = False, quota_ok: QuotaFn | None = None,
-                clock: Callable[[], datetime] = _utcnow,
-                monotonic: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+def run_reflect(
+    run_dir: Path,
+    *,
+    cutoff: str | None = None,
+    k: int = 6,
+    out: Path | None = None,
+    table: Path | None = None,
+    provider: str = DEFAULT_PROVIDER,
+    transport: PostTransport | None = None,
+    concurrency: int = 2,
+    samples_per_arm: int = DEFAULT_SAMPLES,
+    max_pack_tokens: int = DEFAULT_MAX_PACK_TOKENS,
+    max_attempts: int = DEFAULT_ATTEMPTS,
+    timeout: float = DEFAULT_TIMEOUT_S,
+    max_tokens: int | None = DEFAULT_MAX_TOKENS,
+    effort: str | None = DEFAULT_EFFORT,
+    seed: int = 20260929,
+    only: Sequence[str] | None = None,
+    dry_run: bool = False,
+    quota_ok: QuotaFn | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
     """Dossiers from the run's train split, then (unless ``dry_run``) the
     panel and the config fragment. The run dir is only ever read."""
     run_dir = Path(run_dir)
@@ -1032,28 +1298,45 @@ def run_reflect(run_dir: Path, *, cutoff: str | None = None, k: int = 6,
     if not table_path:
         raise ValueError("no outcome table: pass --table or set outcome.table in the run config")
     outcome_table = load_outcome_table(Path(str(table_path)).expanduser(), set(view.boards))
-    pack, meta = build_pack(view, outcome_table, samples_per_arm=samples_per_arm,
-                            max_tokens=max_pack_tokens, seed=seed, only=only)
+    pack, meta = build_pack(
+        view,
+        outcome_table,
+        samples_per_arm=samples_per_arm,
+        max_tokens=max_pack_tokens,
+        seed=seed,
+        only=only,
+    )
     now = clock()
     out = out or _default_out(view.run_dir.name, now)
     call_tokens = estimate_tokens(theorist_messages(pack, PERSONAS[0])[0]["content"])
-    meta.update(table=str(table_path), provider=provider, k=k, built_at=now.isoformat(),
-                call_prompt_tokens_est=call_tokens, panel_prompt_tokens_est=call_tokens * k)
+    meta.update(
+        table=str(table_path),
+        provider=provider,
+        k=k,
+        built_at=now.isoformat(),
+        call_prompt_tokens_est=call_tokens,
+        panel_prompt_tokens_est=call_tokens * k,
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     dossier_path = _sibling(out, ".dossiers.json")
-    dossier_path.write_text(json.dumps({"meta": meta, "pack": pack}, indent=1),
-                            encoding="utf-8")
+    dossier_path.write_text(json.dumps({"meta": meta, "pack": pack}, indent=1), encoding="utf-8")
     summary: dict[str, Any] = {
-        "status": "dry_run" if dry_run else "pending", "dossiers": str(dossier_path),
-        "cutoff": meta["cutoff"], "train_sessions": pack["split"]["train_sessions"],
+        "status": "dry_run" if dry_run else "pending",
+        "dossiers": str(dossier_path),
+        "cutoff": meta["cutoff"],
+        "train_sessions": pack["split"]["train_sessions"],
         "train_boards": pack["split"]["train_boards"],
         "decided": {d["policy"]: d["aggregate"]["decided"] for d in pack["dossiers"]},
         "samples": {d["policy"]: len(d["samples"]) for d in pack["dossiers"]},
-        "tokens_est": {"pack": meta["pack_tokens_est"], "per_call": call_tokens,
-                       "panel_first_attempts": call_tokens * k,
-                       "dossiers": meta["dossier_tokens_est"],
-                       "universe": meta["universe_tokens_est"],
-                       "trimmed_samples": meta["trimmed_samples"]}}
+        "tokens_est": {
+            "pack": meta["pack_tokens_est"],
+            "per_call": call_tokens,
+            "panel_first_attempts": call_tokens * k,
+            "dossiers": meta["dossier_tokens_est"],
+            "universe": meta["universe_tokens_est"],
+            "trimmed_samples": meta["trimmed_samples"],
+        },
+    }
     if dry_run:
         return summary
     ok, why = (quota_ok or _quota_from_config(view))()
@@ -1069,46 +1352,79 @@ def run_reflect(run_dir: Path, *, cutoff: str | None = None, k: int = 6,
             stream.write(json.dumps(record, default=str) + "\n")
 
     existing = {p.name: p.prompt or lab.POLICY_SENTENCE for p in view.policies}
-    accepted, calls = run_panel(pack, k=k, provider=provider, transport=transport,
-                                concurrency=concurrency, max_attempts=max_attempts,
-                                timeout=timeout, max_tokens=max_tokens, effort=effort,
-                                tickers=outcome_table.tickers,
-                                existing=existing, sink=sink, monotonic=monotonic, clock=clock)
+    accepted, calls = run_panel(
+        pack,
+        k=k,
+        provider=provider,
+        transport=transport,
+        concurrency=concurrency,
+        max_attempts=max_attempts,
+        timeout=timeout,
+        max_tokens=max_tokens,
+        effort=effort,
+        tickers=outcome_table.tickers,
+        existing=existing,
+        sink=sink,
+        monotonic=monotonic,
+        clock=clock,
+    )
     stats = call_stats(calls, k, accepted)
     models = sorted({c["model"] for c in calls if c.get("model")})
     fragment = {
         "schema": FRAGMENT_SCHEMA,
-        "untrusted_note": ("UNTRUSTED / NEVER PROMOTED. Model-proposed policy sentences from "
-                           "a hindsight reflection on the TRAIN split only; each is a "
-                           "hypothesis for the next long run's held-out walk-forward."),
-        "policies": [{"name": a.name, "kind": "model", "prompt": a.proposal.prompt}
-                     for a in accepted],
+        "untrusted_note": (
+            "UNTRUSTED / NEVER PROMOTED. Model-proposed policy sentences from "
+            "a hindsight reflection on the TRAIN split only; each is a "
+            "hypothesis for the next long run's held-out walk-forward."
+        ),
+        "policies": [
+            {"name": a.name, "kind": "model", "prompt": a.proposal.prompt} for a in accepted
+        ],
         "provenance": {
-            "run_id": view.run_dir.name, "run_dir": str(view.run_dir),
+            "run_id": view.run_dir.name,
+            "run_dir": str(view.run_dir),
             "cutoff": meta["cutoff"],
-            "split": ("train: boards with session <= cutoff; outcomes counted only when "
-                      "realized (exit session) by the cutoff"),
+            "split": (
+                "train: boards with session <= cutoff; outcomes counted only when "
+                "realized (exit session) by the cutoff"
+            ),
             "train_sessions": pack["split"]["train_sessions"],
             "train_boards": pack["split"]["train_boards"],
             "dossier_policies": [d["policy"] for d in pack["dossiers"]],
-            "dossiers": str(dossier_path), "dossier_sha256": meta["pack_sha256"],
-            "transcript": str(transcript), "provider": provider, "models": models,
-            "reasoning_effort": effort, "max_tokens": max_tokens,
-            "at": clock().isoformat(), "k": k,
-            "per_policy": {a.name: {"theorist": a.persona, "slot": a.slot,
-                                    "attempt": a.attempt, "model": a.model,
-                                    "hypothesis": a.proposal.hypothesis,
-                                    "evidence": a.proposal.evidence,
-                                    "expected_effect": a.proposal.expected_effect,
-                                    "label": a.proposal.name,
-                                    "prompt_sha256": hashlib.sha256(
-                                        a.proposal.prompt.encode()).hexdigest()}
-                           for a in accepted}},
-        "stats": stats}
+            "dossiers": str(dossier_path),
+            "dossier_sha256": meta["pack_sha256"],
+            "transcript": str(transcript),
+            "provider": provider,
+            "models": models,
+            "reasoning_effort": effort,
+            "max_tokens": max_tokens,
+            "at": clock().isoformat(),
+            "k": k,
+            "per_policy": {
+                a.name: {
+                    "theorist": a.persona,
+                    "slot": a.slot,
+                    "attempt": a.attempt,
+                    "model": a.model,
+                    "hypothesis": a.proposal.hypothesis,
+                    "evidence": a.proposal.evidence,
+                    "expected_effect": a.proposal.expected_effect,
+                    "label": a.proposal.name,
+                    "prompt_sha256": hashlib.sha256(a.proposal.prompt.encode()).hexdigest(),
+                }
+                for a in accepted
+            },
+        },
+        "stats": stats,
+    }
     out.write_text(json.dumps(fragment, indent=2), encoding="utf-8")
-    summary.update(status="ok" if accepted else "no_proposals", out=str(out),
-                   transcript=str(transcript), stats=stats,
-                   policies=fragment["policies"])
+    summary.update(
+        status="ok" if accepted else "no_proposals",
+        out=str(out),
+        transcript=str(transcript),
+        stats=stats,
+        policies=fragment["policies"],
+    )
     return summary
 
 
@@ -1118,14 +1434,20 @@ def run_reflect(run_dir: Path, *, cutoff: str | None = None, k: int = 6,
 def register_cli(commands: Any) -> None:
     """``desk longrun reflect`` on the long-run subcommand parsers."""
     parser = commands.add_parser(
-        "reflect", help="GEPA reflection on a run's TRAIN split: dossiers, a panel of "
-                        "theorists and a config fragment of proposed policies (never promotes)")
+        "reflect",
+        help="GEPA reflection on a run's TRAIN split: dossiers, a panel of "
+        "theorists and a config fragment of proposed policies (never promotes)",
+    )
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--cutoff", help="train = sessions <= this ISO date "
-                                         "(default: the run's protocol.cutoff)")
+    parser.add_argument(
+        "--cutoff", help="train = sessions <= this ISO date (default: the run's protocol.cutoff)"
+    )
     parser.add_argument("--k", type=int, default=6, help=f"theorists (1..{MAX_K})")
-    parser.add_argument("--out", type=Path, help="the fragment JSON (default "
-                                                 "~/.local/state/trex-theory/reflect/...)")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="the fragment JSON (default ~/.local/state/trex-theory/reflect/...)",
+    )
     parser.add_argument("--table", type=Path, help="outcome table (default: the run config's)")
     parser.add_argument("--provider", default=DEFAULT_PROVIDER)
     parser.add_argument("--concurrency", type=int, default=2)
@@ -1133,27 +1455,48 @@ def register_cli(commands: Any) -> None:
     parser.add_argument("--max-pack-tokens", type=int, default=DEFAULT_MAX_PACK_TOKENS)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_ATTEMPTS)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
-    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
-                        help="the reflection call's output budget (thinking included)")
-    parser.add_argument("--effort", choices=EFFORTS, default=DEFAULT_EFFORT,
-                        help="reasoning_effort of the reflection call")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        help="the reflection call's output budget (thinking included)",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=EFFORTS,
+        default=DEFAULT_EFFORT,
+        help="reasoning_effort of the reflection call",
+    )
     parser.add_argument("--seed", type=int, default=20260929)
     parser.add_argument("--policies", help="comma list of model policies (default: all)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="build the dossiers and print token estimates; no model call")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="build the dossiers and print token estimates; no model call",
+    )
 
 
 def dispatch_cli(args: argparse.Namespace) -> int:
     only = [p.strip() for p in args.policies.split(",") if p.strip()] if args.policies else None
     try:
-        summary = run_reflect(args.run_dir, cutoff=args.cutoff, k=args.k, out=args.out,
-                              table=args.table, provider=args.provider,
-                              concurrency=args.concurrency,
-                              samples_per_arm=args.samples_per_arm,
-                              max_pack_tokens=args.max_pack_tokens,
-                              max_attempts=args.max_attempts, timeout=args.timeout,
-                              max_tokens=args.max_tokens, effort=args.effort,
-                              seed=args.seed, only=only, dry_run=args.dry_run)
+        summary = run_reflect(
+            args.run_dir,
+            cutoff=args.cutoff,
+            k=args.k,
+            out=args.out,
+            table=args.table,
+            provider=args.provider,
+            concurrency=args.concurrency,
+            samples_per_arm=args.samples_per_arm,
+            max_pack_tokens=args.max_pack_tokens,
+            max_attempts=args.max_attempts,
+            timeout=args.timeout,
+            max_tokens=args.max_tokens,
+            effort=args.effort,
+            seed=args.seed,
+            only=only,
+            dry_run=args.dry_run,
+        )
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(f"longrun reflect: refused: {error}", file=sys.stderr)
         return 2

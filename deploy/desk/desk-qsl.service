@@ -1,0 +1,31 @@
+[Unit]
+Description=TREX QSL modeled shadow ledger (paper research; no broker effects)
+Documentation=file:///home/alexk/documents/tree_options/docs/STRATEGY_PEER_INTEGRATION_20260930.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+UMask=0077
+Environment=UV_NO_SYNC=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+Environment=DESK_STORE=/home/alexk/documents/tree_options/artifacts/desk-store
+Environment=TREX_DESK_STATE=%h/.local/state/trex-desk
+Environment=TREX_DESK_QSL_QUEUE=%h/.local/state/trex-desk/queue-qsl
+Environment=TREX_DESK_QSL_DB=%h/.local/state/trex-desk/evidence/qsl.sqlite3
+WorkingDirectory=/home/alexk/documents/tree_options
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk qsl
+ExecStartPost=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk shadows --queue-dir %h/.local/state/trex-desk/queue-qsl --database %h/.local/state/trex-desk/evidence/qsl.sqlite3
+SuccessExitStatus=3
+TimeoutStartSec=300
+MemoryHigh=384M
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/trex-desk
+RestrictAddressFamilies=AF_UNIX

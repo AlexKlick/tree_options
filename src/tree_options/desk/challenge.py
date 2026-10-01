@@ -57,10 +57,13 @@ UNTRUSTED_NOTE = (
     "Model output is untrusted prose. Outcomes are mechanical proxies from "
     "replay accounting on last-traded-minute closes, not executable fills. "
     "Nothing in this digest is promoted: promotion is the operator's "
-    "pre-registered-rule path (docs/desk/DESK-LAB.md).")
-PROMOTION_RULE = ("nothing is promoted; no promotion rule is registered — "
-                  "promotion is the operator's pre-registered-rule path "
-                  "(docs/desk/DESK-LAB.md)")
+    "pre-registered-rule path (docs/desk/DESK-LAB.md)."
+)
+PROMOTION_RULE = (
+    "nothing is promoted; no promotion rule is registered — "
+    "promotion is the operator's pre-registered-rule path "
+    "(docs/desk/DESK-LAB.md)"
+)
 
 
 # ----------------------------------------------------------------- budget
@@ -82,11 +85,9 @@ class ChallengeBudget:
         if not 1 <= self.boards <= HARD_ROUND_BOARDS:
             raise ValueError(f"round boards must be within 1..{HARD_ROUND_BOARDS}")
         if not 1 <= self.reflections <= HARD_ROUND_REFLECTIONS:
-            raise ValueError(
-                f"round reflections must be within 1..{HARD_ROUND_REFLECTIONS}")
+            raise ValueError(f"round reflections must be within 1..{HARD_ROUND_REFLECTIONS}")
         if not 1 <= self.total_boards <= HARD_CHALLENGE_BOARDS:
-            raise ValueError(
-                f"challenge boards must be within 1..{HARD_CHALLENGE_BOARDS}")
+            raise ValueError(f"challenge boards must be within 1..{HARD_CHALLENGE_BOARDS}")
 
 
 class BudgetCounter:
@@ -129,7 +130,8 @@ class BudgetCounter:
         if count > self._round_boards or count > self._total_boards:
             raise BudgetRefused(
                 f"board calls {count} exceed the remaining cap "
-                f"(round {self._round_boards}, challenge {self._total_boards})")
+                f"(round {self._round_boards}, challenge {self._total_boards})"
+            )
         self._round_boards -= count
         self._total_boards -= count
 
@@ -138,8 +140,8 @@ class BudgetCounter:
             raise ValueError("count must be >= 0")
         if count > self._round_reflections:
             raise BudgetRefused(
-                f"reflection calls {count} exceed the remaining cap "
-                f"{self._round_reflections}")
+                f"reflection calls {count} exceed the remaining cap {self._round_reflections}"
+            )
         self._round_reflections -= count
 
     def refund_boards(self, count: int) -> None:
@@ -180,8 +182,7 @@ def discover_bundles(store_root: Path) -> list[Path]:
     return [found[vintage] for vintage in sorted(found)]
 
 
-def partition_sessions(raw: Mapping[str, Any],
-                       *, seed: int = DEFAULT_SEED) -> list[list[date]]:
+def partition_sessions(raw: Mapping[str, Any], *, seed: int = DEFAULT_SEED) -> list[list[date]]:
     """The bundle's sessions split into three disjoint thirds.
 
     Rule (documented, no RNG): sessions sorted ascending; the session at
@@ -215,8 +216,13 @@ def policy_field(lab_root: Path) -> list[PolicyEntry]:
     front = gepa.pareto_front(gepa.load_archive(Path(lab_root)))[:FRONT_MAX]
     entries = [PolicyEntry(policy="no_trade", kind="rules")]
     for record in front:
-        entries.append(PolicyEntry(policy=f"{lab.GEPA_PREFIX}{record['id']}",
-                                   kind="model", prompt=str(record["prompt"])))
+        entries.append(
+            PolicyEntry(
+                policy=f"{lab.GEPA_PREFIX}{record['id']}",
+                kind="model",
+                prompt=str(record["prompt"]),
+            )
+        )
     if not front:
         entries.append(PolicyEntry(policy="model:zai", kind="model"))
     return entries
@@ -229,9 +235,11 @@ def _slice_bundle(raw: Mapping[str, Any], days: Sequence[date]) -> dict[str, Any
     keep = {day.isoformat() for day in days}
     contracts: dict[str, Any] = {}
     for ticker, body in raw.get("contracts", {}).items():
-        bars = [bar for bar in body.get("results", [])
-                if datetime.fromtimestamp(bar["t"] / 1000, UTC).date().isoformat()
-                in keep]
+        bars = [
+            bar
+            for bar in body.get("results", [])
+            if datetime.fromtimestamp(bar["t"] / 1000, UTC).date().isoformat() in keep
+        ]
         contracts[ticker] = {**body, "results": bars}
     return {**raw, "contracts": contracts}
 
@@ -244,8 +252,7 @@ def _select_bundles(bundles: list[Path], rounds: int | None) -> list[Path]:
     return list(bundles) if rounds is None else bundles[-rounds:]
 
 
-def _boards_per_run(budget: ChallengeBudget, rounds: int,
-                    model_policies: int) -> int:
+def _boards_per_run(budget: ChallengeBudget, rounds: int, model_policies: int) -> int:
     """The board cap per (model policy, slice): the per-round allowance — the
     round cap, or an even share of the challenge total — divided across the
     model field's three slices, so the whole challenge stays inside both the
@@ -258,7 +265,8 @@ def _boards_per_run(budget: ChallengeBudget, rounds: int,
     if per_run < 1:
         raise BudgetRefused(
             f"the plan cannot fit even one board per model run: allowance "
-            f"{allowance} over {PARTS} slices x {model_policies} model policies")
+            f"{allowance} over {PARTS} slices x {model_policies} model policies"
+        )
     return per_run
 
 
@@ -302,33 +310,41 @@ def scorecard(entry: PolicyEntry, runs: Sequence[Mapping[str, Any]]) -> dict[str
             value = Decimal(str(high))
             peak = value if peak is None else max(peak, value)
         run_dirs.append(Path(str(document.get("run_dir", ""))).name)
-    return {"policy": entry.policy, "kind": entry.kind, "runs": len(run_dirs),
-            "boards": boards, "model_calls": calls, "model_failures": failures,
-            "entered": entered, "modeled_wins": wins, "modeled_losses": losses,
-            "closed_pnl_sum": str(pnl),
-            "worst_minimum_capital": None if minimum is None else str(minimum),
-            "peak_open_loss_reserved": None if peak is None else str(peak),
-            "run_dirs": run_dirs}
+    return {
+        "policy": entry.policy,
+        "kind": entry.kind,
+        "runs": len(run_dirs),
+        "boards": boards,
+        "model_calls": calls,
+        "model_failures": failures,
+        "entered": entered,
+        "modeled_wins": wins,
+        "modeled_losses": losses,
+        "closed_pnl_sum": str(pnl),
+        "worst_minimum_capital": None if minimum is None else str(minimum),
+        "peak_open_loss_reserved": None if peak is None else str(peak),
+        "run_dirs": run_dirs,
+    }
 
 
 def _ranked(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Highest summed mechanical closed-pnl first; ties break by policy id."""
-    return sorted(cards,
-                  key=lambda card: (-Decimal(str(card["closed_pnl_sum"])),
-                                    str(card["policy"])))
+    return sorted(
+        cards, key=lambda card: (-Decimal(str(card["closed_pnl_sum"])), str(card["policy"]))
+    )
 
 
 def _sample_snapshots(days: Sequence[date]) -> list[str]:
     """The deterministic gap-sample boards of one slice: the FIRST and the
     MIDDLE of the slice's scheduled snapshots, in schedule order."""
-    scheduled = [f"s:{day.isoformat()}T{clock}" for day in days
-                 for clock in iag.schedule_for(day)]
+    scheduled = [f"s:{day.isoformat()}T{clock}" for day in days for clock in iag.schedule_for(day)]
     picks = sorted({0, len(scheduled) // 2}) if scheduled else []
     return [scheduled[index] for index in picks]
 
 
-def gap_samples(document: Mapping[str, Any], raw: Mapping[str, Any],
-                days: Sequence[date]) -> dict[str, Any]:
+def gap_samples(
+    document: Mapping[str, Any], raw: Mapping[str, Any], days: Sequence[date]
+) -> dict[str, Any]:
     """Hindsight gap rows for two deterministic boards of one slice, computed
     from the POLICY'S OWN receipts (chosen vs the hindsight best, with the
     aliased feature rows). A board with no evaluable outcome is absent, never
@@ -338,13 +354,17 @@ def gap_samples(document: Mapping[str, Any], raw: Mapping[str, Any],
     if not snapshots:
         return {**out, "reason": "no_scheduled_snapshots"}
     wanted = set(snapshots)
-    receipts = [receipt for receipt in document.get("receipts", [])
-                if str(receipt.get("snapshot")) in wanted]
+    receipts = [
+        receipt
+        for receipt in document.get("receipts", [])
+        if str(receipt.get("snapshot")) in wanted
+    ]
     if not receipts:
         return {**out, "reason": "no_receipts_on_sample_boards"}
     report = hindsight.gap_report(
-        {"policy": document.get("policy"), "sessions": document["sessions"],
-         "receipts": receipts}, raw)
+        {"policy": document.get("policy"), "sessions": document["sessions"], "receipts": receipts},
+        raw,
+    )
     out["boards"] = report["boards"]
     out["totals"] = report["totals"]
     if not report["boards"]:
@@ -364,13 +384,18 @@ def _challenge_dir(root: Path, stamp: str) -> Path:
     return candidate
 
 
-def run_challenge(*, store_root: Path, now: datetime,
-                  lab_root: Path | None = None,
-                  windows: tuple[QuotaWindow, ...] = (),
-                  windows_age_s: float | None = None,
-                  budget: ChallengeBudget | None = None,
-                  rounds: int | None = None, transport: Any = None,
-                  dry_run: bool = False) -> dict[str, Any]:
+def run_challenge(
+    *,
+    store_root: Path,
+    now: datetime,
+    lab_root: Path | None = None,
+    windows: tuple[QuotaWindow, ...] = (),
+    windows_age_s: float | None = None,
+    budget: ChallengeBudget | None = None,
+    rounds: int | None = None,
+    transport: Any = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """One challenge: every selected bundle, the whole policy field, the same
     mechanical accounting, gap samples, and one digest. A dry run computes the
     plan and writes nothing."""
@@ -381,8 +406,13 @@ def run_challenge(*, store_root: Path, now: datetime,
     plan_budget = budget if budget is not None else ChallengeBudget()
     selected = _select_bundles(discover_bundles(store), rounds)
     if not selected:
-        return {"schema": CHALLENGE_SCHEMA, "status": "no_bundles",
-                "at": now.isoformat(), "store_root": str(store), "bundles": []}
+        return {
+            "schema": CHALLENGE_SCHEMA,
+            "status": "no_bundles",
+            "at": now.isoformat(),
+            "store_root": str(store),
+            "bundles": [],
+        }
 
     prepared: list[tuple[Path, dict[str, Any], list[list[date]]]] = []
     for path in selected:
@@ -391,8 +421,7 @@ def run_challenge(*, store_root: Path, now: datetime,
 
     # the gate: a FRESH snapshot gates the model policies; a stale or missing
     # snapshot means the standing conservative budget (the hard caps)
-    fresh = (windows_age_s is not None and windows_age_s <= FRESH_WINDOW_S
-             and bool(windows))
+    fresh = windows_age_s is not None and windows_age_s <= FRESH_WINDOW_S and bool(windows)
     mode = "under_using_gate" if fresh else "standing_budget"
     gated = fresh and not lab.burn_allowed(windows)
     field_policies: list[PolicyEntry] = []
@@ -408,29 +437,42 @@ def run_challenge(*, store_root: Path, now: datetime,
 
     counter = BudgetCounter(plan_budget)
     boards_per_run = _boards_per_run(plan_budget, len(prepared), len(model_runners))
-    budget_view = {"boards_per_round": plan_budget.boards,
-                   "reflections_per_round": plan_budget.reflections,
-                   "total_boards": plan_budget.total_boards,
-                   "boards_used": counter.boards_used,
-                   "reflections_used": 0}
-    rounds_view = [{"bundle": path.name, "vintage": path.parent.name,
-                    "sessions": [d.isoformat() for d in hindsight.all_sessions(raw)],
-                    "slices": [[d.isoformat() for d in part] for part in slices]}
-                   for path, raw, slices in prepared]
-    plan_document = {"schema": CHALLENGE_SCHEMA, "status": "dry_run",
-                     "at": now.isoformat(), "mode": mode, "seed": DEFAULT_SEED,
-                     "store_root": str(store),
-                     "bundles": [path.name for path, _raw, _s in prepared],
-                     "policies": [{"policy": e.policy, "kind": e.kind,
-                                   "skipped_reason": e.skipped_reason}
-                                  for e in field_policies],
-                     "boards_per_run": boards_per_run, "budget": budget_view,
-                     "rounds": rounds_view}
+    budget_view = {
+        "boards_per_round": plan_budget.boards,
+        "reflections_per_round": plan_budget.reflections,
+        "total_boards": plan_budget.total_boards,
+        "boards_used": counter.boards_used,
+        "reflections_used": 0,
+    }
+    rounds_view = [
+        {
+            "bundle": path.name,
+            "vintage": path.parent.name,
+            "sessions": [d.isoformat() for d in hindsight.all_sessions(raw)],
+            "slices": [[d.isoformat() for d in part] for part in slices],
+        }
+        for path, raw, slices in prepared
+    ]
+    plan_document = {
+        "schema": CHALLENGE_SCHEMA,
+        "status": "dry_run",
+        "at": now.isoformat(),
+        "mode": mode,
+        "seed": DEFAULT_SEED,
+        "store_root": str(store),
+        "bundles": [path.name for path, _raw, _s in prepared],
+        "policies": [
+            {"policy": e.policy, "kind": e.kind, "skipped_reason": e.skipped_reason}
+            for e in field_policies
+        ],
+        "boards_per_run": boards_per_run,
+        "budget": budget_view,
+        "rounds": rounds_view,
+    }
     if dry_run:
         return plan_document
 
-    challenge_dir = _challenge_dir(challenge_root(store),
-                                   now.strftime("%Y%m%dT%H%M%SZ"))
+    challenge_dir = _challenge_dir(challenge_root(store), now.strftime("%Y%m%dT%H%M%SZ"))
     run_root = challenge_dir / "runs"
     round_entries: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="desk-challenge-") as tmp:
@@ -445,63 +487,84 @@ def run_challenge(*, store_root: Path, now: datetime,
                 slice_path = Path(tmp) / f"{path.parent.name}-s{slice_index}.json"
                 slice_path.write_text(json.dumps(slice_raw))
                 for entry in runners:
-                    config = lab.LabConfig(bundle=slice_path, policy=entry.policy,
-                                           sessions=len(days),
-                                           boards_cap=boards_per_run,
-                                           lab_root=run_root,
-                                           policy_prompt=entry.prompt)
+                    config = lab.LabConfig(
+                        bundle=slice_path,
+                        policy=entry.policy,
+                        sessions=len(days),
+                        boards_cap=boards_per_run,
+                        lab_root=run_root,
+                        policy_prompt=entry.prompt,
+                    )
                     if entry.kind == "model":
                         # refuses BEFORE the burn when the caps cannot hold it
                         counter.take_boards(boards_per_run)
-                    document = lab.run_lab(config, windows=windows,
-                                           transport=transport, now=now,
-                                           burn_gate=fresh)
+                    document = lab.run_lab(
+                        config, windows=windows, transport=transport, now=now, burn_gate=fresh
+                    )
                     if entry.kind == "model":
                         shown = int(document.get("boards_shown", 0) or 0)
                         counter.refund_boards(max(0, boards_per_run - shown))
                         if document.get("status") == "ok":
                             samples.append(
-                                {"policy": entry.policy, "slice": slice_index,
-                                 "sessions": [d.isoformat() for d in days],
-                                 **gap_samples(document, slice_raw, days)})
+                                {
+                                    "policy": entry.policy,
+                                    "slice": slice_index,
+                                    "sessions": [d.isoformat() for d in days],
+                                    **gap_samples(document, slice_raw, days),
+                                }
+                            )
                     runs[entry.policy].append(document)
-            round_entries.append({
-                "bundle": path.name, "vintage": path.parent.name,
-                "sessions": [d.isoformat() for d in hindsight.all_sessions(raw)],
-                "slices": [[d.isoformat() for d in part] for part in slices],
-                "skipped": skipped,
-                "scorecards": _ranked([scorecard(entry, runs[entry.policy])
-                                       for entry in runners]),
-                "gap_samples": samples})
+            round_entries.append(
+                {
+                    "bundle": path.name,
+                    "vintage": path.parent.name,
+                    "sessions": [d.isoformat() for d in hindsight.all_sessions(raw)],
+                    "slices": [[d.isoformat() for d in part] for part in slices],
+                    "skipped": skipped,
+                    "scorecards": _ranked(
+                        [scorecard(entry, runs[entry.policy]) for entry in runners]
+                    ),
+                    "gap_samples": samples,
+                }
+            )
 
-    archive_after = [{"id": record["id"], "generation": record["generation"],
-                      "stats": record["stats"]}
-                     for record in gepa.load_archive(root)]
+    archive_after = [
+        {"id": record["id"], "generation": record["generation"], "stats": record["stats"]}
+        for record in gepa.load_archive(root)
+    ]
     # an honest status: a challenge whose every round showed zero boards
     # (a probe shard, an empty vintage) executed nothing measurable — say
     # so instead of a plain ok (the first real run shipped exactly that)
-    total_boards = sum(int(sc.get("boards", 0) or 0)
-                       for rnd in round_entries for sc in rnd["scorecards"])
+    total_boards = sum(
+        int(sc.get("boards", 0) or 0) for rnd in round_entries for sc in rnd["scorecards"]
+    )
     status = QUOTA_DRY if gated else ("empty_bundles" if total_boards == 0 else "ok")
     document = {
-        "schema": CHALLENGE_SCHEMA, "status": status,
-        "at": now.isoformat(), "mode": mode, "seed": DEFAULT_SEED,
+        "schema": CHALLENGE_SCHEMA,
+        "status": status,
+        "at": now.isoformat(),
+        "mode": mode,
+        "seed": DEFAULT_SEED,
         "store_root": str(store),
         "bundles": [path.name for path, _raw, _s in prepared],
-        "policies": [{"policy": e.policy, "kind": e.kind,
-                      "skipped_reason": e.skipped_reason}
-                     for e in field_policies],
+        "policies": [
+            {"policy": e.policy, "kind": e.kind, "skipped_reason": e.skipped_reason}
+            for e in field_policies
+        ],
         "boards_per_run": boards_per_run,
         "budget": {**budget_view, "boards_used": counter.boards_used},
-        "windows": {"fresh": fresh, "age_s": windows_age_s,
-                    "under_using": [w.name for w in windows if w.under_using]},
-        "rounds": round_entries, "archive_after": archive_after,
+        "windows": {
+            "fresh": fresh,
+            "age_s": windows_age_s,
+            "under_using": [w.name for w in windows if w.under_using],
+        },
+        "rounds": round_entries,
+        "archive_after": archive_after,
         "untrusted_note": UNTRUSTED_NOTE,
         "promotion": {"promoted": False, "rule": PROMOTION_RULE},
     }
     challenge_dir.mkdir(parents=True, exist_ok=True)
-    (challenge_dir / "digest.json").write_text(json.dumps(document, indent=2,
-                                                          default=str))
+    (challenge_dir / "digest.json").write_text(json.dumps(document, indent=2, default=str))
     (challenge_dir / "digest.md").write_text(_digest_md(document))
     document["digest_dir"] = str(challenge_dir)
     return document
@@ -515,14 +578,15 @@ def _digest_md(document: Mapping[str, Any]) -> str:
     add("")
     add(f"> {document['untrusted_note']}")
     add("")
-    add(f"Mode: {document.get('mode')}; partition seed {document.get('seed')}; "
+    add(
+        f"Mode: {document.get('mode')}; partition seed {document.get('seed')}; "
         f"{len(document.get('rounds', []))} bundle(s); board calls "
         f"{budget.get('boards_used', 0)}/{budget.get('total_boards', 0)} "
         f"(cap {budget.get('boards_per_round', 0)} per round); "
-        f"board cap per run {document.get('boards_per_run')}.")
+        f"board cap per run {document.get('boards_per_run')}."
+    )
     add("")
-    add("## Scorecards (mechanical replay accounting; ranked by summed "
-        "closed-pnl)")
+    add("## Scorecards (mechanical replay accounting; ranked by summed closed-pnl)")
     for entry in document.get("rounds", []):
         add("")
         add(f"### {entry['vintage']} — {entry['bundle']}")
@@ -532,33 +596,39 @@ def _digest_md(document: Mapping[str, Any]) -> str:
         for skip in entry.get("skipped", []):
             add(f"- skipped {skip['policy']}: {skip['reason']}")
         for card in entry.get("scorecards", []):
-            add(f"- {card['policy']} ({card['kind']}): runs {card['runs']}, "
+            add(
+                f"- {card['policy']} ({card['kind']}): runs {card['runs']}, "
                 f"boards {card['boards']}, entered {card['entered']}, "
                 f"wins {card['modeled_wins']}, losses {card['modeled_losses']}, "
                 f"closed pnl {card['closed_pnl_sum']}, worst minimum capital "
                 f"{card['worst_minimum_capital']}, peak reserved "
-                f"{card['peak_open_loss_reserved']}")
+                f"{card['peak_open_loss_reserved']}"
+            )
             add(f"  - run dirs: {', '.join(card['run_dirs'])}")
         for sample in entry.get("gap_samples", []):
-            add(f"- gap sample {sample['policy']} slice {sample['slice']}: "
-                f"{' '.join(sample['snapshots'])}")
+            add(
+                f"- gap sample {sample['policy']} slice {sample['slice']}: "
+                f"{' '.join(sample['snapshots'])}"
+            )
             if sample.get("reason"):
                 add(f"  - none evaluable: {sample['reason']}")
             for board in sample.get("boards", []):
-                add(f"  - gap {board['gap']} at {board['snapshot']}: chosen "
+                add(
+                    f"  - gap {board['gap']} at {board['snapshot']}: chosen "
                     f"{board['chosen']} (outcome {board['chosen_outcome']}) vs "
-                    f"best {board['best']} (outcome {board['best_outcome']})")
+                    f"best {board['best']} (outcome {board['best_outcome']})"
+                )
                 if board.get("chosen_row") is not None:
-                    add("    - chosen row: "
-                        + json.dumps(board["chosen_row"], sort_keys=True))
+                    add("    - chosen row: " + json.dumps(board["chosen_row"], sort_keys=True))
                 if board.get("best_row") is not None:
-                    add("    - best row: "
-                        + json.dumps(board["best_row"], sort_keys=True))
+                    add("    - best row: " + json.dumps(board["best_row"], sort_keys=True))
     add("")
     add("## Archive after the challenge (mechanical stats; nothing promoted)")
     for record in document.get("archive_after", []):
-        add(f"- gepa:{record['id']} (generation {record['generation']}): "
-            + json.dumps(record["stats"], sort_keys=True))
+        add(
+            f"- gepa:{record['id']} (generation {record['generation']}): "
+            + json.dumps(record["stats"], sort_keys=True)
+        )
     if not document.get("archive_after"):
         add("- (empty archive)")
     add("")
@@ -575,20 +645,31 @@ def _cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tree_options.desk challenge run",
         description="The end-to-end challenge game: every policy on every "
-                    "frozen bundle, one mechanical scorecard per policy.")
+        "frozen bundle, one mechanical scorecard per policy.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="score the field over the store's bundles")
-    run.add_argument("--bundles-from", type=Path, default=None,
-                     help="the desk store holding evaluations/intraday-graph "
-                          "(default DESK_STORE)")
-    run.add_argument("--windows", type=Path, default=None,
-                     help="quota snapshot (a FRESH snapshot gates model policies)")
-    run.add_argument("--lab-root", type=Path, default=None,
-                     help="the lab root holding the policy archive")
-    run.add_argument("--rounds", type=int, default=None,
-                     help="play only the newest N bundles (default: all)")
-    run.add_argument("--dry-run", action="store_true",
-                     help="compute and print the plan; write nothing")
+    run.add_argument(
+        "--bundles-from",
+        type=Path,
+        default=None,
+        help="the desk store holding evaluations/intraday-graph (default DESK_STORE)",
+    )
+    run.add_argument(
+        "--windows",
+        type=Path,
+        default=None,
+        help="quota snapshot (a FRESH snapshot gates model policies)",
+    )
+    run.add_argument(
+        "--lab-root", type=Path, default=None, help="the lab root holding the policy archive"
+    )
+    run.add_argument(
+        "--rounds", type=int, default=None, help="play only the newest N bundles (default: all)"
+    )
+    run.add_argument(
+        "--dry-run", action="store_true", help="compute and print the plan; write nothing"
+    )
     args = parser.parse_args(argv)
     store = args.bundles_from if args.bundles_from is not None else paths.store_root()
     now = datetime.now(UTC)
@@ -602,9 +683,15 @@ def _cli(argv: list[str] | None = None) -> int:
             print(f"refused: {error}", file=sys.stderr)
             return 2
     try:
-        document = run_challenge(store_root=store, now=now, lab_root=args.lab_root,
-                                 windows=windows, windows_age_s=age,
-                                 rounds=args.rounds, dry_run=args.dry_run)
+        document = run_challenge(
+            store_root=store,
+            now=now,
+            lab_root=args.lab_root,
+            windows=windows,
+            windows_age_s=age,
+            rounds=args.rounds,
+            dry_run=args.dry_run,
+        )
     except (BudgetRefused, ValueError, OSError, KeyError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2

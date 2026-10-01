@@ -1224,11 +1224,15 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
     def score() -> dict[str, Any]:
         doc = longrun.score_run(boards, arms_used, receipts, OutcomeCache(outcome), protocol,
                                 benchmarks=benchmarks, receipts_files=files,
-                                run_id=run_dir.name, plan_created=plan.get("created"),
-                                complete=complete, clock=clock, skill_options=cfg.get("skill"))
+                                run_id=run_dir.name,
+                                plan_created=None,  # a re-score under a changed protocol
+                                # borrows no pre-registration of its own
+                                complete=complete, clock=clock, skill_options=cfg.get("skill"),
+                                assessment_class="retrospective_descriptive")
         if named:  # a subset digest is never mistaken for the full pairing
             doc["headline"] = (f"ARM SUBSET ({doc['boards']['scored']} boards where all "
                                f"{len(arms_used)} arms answered) - {doc['headline']}")
+        doc["headline"] = f"RETROSPECTIVE DESCRIPTIVE - {doc['headline']}"
         doc["redigest"] = {"at": clock().isoformat(), "model_calls": 0,
                            "source": "receipts on disk + the outcome table (no model, no bundle)",
                            "table": str(table_path), "notes": notes,

@@ -75,9 +75,7 @@ def load_watchlist(
     stamp = (now or datetime.now()).isoformat()
     doc = {
         "version": 1,
-        "symbols": [
-            {"symbol": s, "origin": "seed", "added_at": stamp} for s in (seed or [])
-        ],
+        "symbols": [{"symbol": s, "origin": "seed", "added_at": stamp} for s in (seed or [])],
         "proposals": [],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,6 +193,7 @@ def record_proposals(
         )
         blocked.add(item["symbol"])
         added.append(pid)
+
     # Prune long-decided entries. The size cap only ever evicts history:
     # pending proposals and dismissals still inside their suppression
     # window are load-bearing (approve-by-id, no-revival) and always kept.
@@ -207,13 +206,14 @@ def record_proposals(
     retained = [
         p
         for p in props
-        if _protected(p)
-        or (_age_seconds(p.get("decided_at"), now) or 0) < DECIDED_RETAIN_SECONDS
+        if _protected(p) or (_age_seconds(p.get("decided_at"), now) or 0) < DECIDED_RETAIN_SECONDS
     ]
     protected_n = sum(1 for p in retained if _protected(p))
     history_budget = max(0, MAX_PROPOSALS_KEPT - protected_n)
     history = [p for p in retained if not _protected(p)]
-    keep_history = {id(p) for p in history[len(history) - history_budget :]} if history_budget else set()
+    keep_history = (
+        {id(p) for p in history[len(history) - history_budget :]} if history_budget else set()
+    )
     doc["proposals"] = [p for p in retained if _protected(p) or id(p) in keep_history]
     if run_note is not None:
         doc["last_proposal_run"] = {**run_note, "at": now.isoformat(), "added": len(added)}
@@ -228,9 +228,7 @@ def _decide(
     proposal_id: str | None,
     stamp: str,
 ) -> dict[str, Any]:
-    prop = next(
-        (p for p in doc.get("proposals", []) if p.get("id") == proposal_id), None
-    )
+    prop = next((p for p in doc.get("proposals", []) if p.get("id") == proposal_id), None)
     if prop is None:
         return {"status": "invalid", "detail": f"unknown proposal {proposal_id!r}"}
     if prop.get("status") != "pending":
@@ -248,4 +246,3 @@ def _decide(
             doc["symbols"] = [row for row in doc["symbols"] if row["symbol"] != sym]
     _save(state_dir, doc)
     return {"status": prop["status"], "symbol": sym, "proposal_id": prop["id"]}
-

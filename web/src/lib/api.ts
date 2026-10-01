@@ -14,7 +14,7 @@ import type {
   SymbolOptions,
 } from './types'
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
     headers: { Accept: 'application/json', ...init?.headers },
@@ -312,3 +312,5 @@ export const getForecastResult = (run_id: string): Promise<ForecastRunResultResp
 
 // Re-export for callers that already imported this from the old path.
 export type { CandidateResultSummary as CandidateResult }
+
+export const getQuantLab = (): Promise<import('./types').QuantLabProjection> => fetchJson('api/research/quant')

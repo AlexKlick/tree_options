@@ -13,18 +13,38 @@ from tree_options.desk.lab_scoreboard import (
 )
 
 
-def _run(lab: Path, name: str, policy: str, *, pnl: str, minimum: str = "5000",
-         boards: int = 10, entered: int = 5, wins: int = 2, calls: int = 10,
-         failures: int = 0) -> None:
+def _run(
+    lab: Path,
+    name: str,
+    policy: str,
+    *,
+    pnl: str,
+    minimum: str = "5000",
+    boards: int = 10,
+    entered: int = 5,
+    wins: int = 2,
+    calls: int = 10,
+    failures: int = 0,
+) -> None:
     run_dir = lab / name
     run_dir.mkdir(parents=True)
-    (run_dir / "summary.json").write_text(json.dumps({
-        "policy": policy, "boards_shown": boards, "model_calls": calls,
-        "model_failures": failures,
-        "summary": {"entered": entered, "modeled_wins": wins,
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "policy": policy,
+                "boards_shown": boards,
+                "model_calls": calls,
+                "model_failures": failures,
+                "summary": {
+                    "entered": entered,
+                    "modeled_wins": wins,
                     "modeled_losses": entered - wins,
                     "closed_capital_proxy": str(Decimal("5000") + Decimal(pnl)),
-                    "minimum_closed_capital_proxy": minimum}}))
+                    "minimum_closed_capital_proxy": minimum,
+                },
+            }
+        )
+    )
 
 
 def test_aggregate_folds_runs_and_ignores_torn_files(tmp_path: Path):

@@ -18,38 +18,60 @@ NOW = datetime(2026, 9, 27, 15, 0, tzinfo=UTC)
 
 def profile() -> CapitalProfile:
     return CapitalProfile(
-        profile_id="paper-5k-canary", revision=1, intended_capital=Decimal("5000"),
-        risk_style="operator_defined", goals=("operational_canary",),
+        profile_id="paper-5k-canary",
+        revision=1,
+        intended_capital=Decimal("5000"),
+        risk_style="operator_defined",
+        goals=("operational_canary",),
         allowed_strategy_versions=("operational-canary/1",),
-        max_loss_per_trade=Decimal("300"), max_open_loss=Decimal("1500"),
-        max_daily_loss=Decimal("300"), horizon_days=1,
+        max_loss_per_trade=Decimal("300"),
+        max_open_loss=Decimal("1500"),
+        max_daily_loss=Decimal("300"),
+        horizon_days=1,
     )
 
 
 def facts() -> CanaryFacts:
     return CanaryFacts(
-        intent_sha256="a" * 64, observed_account_id="DUT143714",
-        mandate_account_id="DUT143714", paper_gateway_verified=True,
+        intent_sha256="a" * 64,
+        observed_account_id="DUT143714",
+        mandate_account_id="DUT143714",
+        paper_gateway_verified=True,
         account_observed_at=NOW - timedelta(seconds=20),
-        quote_observed_at=NOW - timedelta(seconds=10), checked_at=NOW,
-        owner_epoch="epoch-1", owner_healthy=True,
-        legacy_positions=0, legacy_working_orders=0, package_quantity=1,
-        contract_verified=True, quote_complete=True,
-        defined_risk_verified=True, assignment_plan_verified=True,
-        protective_exit_ready=True, worst_case_loss=Decimal("250"),
+        quote_observed_at=NOW - timedelta(seconds=10),
+        checked_at=NOW,
+        owner_epoch="epoch-1",
+        owner_healthy=True,
+        legacy_positions=0,
+        legacy_working_orders=0,
+        package_quantity=1,
+        contract_verified=True,
+        quote_complete=True,
+        defined_risk_verified=True,
+        assignment_plan_verified=True,
+        protective_exit_ready=True,
+        worst_case_loss=Decimal("250"),
         temporary_assignment_exposure=Decimal("4000"),
-        broker_margin_change=Decimal("500"), current_open_loss=Decimal("0"),
+        broker_margin_change=Decimal("500"),
+        current_open_loss=Decimal("0"),
         realized_daily_loss=Decimal("0"),
     )
 
 
 def package() -> LegStructure:
     return LegStructure(
-        id="manual-canary-1", underlying="XYZ", kind="debit_vertical",
-        legs=(Leg(right="P", action="BUY", strike=Decimal("100"), expiry=date(2026, 10, 16)),
-              Leg(right="P", action="SELL", strike=Decimal("98"), expiry=date(2026, 10, 16))),
-        quantity=1, entry_date=date(2026, 9, 28), exit_deadline=date(2026, 10, 1),
-        limit=Decimal("1.50"), exits=ExitRules(touch=True, breach=False),
+        id="manual-canary-1",
+        underlying="XYZ",
+        kind="debit_vertical",
+        legs=(
+            Leg(right="P", action="BUY", strike=Decimal("100"), expiry=date(2026, 10, 16)),
+            Leg(right="P", action="SELL", strike=Decimal("98"), expiry=date(2026, 10, 16)),
+        ),
+        quantity=1,
+        entry_date=date(2026, 9, 28),
+        exit_deadline=date(2026, 10, 1),
+        limit=Decimal("1.50"),
+        exits=ExitRules(touch=True, breach=False),
     )
 
 
@@ -58,46 +80,74 @@ def test_fresh_flat_paper_canary_is_reviewable_not_authorized() -> None:
 
 
 def test_account_and_owner_fail_closed() -> None:
-    candidate = replace(facts(), observed_account_id="U123", paper_gateway_verified=False,
-                        owner_healthy=False, legacy_positions=1, legacy_working_orders=1)
+    candidate = replace(
+        facts(),
+        observed_account_id="U123",
+        paper_gateway_verified=False,
+        owner_healthy=False,
+        legacy_positions=1,
+        legacy_working_orders=1,
+    )
     assert review_canary(profile(), candidate) == (
-        "paper_account_mismatch_or_unverified", "broker_owner_unhealthy", "legacy_book_not_flat",
+        "paper_account_mismatch_or_unverified",
+        "broker_owner_unhealthy",
+        "legacy_book_not_flat",
     )
 
 
 def test_stale_or_future_observations_block() -> None:
-    candidate = replace(facts(), account_observed_at=NOW - timedelta(seconds=61),
-                        quote_observed_at=NOW + timedelta(seconds=1))
+    candidate = replace(
+        facts(),
+        account_observed_at=NOW - timedelta(seconds=61),
+        quote_observed_at=NOW + timedelta(seconds=1),
+    )
     assert review_canary(profile(), candidate) == (
-        "account_stale_or_future", "quote_stale_or_future",
+        "account_stale_or_future",
+        "quote_stale_or_future",
     )
 
 
 def test_risk_and_unknowns_block_even_in_large_paper_account() -> None:
-    candidate = replace(facts(), worst_case_loss=Decimal("301"),
-                        temporary_assignment_exposure=Decimal("5001"),
-                        broker_margin_change=None, current_open_loss=None,
-                        realized_daily_loss=None)
+    candidate = replace(
+        facts(),
+        worst_case_loss=Decimal("301"),
+        temporary_assignment_exposure=Decimal("5001"),
+        broker_margin_change=None,
+        current_open_loss=None,
+        realized_daily_loss=None,
+    )
     assert review_canary(profile(), candidate) == (
-        "trade_loss_cap_exceeded", "assignment_exposure_exceeds_budget",
-        "broker_margin_unknown", "open_exposure_unknown", "daily_loss_unknown",
+        "trade_loss_cap_exceeded",
+        "assignment_exposure_exceeds_budget",
+        "broker_margin_unknown",
+        "open_exposure_unknown",
+        "daily_loss_unknown",
     )
 
 
 def test_daily_and_open_reservation_caps() -> None:
-    candidate = replace(facts(), current_open_loss=Decimal("1300"),
-                        realized_daily_loss=Decimal("100"))
+    candidate = replace(
+        facts(), current_open_loss=Decimal("1300"), realized_daily_loss=Decimal("100")
+    )
     assert review_canary(profile(), candidate) == (
-        "open_loss_cap_exceeded", "daily_loss_cap_exceeded",
+        "open_loss_cap_exceeded",
+        "daily_loss_cap_exceeded",
     )
 
 
 def test_unchecked_package_and_exit_block() -> None:
-    candidate = replace(facts(), package_quantity=2, contract_verified=False,
-                        assignment_plan_verified=False, protective_exit_ready=False)
+    candidate = replace(
+        facts(),
+        package_quantity=2,
+        contract_verified=False,
+        assignment_plan_verified=False,
+        protective_exit_ready=False,
+    )
     assert review_canary(profile(), candidate) == (
-        "canary_quantity_not_one", "contract_or_quote_unverified",
-        "package_or_assignment_risk_unverified", "protective_exit_unavailable",
+        "canary_quantity_not_one",
+        "contract_or_quote_unverified",
+        "package_or_assignment_risk_unverified",
+        "protective_exit_unavailable",
     )
 
 
@@ -114,13 +164,16 @@ def test_naive_snapshot_is_rejected() -> None:
 
 def test_package_geometry_and_exact_intent_are_bound() -> None:
     structure = package()
-    candidate = replace(facts(), intent_sha256=package_intent_sha256(
-        profile(), structure, "DUT143714", "epoch-1"),
-                        worst_case_loss=structure.max_loss())
+    candidate = replace(
+        facts(),
+        intent_sha256=package_intent_sha256(profile(), structure, "DUT143714", "epoch-1"),
+        worst_case_loss=structure.max_loss(),
+    )
     assert review_canary_package(profile(), structure, candidate) == ()
     changed = structure.model_copy(update={"limit": Decimal("1.60")})
     assert review_canary_package(profile(), changed, candidate) == (
-        "package_loss_mismatch", "intent_hash_mismatch",
+        "package_loss_mismatch",
+        "intent_hash_mismatch",
     )
     different_policy = replace(profile(), revision=2)
     assert review_canary_package(different_policy, structure, candidate) == (

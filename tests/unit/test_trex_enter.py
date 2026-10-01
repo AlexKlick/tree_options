@@ -185,9 +185,7 @@ def _enterer(tmp_path: Path, fake: FakeEntryIbkr, clock_dt: datetime) -> Enterer
 
 
 class TestCumulativeEntryAccounting:
-    def test_reprice_after_partial_fill_buys_only_the_remainder(
-        self, tmp_path: Path
-    ) -> None:
+    def test_reprice_after_partial_fill_buys_only_the_remainder(self, tmp_path: Path) -> None:
         fake = FakeEntryIbkr()
         ent = _enterer(tmp_path, fake, _at(10, 0))
         ent._tick()  # first placement: BUY 5
@@ -205,9 +203,7 @@ class TestCumulativeEntryAccounting:
 
         assert fake.placed[-1] == ("nvda-oct", "BUY", 3, Decimal("0.32"))
 
-    def test_replacement_fill_completes_cumulative_with_blended_avg(
-        self, tmp_path: Path
-    ) -> None:
+    def test_replacement_fill_completes_cumulative_with_blended_avg(self, tmp_path: Path) -> None:
         fake = FakeEntryIbkr()
         ent = _enterer(tmp_path, fake, _at(10, 0))
         ent._tick()
@@ -544,8 +540,9 @@ class TestFlattenAcrossClients:
 
         enter_ib, monitor_ib = FakeEntryIbkr(), FakeEntryIbkr()
         ent = _enterer(tmp_path, enter_ib, _at(10, 0))
-        mon = Monitor(_plan(), monitor_ib, BookState(["nvda-oct"]), ent.run_dir,
-                      clock=lambda: _at(10, 1))
+        mon = Monitor(
+            _plan(), monitor_ib, BookState(["nvda-oct"]), ent.run_dir, clock=lambda: _at(10, 1)
+        )
         ent._tick()  # enter.py's BUY is working at the broker
         return mon, ent, enter_ib, monitor_ib
 

@@ -113,10 +113,11 @@ import statistics
 import subprocess
 import sys
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, ClassVar
 
 for _name in (
     "OPENBLAS_NUM_THREADS",
@@ -290,7 +291,7 @@ class VicregDiverged(Refused):
     NOT_EVALUABLE by operator ruling only. Never tuned away: no lr change,
     no clipping, no re-init is permitted without a NEW registration."""
 
-    checkpoints: dict[int, tuple[float, float, float]] = {}
+    checkpoints: ClassVar[dict[int, tuple[float, float, float]]] = {}
 
 
 # ---- sealed inputs -----------------------------------------------------------------------
@@ -372,7 +373,9 @@ def load_and_bind() -> Inputs:
         label = f"artifacts/desk-store/indices/{sym}.csv"
         want = pinning.get(label)
         if want is None or want != sha:
-            raise Refused(f"{label}: sha256 {sha} != the menu's pinned {want} -- swapped inputs refuse")
+            raise Refused(
+                f"{label}: sha256 {sha} != the menu's pinned {want} -- swapped inputs refuse"
+            )
         index_sha[label] = sha
         rows = read_store(path)
         try:
@@ -503,9 +506,7 @@ class FeatureTables:
     idx_raw: dict[str, list[float | None]]  # feat -> grid list (lagged joins)
 
 
-def _lagged_level(
-    rows: Sequence[tuple[str, float]], grid: Sequence[str]
-) -> list[float | None]:
+def _lagged_level(rows: Sequence[tuple[str, float]], grid: Sequence[str]) -> list[float | None]:
     """L(i) = the last index observation dated on or before grid[i-1]
     (INV-02: the one-session lag, identical on challenger and incumbent)."""
     dates = [d for d, _v in rows]
@@ -550,7 +551,9 @@ def build_feature_tables(
             for lst, n in ((r1, 1), (r5, 5), (r21, 21), (r63, 63)):
                 if i >= n and cl[i] is not None and cl[i - n] is not None and cl[i - n] > 0:
                     lst[i] = math.log(cl[i] / cl[i - n])
-        lnv: list[float | None] = [math.log(x) if x is not None and x > 0 else None for x in v_series]
+        lnv: list[float | None] = [
+            math.log(x) if x is not None and x > 0 else None for x in v_series
+        ]
         lnrv20: list[float | None] = [None] * len(grid)
         for i in range(len(grid)):
             tm = trailing_mean(v_series, i, 20)
@@ -660,24 +663,34 @@ def residualize_v4(
     tset = set(train_ords)
     out = np.full((len(SINGLES26), n_sessions, len(EQUITY_FEATURES)), np.nan)
     for fi, feat in enumerate(EQUITY_FEATURES):
-        reg = {etf: np.array(
-            [np.nan if eq_raw[etf][feat][i] is None else eq_raw[etf][feat][i] for i in range(n_sessions)]
-        ) for etf in MARKET_TRIO}
+        reg = {
+            etf: np.array(
+                [
+                    np.nan if eq_raw[etf][feat][i] is None else eq_raw[etf][feat][i]
+                    for i in range(n_sessions)
+                ]
+            )
+            for etf in MARKET_TRIO
+        }
         for ni, name in enumerate(SINGLES26):
             sector = SECTOR_MAP.get(name)
             cols = [reg[e] for e in MARKET_TRIO]
             if sector is not None:
-                cols.append(np.array(
-                    [
-                        np.nan if eq_raw[sector][feat][i] is None else eq_raw[sector][feat][i]
-                        for i in range(n_sessions)
-                    ]
-                ))
+                cols.append(
+                    np.array(
+                        [
+                            np.nan if eq_raw[sector][feat][i] is None else eq_raw[sector][feat][i]
+                            for i in range(n_sessions)
+                        ]
+                    )
+                )
             y = np.array(
-                [np.nan if eq_raw[name][feat][i] is None else eq_raw[name][feat][i]
-                 for i in range(n_sessions)]
+                [
+                    np.nan if eq_raw[name][feat][i] is None else eq_raw[name][feat][i]
+                    for i in range(n_sessions)
+                ]
             )
-            X = np.column_stack([np.ones(n_sessions)] + cols)
+            X = np.column_stack([np.ones(n_sessions), *cols])
             mask = np.isfinite(X).all(axis=1) & np.isfinite(y)
             tr_mask = np.zeros(n_sessions, dtype=bool)
             tr_mask[list(tset)] = True
@@ -743,9 +756,9 @@ def nw_t(series: Sequence[float], lag: int) -> float | None:
         return None
     m = float(x.mean())
     s = float(((x - m) ** 2).mean())
-    for l in range(1, min(lag, n - 1) + 1):
-        gl = float(((x[l:] - m) * (x[:-l] - m)).mean())
-        s += 2.0 * (1.0 - l / (lag + 1.0)) * gl
+    for lag_index in range(1, min(lag, n - 1) + 1):
+        gl = float(((x[lag_index:] - m) * (x[:-lag_index] - m)).mean())
+        s += 2.0 * (1.0 - lag_index / (lag + 1.0)) * gl
     if s <= 0.0:
         return None
     return m / math.sqrt(s / n)
@@ -754,7 +767,9 @@ def nw_t(series: Sequence[float], lag: int) -> float | None:
 # ---- VICReg-linear (V3): plain numpy, deterministic, auditable ----------------------------
 
 
-def vicreg_fit(X_all: np.ndarray, X_prev: np.ndarray, X_cur: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+def vicreg_fit(
+    X_all: np.ndarray, X_prev: np.ndarray, X_cur: np.ndarray, k: int
+) -> tuple[np.ndarray, np.ndarray]:
     """Full-batch plain GD on
     mean||X_prev W A - X_cur W||^2 + lv sum_j max(0,1-sd_j)^2 + lc sum_{i!=j} C_ij^2
     with population sd/covariance over ALL training rows; init W, A from
@@ -765,7 +780,7 @@ def vicreg_fit(X_all: np.ndarray, X_prev: np.ndarray, X_cur: np.ndarray, k: int)
     A = rng.standard_normal((k, k)) * 1e-2
     n = X_all.shape[0]
     m = X_prev.shape[0]
-    checkpoints: dict[int, tuple[float, float, float]] = {}
+    checkpoints: ClassVar[dict[int, tuple[float, float, float]]] = {}
     for it in range(GD_ITERS):
         Z = X_all @ W
         Zp = X_prev @ W
@@ -861,7 +876,9 @@ def _state_tensor(
     sd = np.nanstd(tr_idx, axis=0, ddof=0)
     zidx = (raw_idx - mu) / sd
     zidx[:, sd <= 0] = np.nan
-    S = np.concatenate([eq, np.broadcast_to(zidx, (len(roster), n_sessions, len(INDEX_FEATURES)))], axis=2)
+    S = np.concatenate(
+        [eq, np.broadcast_to(zidx, (len(roster), n_sessions, len(INDEX_FEATURES)))], axis=2
+    )
     return S, mu, sd
 
 
@@ -897,7 +914,7 @@ def fit_vintage(
             m = int(np.argmax(np.abs(V[:, j])))
             if V[m, j] < 0:
                 V[:, j] = -V[:, j]
-        flat = np.full(S.shape[:2] + (k_eff,), np.nan)
+        flat = np.full((*S.shape[:2], k_eff), np.nan)
         proj = (S - mu) @ V
         flat[complete] = proj[complete]
         ridge_a = np.zeros(k_eff)
@@ -918,7 +935,9 @@ def fit_vintage(
                 xs.extend(zv.tolist())
                 ys.extend(zu.tolist())
             if len(xs) < 10:
-                raise Refused(f"vintage {quarter}: dim {j} has {len(xs)} ridge pairs -- inputs moved")
+                raise Refused(
+                    f"vintage {quarter}: dim {j} has {len(xs)} ridge pairs -- inputs moved"
+                )
             x = np.asarray(xs)
             y = np.asarray(ys)
             sx = float(x.sum())
@@ -953,7 +972,7 @@ def fit_vintage(
         X_prev = np.vstack(prev_rows)
         X_cur = np.vstack(cur_rows)
         W, A = vicreg_fit(X_all, X_prev, X_cur, k_eff)
-        latent = np.full(S.shape[:2] + (k_eff,), np.nan)
+        latent = np.full((*S.shape[:2], k_eff), np.nan)
         proj = S @ W
         latent[complete] = proj[complete]
         ridge_a = ridge_b = None
@@ -1061,7 +1080,9 @@ def run_config(inputs: Inputs, cfg: Mapping[str, Any], ft: FeatureTables) -> Con
     vintages: list[Vintage] = []
     for (year, month), first_iso in zip(REFIT_QUARTERS, inputs.refit_first_iso, strict=True):
         vintages.append(
-            fit_vintage(ft, roster, cfg, f"{year:04d}-{month:02d}", first_iso, inputs.ordinals[first_iso])
+            fit_vintage(
+                ft, roster, cfg, f"{year:04d}-{month:02d}", first_iso, inputs.ordinals[first_iso]
+            )
         )
 
     def vintage_in_force(ord_prev: int) -> Vintage | None:
@@ -1120,7 +1141,9 @@ def run_config(inputs: Inputs, cfg: Mapping[str, Any], ft: FeatureTables) -> Con
         fin_x = np.isfinite(sel_x)
         fin_l = np.isfinite(sel_l)
         fin_a = np.isfinite(sel_a)
-        rows[-1]["ic_xsmom"] = spearman(sel_x[fin_x], r[fin_x]) if fin_x.sum() >= BREADTH_MIN_NAMES else None
+        rows[-1]["ic_xsmom"] = (
+            spearman(sel_x[fin_x], r[fin_x]) if fin_x.sum() >= BREADTH_MIN_NAMES else None
+        )
         rows[-1]["ic_lnrv21_control"] = (
             spearman(-sel_l[fin_l], r[fin_l]) if fin_l.sum() >= BREADTH_MIN_NAMES else None
         )
@@ -1130,9 +1153,7 @@ def run_config(inputs: Inputs, cfg: Mapping[str, Any], ft: FeatureTables) -> Con
         # future-poison sample: the FIRST scored origin of each vintage segment
         if vin.quarter not in sampled_segments:
             sampled_segments.add(vin.quarter)
-            sampled_surprises[u_iso] = {
-                roster[r_]: float(s_raw[r_]) for r_ in np.nonzero(ok)[0]
-            }
+            sampled_surprises[u_iso] = {roster[r_]: float(s_raw[r_]) for r_ in np.nonzero(ok)[0]}
 
     if origins_scored == 0:
         raise Refused(
@@ -1185,7 +1206,9 @@ def run_config(inputs: Inputs, cfg: Mapping[str, Any], ft: FeatureTables) -> Con
                 else None
             ),
             "h": h,
-            "roster": f"chain-35 ({len(roster)})" if variant != "V4" else f"26 singles ({len(roster)})",
+            "roster": f"chain-35 ({len(roster)})"
+            if variant != "V4"
+            else f"26 singles ({len(roster)})",
             "direction_convention": "ic = Spearman(-std_surprise, forward_return); mean > 0 is the declared direction",
         },
         "geometry": {
@@ -1261,7 +1284,9 @@ def run_poison(
             sym: tuple((d, v) for d, v in rows if d <= u_iso)
             for sym, rows in inputs.index_rows.items()
         }
-        ft_t = build_feature_tables(bars_t, idx_t, grid_t, tuple(sorted(set(inputs.chain35) | set(roster))))
+        ft_t = build_feature_tables(
+            bars_t, idx_t, grid_t, tuple(sorted(set(inputs.chain35) | set(roster)))
+        )
         vin_t = fit_vintage(ft_t, roster, cfg, quarter, first_iso, inputs.ordinals[first_iso])
         s_t = surprise_at(vin_t, list(range(len(roster))), iu - h, iu)
         max_diff = 0.0
@@ -1318,7 +1343,9 @@ def _stamp(inputs: Inputs, cfg: Mapping[str, Any]) -> dict[str, Any]:
         "tnull_calibration_v3": {
             "path": str(TNULL_V3_PATH),
             "verdict": inputs.tnull_v3.get("verdict", {}).get("slot"),
-            "registration_menu_sha256": inputs.tnull_v3.get("stamp", {}).get("registration_menu_sha256"),
+            "registration_menu_sha256": inputs.tnull_v3.get("stamp", {}).get(
+                "registration_menu_sha256"
+            ),
         },
         "git_sha": _git_head(REPO_ROOT),
         "runner_sha256": _sha256_file(Path(__file__).resolve()),
@@ -1411,8 +1438,12 @@ def _menu_slot(inputs: Inputs) -> Mapping[str, Any]:
 def phase_plan() -> int:
     inputs = load_and_bind()
     b_table = inputs.tnull_v3.get("baseline", {}).get("B", {})
-    print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified); slot doc {inputs.slot_doc_sha256[:16]}...")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
+    print(
+        f"menu sha256 {inputs.menu_sha256} (sidecar-verified); slot doc {inputs.slot_doc_sha256[:16]}..."
+    )
+    print(
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
+    )
     print(f"cutoff (earliest last session, chain35): {inputs.cutoff_iso}")
     print(f"grid: {len(inputs.grid)} panel-union sessions {inputs.grid[0]}..{inputs.grid[-1]}")
     print(
@@ -1430,7 +1461,9 @@ def phase_plan() -> int:
     for shape in ("xsmom", "event"):
         row = b_table.get(shape, {}).get("jepa-outer", {})
         if row:
-            print(f"B[{shape}][jepa-outer] = {row.get('B_net_per_trade_mean')} (disclosure only; jepa criteria are rank-relative)")
+            print(
+                f"B[{shape}][jepa-outer] = {row.get('B_net_per_trade_mean')} (disclosure only; jepa criteria are rank-relative)"
+            )
     ne_windows = sorted({c.get("window") for c in inputs.tnull_v3.get("not_evaluable_cells", [])})
     print(f"null NOT_EVALUABLE windows (do not gate jepa; disclosed): {ne_windows}")
     print(f"registry db: {REGISTRY_PATH}; artifacts: {JEPA_DIR}")
@@ -1485,7 +1518,9 @@ def phase_execute() -> int:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise Refused("another jepa-filter execution holds the lock -- one run at a time") from None
+            raise Refused(
+                "another jepa-filter execution holds the lock -- one run at a time"
+            ) from None
         registry = _open_registry()
         try:
             # the shared feature pass over the chain-35 panel (SHARED flock
@@ -1513,9 +1548,7 @@ def phase_execute() -> int:
                     # no outcome, no artifact -- the divergence crash is the
                     # defect; record it and continue (one defect record).
                     if artifact.exists() or registry.has_outcome(trial_id):
-                        raise Refused(
-                            f"{trial_id} is RUNNING with an outcome/artifact -- refusing"
-                        )
+                        raise Refused(f"{trial_id} is RUNNING with an outcome/artifact -- refusing")
                     registry.fail(
                         trial_id,
                         "interrupted-execution crash remnant (2026-09-24 run,"
@@ -1669,8 +1702,8 @@ def phase_select() -> int:
                     {
                         "config_id": cfg["config_id"],
                         "defect": "VICReg-linear optimizer divergence under the pinned"
-                                  " constants (GD 2000 iters, lr 1e-2, PCG64(22) init"
-                                  " x 1e-2) on the registered inputs",
+                        " constants (GD 2000 iters, lr 1e-2, PCG64(22) init"
+                        " x 1e-2) on the registered inputs",
                         "ruling_requested": (
                             "NOT_EVALUABLE stands unless the operator rules otherwise"
                             " (slot doc: defective runs are NOT_EVALUABLE by operator"
@@ -1689,14 +1722,8 @@ def phase_select() -> int:
 
     selection: dict[str, Any] = {"SEL-a": {}, "SEL-b": {}, "FLIP": {}}
     for h in (5, 21):
-        at_h = {
-            cid: row
-            for cid, row in per_config.items()
-            if row["h"] == h
-        }
-        evaluable = {
-            cid: row for cid, row in at_h.items() if row["status"] == "INNER-RECORDED"
-        }
+        at_h = {cid: row for cid, row in per_config.items() if row["h"] == h}
+        evaluable = {cid: row for cid, row in at_h.items() if row["status"] == "INNER-RECORDED"}
         positive = {cid: row for cid, row in evaluable.items() if row["mean_ic"] > 0.0}
         if positive:
             best_val = max(row["mean_ic"] for row in positive.values())

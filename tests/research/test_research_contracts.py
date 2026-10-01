@@ -126,8 +126,12 @@ def test_evidence_envelope_to_dict_carries_source_artifacts_as_pairs() -> None:
         point_session=date(2026, 9, 25),
         hypothesis="signed-roll-vol targeting",
         estimand="per-trade ROI",
-        exact_versions={"strategy": "vix_term", "data": "synthetic_v1",
-                        "miner": "v1", "playbook": "v2"},
+        exact_versions={
+            "strategy": "vix_term",
+            "data": "synthetic_v1",
+            "miner": "v1",
+            "playbook": "v2",
+        },
         cohort_membership=("tnull", "vrp-cond"),
         registered_or_exploratory=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         source_artifacts=(("artifacts/campaign-2026-09/vix_term/sealed-round.json", "abc"),),
@@ -135,6 +139,8 @@ def test_evidence_envelope_to_dict_carries_source_artifacts_as_pairs() -> None:
     )
     d = env.to_dict()
     assert d["exact_versions"]["strategy"] == "vix_term"
-    assert d["source_artifacts"][0] == {"path": "artifacts/campaign-2026-09/vix_term/sealed-round.json",
-                                         "sha256": "abc"}
+    assert d["source_artifacts"][0] == {
+        "path": "artifacts/campaign-2026-09/vix_term/sealed-round.json",
+        "sha256": "abc",
+    }
     assert d["registered_or_exploratory"] == "before_entry_window_end"

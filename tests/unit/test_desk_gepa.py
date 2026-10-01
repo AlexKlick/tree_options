@@ -23,28 +23,26 @@ T0 = datetime(2026, 9, 28, 20, 0, tzinfo=UTC)
 class ReflectionTransport:
     """Returns one fixed JSON reply; records every call."""
 
-    def __init__(self, reply: dict[str, Any] | None = None,
-                 status: int = 200) -> None:
+    def __init__(self, reply: dict[str, Any] | None = None, status: int = 200) -> None:
         self.reply = reply or {}
         self.status = status
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.calls.append({"url": url, "body": json.loads(body)})
         content = json.dumps(self.reply) if self.status == 200 else ""
-        envelope = {"choices": [{"message": {"content": content},
-                                 "finish_reason": "stop"}]}
+        envelope = {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
         return self.status, json.dumps(envelope).encode()
 
 
-def _policy(prompt: str, *, pnl: str = "0", worst: str | None = None,
-            runs: int = 1) -> dict[str, Any]:
-    record = gepa.new_policy(prompt, generation=0, parents=[],
-                             created_by="test")
+def _policy(
+    prompt: str, *, pnl: str = "0", worst: str | None = None, runs: int = 1
+) -> dict[str, Any]:
+    record = gepa.new_policy(prompt, generation=0, parents=[], created_by="test")
     stats = gepa.empty_stats()
-    stats.update({"closed_pnl_sum": pnl, "worst_minimum_capital": worst,
-                  "runs": runs})
+    stats.update({"closed_pnl_sum": pnl, "worst_minimum_capital": worst, "runs": runs})
     record["stats"] = stats
     return record
 
@@ -89,19 +87,27 @@ def test_pareto_unmeasured_policies_never_dominate_measured() -> None:
 
 
 def test_reflection_accepts_valid_and_drops_malformed_variants() -> None:
-    transport = ReflectionTransport({
-        "diagnosis": "the policy leaves gaps where premium moved first",
-        "revised_prompt": "Enter only when the premium is fresh and wide.",
-        "variants": ["Skip after two losses.", 7, "",
-                     "Take debit after a down move.", "a fifth variant",
-                     None]})
-    result = gepa.reflect("zai", [{"snapshot": "s:x", "gap": "12.0"}],
-                          "champion prompt", transport=transport)
+    transport = ReflectionTransport(
+        {
+            "diagnosis": "the policy leaves gaps where premium moved first",
+            "revised_prompt": "Enter only when the premium is fresh and wide.",
+            "variants": [
+                "Skip after two losses.",
+                7,
+                "",
+                "Take debit after a down move.",
+                "a fifth variant",
+                None,
+            ],
+        }
+    )
+    result = gepa.reflect(
+        "zai", [{"snapshot": "s:x", "gap": "12.0"}], "champion prompt", transport=transport
+    )
     assert result["status"] == "ok"
     assert result["revised_prompt"] == "Enter only when the premium is fresh and wide."
     # non-strings, empties dropped; the first 2 valid variants kept
-    assert result["variants"] == ["Skip after two losses.",
-                                  "Take debit after a down move."]
+    assert result["variants"] == ["Skip after two losses.", "Take debit after a down move."]
     assert result["diagnosis"] == "the policy leaves gaps where premium moved first"
     # the model saw the champion prompt and the gap evidence, nothing else
     payload = json.loads(transport.calls[0]["body"]["messages"][0]["content"])
@@ -118,8 +124,7 @@ def test_reflection_http500_is_recorded_not_raised() -> None:
 
 
 def test_reflection_runs_on_minimax_flash_with_the_flash_model() -> None:
-    transport = ReflectionTransport({
-        "diagnosis": "d", "revised_prompt": "p", "variants": []})
+    transport = ReflectionTransport({"diagnosis": "d", "revised_prompt": "p", "variants": []})
     result = gepa.reflect("minimax-flash", [], "champion", transport=transport)
     assert result["status"] == "ok"
     assert transport.calls[0]["url"] == "https://api.minimax.io/v1/chat/completions"
@@ -143,8 +148,7 @@ def test_minimax_flash_provider_entry_is_additive() -> None:
 
 
 def test_reflection_without_any_valid_proposal_records_none() -> None:
-    transport = ReflectionTransport({"diagnosis": "nothing to change",
-                                     "variants": [1, 2]})
+    transport = ReflectionTransport({"diagnosis": "nothing to change", "variants": [1, 2]})
     result = gepa.reflect("zai", [], "champion", transport=transport)
     assert result["status"] == "ok"
     assert result["revised_prompt"] is None
@@ -160,13 +164,15 @@ def test_policy_id_is_deterministic_and_prompt_bound() -> None:
 
 
 def test_archive_round_trip_skips_torn_and_foreign_files(tmp_path: Path) -> None:
-    policy = gepa.new_policy("round trip prompt", generation=2, parents=["abc"],
-                             created_by="reflect:zai")
+    policy = gepa.new_policy(
+        "round trip prompt", generation=2, parents=["abc"], created_by="reflect:zai"
+    )
     gepa.save_policy(tmp_path, policy)
     (tmp_path / "policies").mkdir(parents=True, exist_ok=True)
     (tmp_path / "policies" / "torn.json").write_text("{not json")
     (tmp_path / "policies" / "foreign.json").write_text(
-        json.dumps({"id": "x", "prompt": "not a gepa record"}))
+        json.dumps({"id": "x", "prompt": "not a gepa record"})
+    )
     loaded = gepa.load_archive(tmp_path)
     assert [p["id"] for p in loaded] == [policy["id"]]
     assert loaded[0]["parents"] == ["abc"]
@@ -175,20 +181,24 @@ def test_archive_round_trip_skips_torn_and_foreign_files(tmp_path: Path) -> None
 
 
 def test_state_round_trip_dedupes_and_caps(tmp_path: Path) -> None:
-    gepa.save_state(tmp_path, {"used_sessions": ["2026-09-24", "2026-09-24",
-                                                 "2026-09-25"]})
-    assert gepa.load_state(tmp_path)["used_sessions"] == ["2026-09-24",
-                                                          "2026-09-25"]
+    gepa.save_state(tmp_path, {"used_sessions": ["2026-09-24", "2026-09-24", "2026-09-25"]})
+    assert gepa.load_state(tmp_path)["used_sessions"] == ["2026-09-24", "2026-09-25"]
     assert gepa.load_state(tmp_path / "nothing")["used_sessions"] == []
 
 
 def test_fold_run_uses_only_the_mechanical_summary() -> None:
-    record = gepa.new_policy("folding prompt", generation=1, parents=[],
-                             created_by="test")
-    run = {"at": "2026-09-28T04:00:00+00:00", "boards_shown": 3,
-           "summary": {"entered": 2, "modeled_wins": 2, "modeled_losses": 0,
-                       "closed_capital_proxy": "5020.0",
-                       "minimum_closed_capital_proxy": "5010.0"}}
+    record = gepa.new_policy("folding prompt", generation=1, parents=[], created_by="test")
+    run = {
+        "at": "2026-09-28T04:00:00+00:00",
+        "boards_shown": 3,
+        "summary": {
+            "entered": 2,
+            "modeled_wins": 2,
+            "modeled_losses": 0,
+            "closed_capital_proxy": "5020.0",
+            "minimum_closed_capital_proxy": "5010.0",
+        },
+    }
     gepa.fold_run(record, run)
     stats = record["stats"]
     assert stats["runs"] == 1 and stats["boards"] == 3
@@ -205,10 +215,20 @@ def test_fold_run_uses_only_the_mechanical_summary() -> None:
 
 
 def _rows() -> list[dict[str, Any]]:
-    return [{"id": "c0", "structure": "put_credit", "width": "2",
-             "premium": "1.0", "max_loss": "100", "max_gain": "100",
-             "reward_risk": "1.00", "long_recent_move": None,
-             "short_recent_move": None, "data_kind": "x"}]
+    return [
+        {
+            "id": "c0",
+            "structure": "put_credit",
+            "width": "2",
+            "premium": "1.0",
+            "max_loss": "100",
+            "max_gain": "100",
+            "reward_risk": "1.00",
+            "long_recent_move": None,
+            "short_recent_move": None,
+            "data_kind": "x",
+        }
+    ]
 
 
 def test_board_prompt_swaps_only_the_policy_sentence() -> None:
@@ -220,15 +240,14 @@ def test_board_prompt_swaps_only_the_policy_sentence() -> None:
     assert custom_task.startswith(custom_sentence)
     assert not custom_task.startswith(lab.POLICY_SENTENCE[:30])
     # the tail (risk caps + JSON contract) is byte-identical
-    assert custom_task == custom_sentence + default_task[len(lab.POLICY_SENTENCE):]
+    assert custom_task == custom_sentence + default_task[len(lab.POLICY_SENTENCE) :]
     assert "Capital 5000, max loss per trade 300" in custom_task
     assert '{"choice": "<row id>" | null' in custom_task
 
 
 def test_ask_board_carries_the_policy_prompt_to_the_transport() -> None:
     transport = FakeTransport("first")
-    lab.ask_board("zai", _rows(), transport=transport,
-                  policy_prompt="Custom policy sentence here.")
+    lab.ask_board("zai", _rows(), transport=transport, policy_prompt="Custom policy sentence here.")
     content = transport.calls[0]["body"]["messages"][0]["content"]
     task = json.loads(content)["task"]
     assert task.startswith("Custom policy sentence here.")
@@ -242,26 +261,37 @@ def bundle(tmp_path: Path) -> Path:
     return path
 
 
-def test_run_lab_runs_archive_policies_as_gepa_ids(bundle: Path,
-                                                   tmp_path: Path) -> None:
+def test_run_lab_runs_archive_policies_as_gepa_ids(bundle: Path, tmp_path: Path) -> None:
     prompt = "Custom policy sentence with several words."
     transport = FakeTransport("first")
-    config = LabConfig(bundle=bundle, policy="gepa:abc123def456", sessions=1,
-                       lab_root=tmp_path / "lab", policy_prompt=prompt)
+    config = LabConfig(
+        bundle=bundle,
+        policy="gepa:abc123def456",
+        sessions=1,
+        lab_root=tmp_path / "lab",
+        policy_prompt=prompt,
+    )
     document = run_lab(config, windows=UNDER, transport=transport, now=T0)
     assert document["status"] == "ok"
     assert document["policy"] == "gepa:abc123def456"
     assert document["model_calls"] >= 1
-    assert document["policy_prompt_sha256"] == hashlib.sha256(
-        prompt.encode()).hexdigest()
+    assert document["policy_prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest()
     # the evolved prompt actually reached the model
     sent = json.loads(transport.calls[0]["body"]["messages"][0]["content"])
     assert sent["task"].startswith("Custom policy sentence")
     # gepa policies are model policies: the quota gate applies to them too
-    skipped = run_lab(LabConfig(bundle=bundle, policy="gepa:abc123def456",
-                                sessions=1, lab_root=tmp_path / "lab",
-                                policy_prompt=prompt),
-                      windows=ON_PLAN, transport=transport, now=T0)
+    skipped = run_lab(
+        LabConfig(
+            bundle=bundle,
+            policy="gepa:abc123def456",
+            sessions=1,
+            lab_root=tmp_path / "lab",
+            policy_prompt=prompt,
+        ),
+        windows=ON_PLAN,
+        transport=transport,
+        now=T0,
+    )
     assert skipped["status"] == "skipped"
 
 

@@ -127,7 +127,7 @@ def attach(
     # The worker handle is returned so tests can step it synchronously;
     # production ignores it (the daemon thread owns the loop).
 
-    @app.get('/api/research/candidates')
+    @app.get("/api/research/candidates")
     def list_candidates(
         family: str | None = Query(None),
         disposition: str | None = Query(None),
@@ -140,45 +140,46 @@ def attach(
             items = [c for c in items if c.disposition.value == disposition]
         if evidence_kind is not None:
             items = [c for c in items if c.evidence_kind.value == evidence_kind]
-        return JSONResponse({"candidates": [c.to_dict() for c in items]},
-                            headers={"Cache-Control": "no-store"})
+        return JSONResponse(
+            {"candidates": [c.to_dict() for c in items]}, headers={"Cache-Control": "no-store"}
+        )
 
-    @app.get('/api/research/candidates/{candidate_id}')
+    @app.get("/api/research/candidates/{candidate_id}")
     def one_candidate(candidate_id: str) -> JSONResponse:
         cand = next((c for c in catalog_cache if c.id == candidate_id), None)
         if cand is None:
-            raise HTTPException(status_code=404,
-                                detail={"error": "candidate_not_found",
-                                        "candidate_id": candidate_id})
-        return JSONResponse(cand.to_dict(),
-                            headers={"Cache-Control": "no-store"})
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "candidate_not_found", "candidate_id": candidate_id},
+            )
+        return JSONResponse(cand.to_dict(), headers={"Cache-Control": "no-store"})
 
-    @app.get('/api/research/candidates/{candidate_id}/evidence')
-    def candidate_evidence(candidate_id: str,
-                            session: str | None = Query(None),
-                            as_of: str | None = Query(None)) -> JSONResponse:
+    @app.get("/api/research/candidates/{candidate_id}/evidence")
+    def candidate_evidence(
+        candidate_id: str, session: str | None = Query(None), as_of: str | None = Query(None)
+    ) -> JSONResponse:
         cand = next((c for c in catalog_cache if c.id == candidate_id), None)
         if cand is None:
-            raise HTTPException(status_code=404,
-                                detail={"error": "candidate_not_found",
-                                        "candidate_id": candidate_id})
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "candidate_not_found", "candidate_id": candidate_id},
+            )
         try:
             sess = date.fromisoformat(session) if session else None
         except ValueError as exc:
-            raise HTTPException(status_code=400,
-                                detail={"error": "bad_session", "session": session}
-                                ) from exc
+            raise HTTPException(
+                status_code=400, detail={"error": "bad_session", "session": session}
+            ) from exc
         try:
             cutoff = datetime.fromisoformat(as_of) if as_of else None
         except ValueError as exc:
-            raise HTTPException(status_code=400,
-                                detail={"error": "bad_as_of", "as_of": as_of}
-                                ) from exc
+            raise HTTPException(
+                status_code=400, detail={"error": "bad_as_of", "as_of": as_of}
+            ) from exc
         env = evidence_for_point(cand, session=sess, knowledge_cutoff=cutoff)
-        return JSONResponse(env.to_dict(),
-                            headers={"Cache-Control": "no-store"})
+        return JSONResponse(env.to_dict(), headers={"Cache-Control": "no-store"})
 
-    @app.get('/api/research/compare')
+    @app.get("/api/research/compare")
     def compare_preview() -> JSONResponse:
         """Capability-matrix dry-run: validates the spec but does NOT
         execute. Returns the resolved candidate list with per-candidate
@@ -188,7 +189,7 @@ def attach(
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.post('/api/research/compare')
+    @app.post("/api/research/compare")
     async def compare_run(request: Request) -> JSONResponse:
         """Spool a ``ResearchRun`` via the runstate store. The body is a
         ``ComparisonSpec.to_dict()`` JSON document.
@@ -213,38 +214,42 @@ def attach(
         try:
             payload = await request.json()
         except Exception as exc:
-            raise HTTPException(status_code=400,
-                                detail={"error": "invalid_json"}) from exc
+            raise HTTPException(status_code=400, detail={"error": "invalid_json"}) from exc
         if not isinstance(payload, dict):
-            raise HTTPException(status_code=400,
-                                detail={"error": "invalid_body",
-                                        "message": "body must be a JSON object"})
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_body", "message": "body must be a JSON object"},
+            )
         try:
             spec = spec_from_dict(payload)
         except ValueError as exc:
-            raise HTTPException(status_code=400,
-                                detail={"error": "invalid_comparison_spec",
-                                        "message": str(exc)}) from exc
+            raise HTTPException(
+                status_code=400, detail={"error": "invalid_comparison_spec", "message": str(exc)}
+            ) from exc
         # catalog membership — refused BEFORE anything is persisted
-        missing = [cid for cid in spec.candidate_ids
-                   if cid not in {c.id for c in catalog_cache}]
+        missing = [cid for cid in spec.candidate_ids if cid not in {c.id for c in catalog_cache}]
         if missing:
-            raise HTTPException(status_code=400,
-                                detail={"error": "candidate_not_in_catalog",
-                                        "missing": missing})
+            raise HTTPException(
+                status_code=400, detail={"error": "candidate_not_in_catalog", "missing": missing}
+            )
         if spec.benchmark_candidate_id and not any(
-                c.id == spec.benchmark_candidate_id for c in catalog_cache):
-            raise HTTPException(status_code=400,
-                                detail={"error": "benchmark_not_in_catalog",
-                                        "benchmark_candidate_id":
-                                            spec.benchmark_candidate_id})
+            c.id == spec.benchmark_candidate_id for c in catalog_cache
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "benchmark_not_in_catalog",
+                    "benchmark_candidate_id": spec.benchmark_candidate_id,
+                },
+            )
         # semantic validation: the spec must resolve to an executable
         # plan (window, sessions, supported controls) at submission time
         plan = resolve_plan(spec)
         if plan.refused:
-            raise HTTPException(status_code=400,
-                                detail={"error": plan.refusal_reason,
-                                        "message": plan.refusal_detail})
+            raise HTTPException(
+                status_code=400,
+                detail={"error": plan.refusal_reason, "message": plan.refusal_detail},
+            )
 
         run_id = spec_hash(spec)
         with _open_store_or_503(workspace) as store:
@@ -256,33 +261,47 @@ def attach(
                 # erased, reported honestly.
                 raise HTTPException(
                     status_code=409,
-                    detail={"error": "pre_custody_format_run_exists",
-                            "message": "this spec was first submitted before "
-                                       "run custody landed; its record is "
-                                       "preserved — resubmit from a fresh "
-                                       "workspace or after migration"},
+                    detail={
+                        "error": "pre_custody_format_run_exists",
+                        "message": "this spec was first submitted before "
+                        "run custody landed; its record is "
+                        "preserved — resubmit from a fresh "
+                        "workspace or after migration",
+                    },
                 ) from exc
             existing = store.get("run", run_id)
             created = existing is None
             if created:
                 # Deterministic initial payload (no timestamps): two
                 # concurrent identical POSTs both land idempotently.
-                store.put("run", {"run_id": run_id, "spec_hash": run_id,
-                                  "status": "queued",
-                                  "format_version": RUN_FORMAT_VERSION},
-                          key=run_id, at=datetime.now())
+                store.put(
+                    "run",
+                    {
+                        "run_id": run_id,
+                        "spec_hash": run_id,
+                        "status": "queued",
+                        "format_version": RUN_FORMAT_VERSION,
+                    },
+                    key=run_id,
+                    at=datetime.now(),
+                )
                 status_value = "queued"
             else:
-                status_value = existing.get("status", "queued") \
-                    if isinstance(existing, dict) else "queued"
+                status_value = (
+                    existing.get("status", "queued") if isinstance(existing, dict) else "queued"
+                )
         return JSONResponse(
-            {"run_id": run_id, "status": status_value,
-             "spec_hash": run_id, "workspace": str(workspace)},
+            {
+                "run_id": run_id,
+                "status": status_value,
+                "spec_hash": run_id,
+                "workspace": str(workspace),
+            },
             status_code=202 if created else 200,
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.get('/api/research/runs/{run_id}')
+    @app.get("/api/research/runs/{run_id}")
     def run_status(run_id: str) -> JSONResponse:
         with _open_store_or_503(workspace) as store:
             run = store.get("run", run_id)
@@ -290,16 +309,21 @@ def attach(
         if run is None:
             if legacy is not None:
                 return JSONResponse(
-                    {"run_id": run_id, "spec_hash": run_id,
-                     "status": "blocked",
-                     "error": "pre-custody-format run; resubmit the "
-                              "comparison to execute it under run custody"},
-                    headers={"Cache-Control": "no-store"})
-            raise HTTPException(status_code=404,
-                                detail={"error": "run_not_found", "run_id": run_id})
+                    {
+                        "run_id": run_id,
+                        "spec_hash": run_id,
+                        "status": "blocked",
+                        "error": "pre-custody-format run; resubmit the "
+                        "comparison to execute it under run custody",
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+            raise HTTPException(
+                status_code=404, detail={"error": "run_not_found", "run_id": run_id}
+            )
         return JSONResponse(run, headers={"Cache-Control": "no-store"})
 
-    @app.get('/api/research/runs/{run_id}/result')
+    @app.get("/api/research/runs/{run_id}/result")
     def run_result(run_id: str) -> JSONResponse:
         """Return the RECORDED result — never a fresh computation. Two
         GETs must not cause two engine runs (RL1-03); pending runs get
@@ -312,15 +336,20 @@ def attach(
         if run is None:
             if legacy is not None:
                 return JSONResponse(
-                    {"run_id": run_id, "status": "blocked", "result": None,
-                     "error": "pre-custody-format run; resubmit the "
-                              "comparison to execute it under run custody"},
-                    headers={"Cache-Control": "no-store"})
-            raise HTTPException(status_code=404,
-                                detail={"error": "run_not_found", "run_id": run_id})
+                    {
+                        "run_id": run_id,
+                        "status": "blocked",
+                        "result": None,
+                        "error": "pre-custody-format run; resubmit the "
+                        "comparison to execute it under run custody",
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
+            raise HTTPException(
+                status_code=404, detail={"error": "run_not_found", "run_id": run_id}
+            )
         status_value = run.get("status")
-        body: dict[str, Any] = {"run_id": run_id, "status": status_value,
-                                "result": None}
+        body: dict[str, Any] = {"run_id": run_id, "status": status_value, "result": None}
         if status_value == "completed" and result is not None:
             updates: dict[str, Any] = {
                 "result": result["wire"],
@@ -328,16 +357,13 @@ def attach(
                 "engine_sha256": result["engine_sha256"],
             }
             if "input_snapshot_sha256" in result:
-                updates["input_snapshot_sha256"] = result[
-                    "input_snapshot_sha256"]
+                updates["input_snapshot_sha256"] = result["input_snapshot_sha256"]
             if "calendar_sha256" in result:
                 updates["calendar_sha256"] = result["calendar_sha256"]
             if "session_authority_sha256" in result:
-                updates["session_authority_sha256"] = result[
-                    "session_authority_sha256"]
+                updates["session_authority_sha256"] = result["session_authority_sha256"]
             if "scenario_diff_sha256" in result:
-                updates["scenario_diff_sha256"] = result[
-                    "scenario_diff_sha256"]
+                updates["scenario_diff_sha256"] = result["scenario_diff_sha256"]
             if "parent_run_id" in result:
                 updates["parent_run_id"] = result["parent_run_id"]
             body.update(updates)
@@ -348,7 +374,7 @@ def attach(
     # RL-2: reproducible scenario branching surfaces replace the RL-1
     # 410 Gone stub. The same idempotency / pre-write validation /
     # content-bound result pattern from POST /compare applies (RL1-03).
-    @app.get('/api/research/scenarios')
+    @app.get("/api/research/scenarios")
     def list_scenarios(parent_run_id: str | None = Query(None)) -> JSONResponse:
         """List scenario children. With ``?parent_run_id=<id>`` returns
         only the children of that parent; without it returns every
@@ -358,8 +384,7 @@ def attach(
             for payload, _at in store.all_at("child"):
                 if not isinstance(payload, dict):
                     continue
-                if (parent_run_id is not None
-                        and payload.get("parent_run_id") != parent_run_id):
+                if parent_run_id is not None and payload.get("parent_run_id") != parent_run_id:
                     continue
                 children.append(payload)
         return JSONResponse(
@@ -367,9 +392,8 @@ def attach(
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.post('/api/research/scenarios/{parent_run_id}')
-    async def spawn_scenario(parent_run_id: str,
-                              request: Request) -> JSONResponse:
+    @app.post("/api/research/scenarios/{parent_run_id}")
+    async def spawn_scenario(parent_run_id: str, request: Request) -> JSONResponse:
         """Spool a ``ResearchRun`` whose ``kind == "scenario"``. The
         body is a ScenarioDiff / kind / access_mode JSON. The path
         component is the parent identifier (URL is honest about the
@@ -377,18 +401,18 @@ def attach(
         try:
             payload = await request.json()
         except Exception as exc:
-            raise HTTPException(status_code=400,
-                                detail={"error": "invalid_json"}) from exc
+            raise HTTPException(status_code=400, detail={"error": "invalid_json"}) from exc
         if not isinstance(payload, dict):
-            raise HTTPException(status_code=400,
-                                detail={"error": "invalid_body",
-                                        "message": "body must be a JSON object"})
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_body", "message": "body must be a JSON object"},
+            )
         try:
             spec = scenario_from_dict(parent_run_id, payload)
         except ValueError as exc:
-            raise HTTPException(status_code=400,
-                                detail={"error": "invalid_scenario_spec",
-                                        "message": str(exc)}) from exc
+            raise HTTPException(
+                status_code=400, detail={"error": "invalid_scenario_spec", "message": str(exc)}
+            ) from exc
         # The parent must exist as a completed run with a stored
         # result envelope (lineage honesty is a pre-write gate, not
         # a worker-time surprise).
@@ -398,33 +422,38 @@ def attach(
         if parent_run is None or parent_run.get("status") != "completed":
             raise HTTPException(
                 status_code=404,
-                detail={"error": "parent_not_found",
-                        "parent_run_id": parent_run_id})
+                detail={"error": "parent_not_found", "parent_run_id": parent_run_id},
+            )
         if parent_result is None:
             raise HTTPException(
                 status_code=409,
-                detail={"error": "parent_missing_result",
-                        "parent_run_id": parent_run_id})
+                detail={"error": "parent_missing_result", "parent_run_id": parent_run_id},
+            )
         run_id = scenario_spec_hash(spec)
         with _open_store_or_503(workspace) as store:
             try:
-                store.put("spec", spec.to_dict(), key=run_id,
-                          at=datetime.now())
+                store.put("spec", spec.to_dict(), key=run_id, at=datetime.now())
             except RunstateStoreError as exc:
                 raise HTTPException(
                     status_code=409,
-                    detail={"error": "pre_custody_format_run_exists",
-                            "message": str(exc)}) from exc
+                    detail={"error": "pre_custody_format_run_exists", "message": str(exc)},
+                ) from exc
             existing_run = store.get("run", run_id)
             created = existing_run is None
             if created:
-                store.put("run",
-                          {"run_id": run_id, "spec_hash": run_id,
-                           "kind": "scenario",
-                           "parent_run_id": parent_run_id,
-                           "status": "queued",
-                           "format_version": RUN_FORMAT_VERSION},
-                          key=run_id, at=datetime.now())
+                store.put(
+                    "run",
+                    {
+                        "run_id": run_id,
+                        "spec_hash": run_id,
+                        "kind": "scenario",
+                        "parent_run_id": parent_run_id,
+                        "status": "queued",
+                        "format_version": RUN_FORMAT_VERSION,
+                    },
+                    key=run_id,
+                    at=datetime.now(),
+                )
                 # Persist the lineage pointers at submission time too
                 # (not only when the worker completes) so the SPA can
                 # list queued children via GET /scenarios. Both writes
@@ -435,18 +464,21 @@ def attach(
                     attach_child,
                     store_parent_ref,
                 )
+
                 try:
-                    store_parent_ref(store, ParentRef(
-                        parent_run_id=parent_run_id,
-                        parent_spec_hash=str(parent_run.get(
-                            "spec_hash", "")),
-                        parent_engine_sha256=str(parent_result.get(
-                            "engine_sha256", "")),
-                        parent_input_snapshot_sha256=str(parent_result.get(
-                            "input_snapshot_sha256", "")),
-                        parent_calendar_sha256=str(parent_result.get(
-                            "calendar_sha256", "")),
-                    ), at=datetime.now())
+                    store_parent_ref(
+                        store,
+                        ParentRef(
+                            parent_run_id=parent_run_id,
+                            parent_spec_hash=str(parent_run.get("spec_hash", "")),
+                            parent_engine_sha256=str(parent_result.get("engine_sha256", "")),
+                            parent_input_snapshot_sha256=str(
+                                parent_result.get("input_snapshot_sha256", "")
+                            ),
+                            parent_calendar_sha256=str(parent_result.get("calendar_sha256", "")),
+                        ),
+                        at=datetime.now(),
+                    )
                 except RunstateStoreError as exc:
                     # A ParentRef already stored at an earlier attach no
                     # longer matches this parent's current identity —
@@ -460,25 +492,36 @@ def attach(
                             "message": (
                                 "this parent's identity changed since its "
                                 "first scenario attach; its stored lineage "
-                                f"is immutable — {exc}"),
+                                f"is immutable — {exc}"
+                            ),
                             "parent_run_id": parent_run_id,
                         },
                     ) from exc
-                attach_child(store, ChildRef(
-                    child_run_id=run_id,
-                    parent_run_id=parent_run_id,
-                    scenario_kind=spec.kind.value,
-                    scenario_diff_sha256=scenario_diff_sha256(spec),
-                ), at=datetime.now())
+                attach_child(
+                    store,
+                    ChildRef(
+                        child_run_id=run_id,
+                        parent_run_id=parent_run_id,
+                        scenario_kind=spec.kind.value,
+                        scenario_diff_sha256=scenario_diff_sha256(spec),
+                    ),
+                    at=datetime.now(),
+                )
                 status_value = "queued"
             else:
                 status_value = (
                     existing_run.get("status", "queued")
-                    if isinstance(existing_run, dict) else "queued")
+                    if isinstance(existing_run, dict)
+                    else "queued"
+                )
         return JSONResponse(
-            {"run_id": run_id, "status": status_value,
-             "spec_hash": run_id, "parent_run_id": parent_run_id,
-             "workspace": str(workspace)},
+            {
+                "run_id": run_id,
+                "status": status_value,
+                "spec_hash": run_id,
+                "parent_run_id": parent_run_id,
+                "workspace": str(workspace),
+            },
             status_code=202 if created else 200,
             headers={"Cache-Control": "no-store"},
         )
@@ -519,7 +562,7 @@ def attach(
             return load_index("VIX")
         return None
 
-    @app.get('/api/research/forecast')
+    @app.get("/api/research/forecast")
     def forecast_metadata() -> JSONResponse:
         """Registry + interval semantics + freshness-qualified receipts.
 
@@ -539,8 +582,7 @@ def attach(
             receipts: dict[tuple[str, int], dict[str, Any]] = {}
             refusals: dict[tuple[str, int], dict[str, Any]] = {}
             for payload, at in store.all_at("run"):
-                if not isinstance(payload, dict) \
-                        or payload.get("kind") != "forecast":
+                if not isinstance(payload, dict) or payload.get("kind") != "forecast":
                     continue
                 result = store.get("result", str(payload.get("run_id")))
                 if result is None or "wire" not in result:
@@ -551,41 +593,42 @@ def attach(
                     candidate = {
                         "run_id": payload["run_id"],
                         "at": at,
-                        "series_sha256": wire.get("series", {}).get(
-                            "series_sha256"),
+                        "series_sha256": wire.get("series", {}).get("series_sha256"),
                         "engine_sha256": result.get("engine_sha256"),
                         "calendar_sha256": result.get("calendar_sha256"),
-                        "session_authority_sha256":
-                            result.get("session_authority_sha256"),
+                        "session_authority_sha256": result.get("session_authority_sha256"),
                     }
                     best = receipts.get(key)
                     if best is None or candidate["at"] > best["at"]:
                         receipts[key] = candidate
                 else:
-                    attempt = {"code": wire.get("refusal"),
-                               "n_evaluated": (wire.get("origins", {})
-                                               .get("evaluated"))}
+                    attempt = {
+                        "code": wire.get("refusal"),
+                        "n_evaluated": (wire.get("origins", {}).get("evaluated")),
+                    }
                     last = refusals.get(key)
                     if last is None or at > last["at"]:
                         refusals[key] = {"at": at, **attempt}
 
         for source_id, descriptor in SOURCE_REGISTRY.items():
             live = _load_series_or_none(source_id)
-            current_sha = (live.series_sha256
-                           if not isinstance(live, ForecastRefusal)
-                           else None)
+            current_sha = live.series_sha256 if not isinstance(live, ForecastRefusal) else None
             horizons = []
             for h in descriptor.listed_horizons:
                 if h not in descriptor.enabled_horizons:
-                    horizons.append({
-                        "horizon": h, "enabled": False,
-                        "status": "illustrative_only",
-                        "status_copy": "not enabled - no evaluation "
-                                       "receipt (illustrative only)",
-                    })
+                    horizons.append(
+                        {
+                            "horizon": h,
+                            "enabled": False,
+                            "status": "illustrative_only",
+                            "status_copy": "not enabled - no evaluation "
+                            "receipt (illustrative only)",
+                        }
+                    )
                     continue
                 entry: dict[str, Any] = {
-                    "horizon": h, "enabled": True,
+                    "horizon": h,
+                    "enabled": True,
                     "latest_receipt_run_id": None,
                     "receipt_series_sha256": None,
                     "current_series_sha256": current_sha,
@@ -602,17 +645,15 @@ def attach(
                     entry["latest_receipt_run_id"] = receipt["run_id"]
                     entry["receipt_series_sha256"] = receipt["series_sha256"]
                     entry["receipt_engine_sha256"] = receipt["engine_sha256"]
-                    entry["receipt_calendar_sha256"] = \
-                        receipt["calendar_sha256"]
-                    entry["receipt_session_authority_sha256"] = \
-                        receipt["session_authority_sha256"]
+                    entry["receipt_calendar_sha256"] = receipt["calendar_sha256"]
+                    entry["receipt_session_authority_sha256"] = receipt["session_authority_sha256"]
                     entry["fresh"] = (
                         current_sha is not None
                         and receipt["series_sha256"] == current_sha
                         and receipt["engine_sha256"] == engine_now
                         and receipt["calendar_sha256"] == calendar_now
-                        and receipt["session_authority_sha256"]
-                        == authority_now)
+                        and receipt["session_authority_sha256"] == authority_now
+                    )
                 refusal = refusals.get((source_id.value, h))
                 if refusal is not None:
                     entry["last_attempt_refused"] = {
@@ -620,25 +661,29 @@ def attach(
                         "n_evaluated": refusal["n_evaluated"],
                     }
                 horizons.append(entry)
-            sources.append({
-                "source": source_id.value,
-                "label": descriptor.label,
-                "basis": descriptor.basis,
-                "grid_basis": descriptor.grid_basis,
-                "horizons": horizons,
-            })
+            sources.append(
+                {
+                    "source": source_id.value,
+                    "label": descriptor.label,
+                    "basis": descriptor.basis,
+                    "grid_basis": descriptor.grid_basis,
+                    "horizons": horizons,
+                }
+            )
         return JSONResponse(
-            {"schema": "research-forecast-metadata/1",
-             "quantile_grid": list(QUANTILE_GRID),
-             "origin_floor": ORIGIN_FLOOR,
-             "min_history_sessions": MIN_HISTORY_SESSIONS,
-             "paired_floor": PAIRED_FLOOR,
-             "interval_semantics": INTERVAL_SEMANTICS,
-             "sources": sources},
+            {
+                "schema": "research-forecast-metadata/1",
+                "quantile_grid": list(QUANTILE_GRID),
+                "origin_floor": ORIGIN_FLOOR,
+                "min_history_sessions": MIN_HISTORY_SESSIONS,
+                "paired_floor": PAIRED_FLOOR,
+                "interval_semantics": INTERVAL_SEMANTICS,
+                "sources": sources,
+            },
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.post('/api/research/forecast')
+    @app.post("/api/research/forecast")
     async def spool_forecast(request: Request) -> JSONResponse:
         """Spool a forecast evaluation run (idempotent on the full
         execution identity: spec + data + calendar + engine)."""
@@ -646,51 +691,62 @@ def attach(
             payload = await request.json()
         except Exception as exc:
             raise HTTPException(
-                status_code=400,
-                detail={"error": "invalid_json",
-                        "message": str(exc)}) from exc
+                status_code=400, detail={"error": "invalid_json", "message": str(exc)}
+            ) from exc
         try:
             spec = forecast_from_dict(payload)
         except ValueError as exc:
             raise HTTPException(
-                status_code=400,
-                detail={"error": "invalid_forecast_spec",
-                        "message": str(exc)}) from exc
+                status_code=400, detail={"error": "invalid_forecast_spec", "message": str(exc)}
+            ) from exc
         descriptor = SOURCE_REGISTRY.get(spec.source)
         if descriptor is None:
             raise HTTPException(
                 status_code=400,
-                detail={"error": "research.forecast.unknown_source",
-                        "message": f"unknown source {spec.source.value!r}"})
+                detail={
+                    "error": "research.forecast.unknown_source",
+                    "message": f"unknown source {spec.source.value!r}",
+                },
+            )
         # Horizon gating is enforced PRE-WRITE: a listed-but-disabled
         # horizon (63/126) never creates a run record - the SPA hides
         # nothing the backend would not refuse.
         if spec.horizon not in descriptor.enabled_horizons:
             raise HTTPException(
                 status_code=400,
-                detail={"error": FORECAST_HORIZON_NOT_ENABLED,
-                        "message": (f"horizon {spec.horizon} is not "
-                                    f"enabled for {spec.source.value}; "
-                                    f"enabled "
-                                    f"{list(descriptor.enabled_horizons)}"),
-                        "listed": list(descriptor.listed_horizons)})
+                detail={
+                    "error": FORECAST_HORIZON_NOT_ENABLED,
+                    "message": (
+                        f"horizon {spec.horizon} is not "
+                        f"enabled for {spec.source.value}; "
+                        f"enabled "
+                        f"{list(descriptor.enabled_horizons)}"
+                    ),
+                    "listed": list(descriptor.listed_horizons),
+                },
+            )
         series = _load_series_or_none(spec.source)
         if isinstance(series, ForecastRefusal):
             raise HTTPException(
                 status_code=400,
-                detail={"error": series.code, "message": series.message,
-                        **dict(series.payload)})
+                detail={"error": series.code, "message": series.message, **dict(series.payload)},
+            )
         assert series is not None
         if len(series.sessions) < MIN_HISTORY_SESSIONS + spec.horizon:
             raise HTTPException(
                 status_code=400,
-                detail={"error": "research.forecast.insufficient_history",
-                        "message": (f"series has {len(series.sessions)} "
-                                    f"sessions; needs >= "
-                                    f"{MIN_HISTORY_SESSIONS + spec.horizon}"
-                                    f" (min_history "
-                                    f"{MIN_HISTORY_SESSIONS} + horizon "
-                                    f"{spec.horizon})")})
+                detail={
+                    "error": "research.forecast.insufficient_history",
+                    "message": (
+                        f"series has {len(series.sessions)} "
+                        f"sessions; needs >= "
+                        f"{MIN_HISTORY_SESSIONS + spec.horizon}"
+                        f" (min_history "
+                        f"{MIN_HISTORY_SESSIONS} + horizon "
+                        f"{spec.horizon})"
+                    ),
+                },
+            )
         # Single-read submission binding (checkpoint B-prime, N1): each
         # identity value is computed ONCE and reused for BOTH the run id
         # and the queued record — a calendar or engine file replaced
@@ -699,43 +755,58 @@ def attach(
         calendar_sha = calendar_sha256()
         authority_sha = session_authority_sha256()
         run_id = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
+            spec,
+            series_sha256=series.series_sha256,
             calendar_sha256=calendar_sha,
             session_authority_sha256=authority_sha,
-            engine_sha256=engine_sha)
+            engine_sha256=engine_sha,
+        )
         with _open_store_or_503(workspace) as store:
             try:
-                store.put("spec", spec.to_dict(), key=run_id,
-                          at=datetime.now())
+                store.put("spec", spec.to_dict(), key=run_id, at=datetime.now())
             except RunstateStoreError as exc:
                 raise HTTPException(
                     status_code=409,
-                    detail={"error": "pre_custody_format_run_exists",
-                            "message": "this spec was first submitted "
-                                       "before run custody landed; its "
-                                       "record is preserved"},
+                    detail={
+                        "error": "pre_custody_format_run_exists",
+                        "message": "this spec was first submitted "
+                        "before run custody landed; its "
+                        "record is preserved",
+                    },
                 ) from exc
             existing = store.get("run", run_id)
             created = existing is None
             if created:
-                store.put("run", {
-                    "run_id": run_id, "spec_hash": run_id,
-                    "kind": "forecast", "status": "queued",
-                    "format_version": RUN_FORMAT_VERSION,
-                    "series_sha256_at_submission": series.series_sha256,
-                    "engine_sha256_at_submission": engine_sha,
-                    "calendar_sha256_at_submission": calendar_sha,
-                    "session_authority_sha256_at_submission": authority_sha,
-                }, key=run_id, at=datetime.now())
+                store.put(
+                    "run",
+                    {
+                        "run_id": run_id,
+                        "spec_hash": run_id,
+                        "kind": "forecast",
+                        "status": "queued",
+                        "format_version": RUN_FORMAT_VERSION,
+                        "series_sha256_at_submission": series.series_sha256,
+                        "engine_sha256_at_submission": engine_sha,
+                        "calendar_sha256_at_submission": calendar_sha,
+                        "session_authority_sha256_at_submission": authority_sha,
+                    },
+                    key=run_id,
+                    at=datetime.now(),
+                )
                 status_value = "queued"
             else:
-                status_value = (existing.get("status", "queued")
-                                if isinstance(existing, dict) else "queued")
+                status_value = (
+                    existing.get("status", "queued") if isinstance(existing, dict) else "queued"
+                )
         return JSONResponse(
-            {"run_id": run_id, "status": status_value,
-             "spec_hash": run_id, "kind": "forecast",
-             "series_sha256": series.series_sha256,
-             "workspace": str(workspace)},
+            {
+                "run_id": run_id,
+                "status": status_value,
+                "spec_hash": run_id,
+                "kind": "forecast",
+                "series_sha256": series.series_sha256,
+                "workspace": str(workspace),
+            },
             status_code=202 if created else 200,
             headers={"Cache-Control": "no-store"},
         )
@@ -759,8 +830,11 @@ def _build_catalog(scopes_root: Path) -> list[ResearchCandidate]:
     for scope_dir in sorted(scopes_root.iterdir()):
         if not scope_dir.is_dir():
             continue
-        if scope_dir.name.endswith(".db") or scope_dir.name.endswith(".db-shm") \
-           or scope_dir.name.endswith(".db-wal"):
+        if (
+            scope_dir.name.endswith(".db")
+            or scope_dir.name.endswith(".db-shm")
+            or scope_dir.name.endswith(".db-wal")
+        ):
             continue
         try:
             cand = build_candidate(scope_dir)
@@ -768,22 +842,24 @@ def _build_catalog(scopes_root: Path) -> list[ResearchCandidate]:
             # Adapter must NEVER crash the route — and a malformed scope
             # must NEVER silently vanish from the catalog: it surfaces
             # as a DATA-GATED row carrying the adapter error.
-            candidates.append(ResearchCandidate(
-                id=f"{scope_dir.name}-v?",
-                family=scope_dir.name,
-                version="v?",
-                evidence_kind=ResearchEvidenceKind.SEALED_CAMPAIGN,
-                registration=ResearchRegistration.RETROSPECTIVE_BACKFILL,
-                disposition=ResearchDisposition.DATA_GATED_NOT_RUN,
-                plot_funded_account=False,
-                supported_start=None,
-                supported_end=None,
-                artifact_hashes={},
-                capabilities=(),
-                ineligibility_reason=f"catalog adapter raised: {exc}",
-                warnings=("research.adapter_error",),
-                source_url=f"sealed-round/{scope_dir.name}",
-            ))
+            candidates.append(
+                ResearchCandidate(
+                    id=f"{scope_dir.name}-v?",
+                    family=scope_dir.name,
+                    version="v?",
+                    evidence_kind=ResearchEvidenceKind.SEALED_CAMPAIGN,
+                    registration=ResearchRegistration.RETROSPECTIVE_BACKFILL,
+                    disposition=ResearchDisposition.DATA_GATED_NOT_RUN,
+                    plot_funded_account=False,
+                    supported_start=None,
+                    supported_end=None,
+                    artifact_hashes={},
+                    capabilities=(),
+                    ineligibility_reason=f"catalog adapter raised: {exc}",
+                    warnings=("research.adapter_error",),
+                    source_url=f"sealed-round/{scope_dir.name}",
+                )
+            )
             continue
         candidates.append(cand)
     # The synthetic vertical slice (permanently labeled): one benchmark
@@ -792,6 +868,7 @@ def _build_catalog(scopes_root: Path) -> list[ResearchCandidate]:
     from tree_options.research.catalog.fixture_slice import (
         build_synthetic_candidates,
     )
+
     candidates.extend(build_synthetic_candidates())
     # RL-2: the shadow-proxy adapter surfaces the desk's two named
     # incumbents (``vix_term``, ``hold-20``) with ``evidence_kind=
@@ -808,14 +885,23 @@ def _build_catalog(scopes_root: Path) -> list[ResearchCandidate]:
         build_vix_term_candidate,
     )
     from tree_options.research.contracts import FundedHistorySupport
-    candidates.append(build_vix_term_candidate(
-        FundedHistorySupport.UNAVAILABLE, None,
-        supported_start=None, supported_end=None,
-    ))
-    candidates.append(build_hold_20_candidate(
-        FundedHistorySupport.UNAVAILABLE, None,
-        supported_start=None, supported_end=None,
-    ))
+
+    candidates.append(
+        build_vix_term_candidate(
+            FundedHistorySupport.UNAVAILABLE,
+            None,
+            supported_start=None,
+            supported_end=None,
+        )
+    )
+    candidates.append(
+        build_hold_20_candidate(
+            FundedHistorySupport.UNAVAILABLE,
+            None,
+            supported_start=None,
+            supported_end=None,
+        )
+    )
     return candidates
 
 

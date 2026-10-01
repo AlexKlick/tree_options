@@ -112,8 +112,13 @@ class TestLlmKeys:
 
     @pytest.mark.parametrize(
         "extra",
-        ['llm_provider = "openai"\n', 'llm_provider = "none,zai"\n', 'llm_provider = ""\n',
-         "llm_max_proposals = 0\n", "llm_max_proposals = 11\n"],
+        [
+            'llm_provider = "openai"\n',
+            'llm_provider = "none,zai"\n',
+            'llm_provider = ""\n',
+            "llm_max_proposals = 0\n",
+            "llm_max_proposals = 11\n",
+        ],
     )
     def test_invalid_rejected(self, tmp_path: Path, extra: str) -> None:
         with pytest.raises(ValueError):

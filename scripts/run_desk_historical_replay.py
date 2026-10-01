@@ -37,16 +37,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--haircut", type=float, default=0.01)
     parser.add_argument("--max-loss", type=float, default=300.0)
     parser.add_argument("--all-expiries", action="store_true")
-    parser.add_argument("--out-dir", type=Path,
-                        default=store_root() / "evaluations" / "historical-replay")
+    parser.add_argument(
+        "--out-dir", type=Path, default=store_root() / "evaluations" / "historical-replay"
+    )
     args = parser.parse_args(argv)
     spec = historical_replay.ReplaySpec(
-        start=args.start, end=args.end,
+        start=args.start,
+        end=args.end,
         names=tuple(s.strip().upper() for s in args.names.split(",") if s.strip()),
         signals=tuple(s.strip() for s in args.signals.split(",") if s.strip()),
         structures=tuple(s.strip() for s in args.structures.split(",") if s.strip()),
-        min_dte=args.min_dte, max_dte=args.max_dte,
-        hold_sessions=args.hold_sessions, haircut=args.haircut, max_loss=args.max_loss,
+        min_dte=args.min_dte,
+        max_dte=args.max_dte,
+        hold_sessions=args.hold_sessions,
+        haircut=args.haircut,
+        max_loss=args.max_loss,
     )
     if any(name not in CHAIN_UNIVERSE for name in spec.names):
         parser.error("--names must be members of the desk chain universe")
@@ -62,9 +67,16 @@ def main(argv: list[str] | None = None) -> int:
     end_index = next((i for i, d in enumerate(sessions) if d > spec.end), len(sessions))
     scan_end = sessions[min(len(sessions) - 1, end_index + spec.hold_sessions + 1)]
     scans = [
-        ivhist.scan_cache(cache, spec.names, spec.start, scan_end, cal,
-                          min_dte=0, max_dte=spec.max_dte,
-                          monthly_only=not args.all_expiries)
+        ivhist.scan_cache(
+            cache,
+            spec.names,
+            spec.start,
+            scan_end,
+            cal,
+            min_dte=0,
+            max_dte=spec.max_dte,
+            monthly_only=not args.all_expiries,
+        )
         for cache in args.cache
     ]
     merged = historical_replay.merge_scans(scans)
@@ -73,9 +85,15 @@ def main(argv: list[str] | None = None) -> int:
         "code": "tree_options.desk.historical_replay",
         "panel_sha256": panel_sha,
         "earnings_sha256": earnings_sha,
-        "sources": [{"path": str(s.source), "input_sha256": s.input_digest,
-                     "input_files": s.input_files, "scan_stats": dict(sorted(s.stats.items()))}
-                    for s in scans],
+        "sources": [
+            {
+                "path": str(s.source),
+                "input_sha256": s.input_digest,
+                "input_files": s.input_files,
+                "scan_stats": dict(sorted(s.stats.items())),
+            }
+            for s in scans
+        ],
         "all_expiries": args.all_expiries,
         "scan_end": scan_end.isoformat(),
         "paper_dir": str(paper_dir()),

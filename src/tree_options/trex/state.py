@@ -239,9 +239,7 @@ class StructureState:
             "updated_at": _iso(self.updated_at),
             "exit_order_seen": self.exit_order_seen,
             "exit_order_notional": (
-                str(self.exit_order_notional)
-                if self.exit_order_notional is not None
-                else None
+                str(self.exit_order_notional) if self.exit_order_notional is not None else None
             ),
             "entry_order_seen": self.entry_order_seen,
             "entry_order_notional": (
@@ -267,9 +265,7 @@ class StructureState:
             updated_at=_parse_iso(raw.get("updated_at")),
             exit_order_seen=int(raw.get("exit_order_seen", 0)),
             exit_order_notional=(
-                Decimal(raw["exit_order_notional"])
-                if raw.get("exit_order_notional")
-                else None
+                Decimal(raw["exit_order_notional"]) if raw.get("exit_order_notional") else None
             ),
             entry_order_seen=int(raw.get("entry_order_seen", 0)),
             entry_order_notional=(
@@ -287,7 +283,9 @@ class BookState:
     """All structures plus the monitor heartbeat (the arm-before-enter gate)."""
 
     def __init__(self, structure_ids: list[str]) -> None:
-        self.structures: dict[str, StructureState] = {sid: StructureState() for sid in structure_ids}
+        self.structures: dict[str, StructureState] = {
+            sid: StructureState() for sid in structure_ids
+        }
         self.heartbeat: datetime | None = None
 
     # -- persistence ------------------------------------------------------

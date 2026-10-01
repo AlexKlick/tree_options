@@ -26,9 +26,13 @@ def _amount(value: Any, label: str, *, positive: bool = False) -> Decimal:
     return result
 
 
-def simulate(replay: dict[str, Any], *, capital: Decimal = Decimal("5000"),
-             max_trade_loss: Decimal = Decimal("300"),
-             max_open_loss: Decimal = Decimal("1500")) -> dict[str, Any]:
+def simulate(
+    replay: dict[str, Any],
+    *,
+    capital: Decimal = Decimal("5000"),
+    max_trade_loss: Decimal = Decimal("300"),
+    max_open_loss: Decimal = Decimal("1500"),
+) -> dict[str, Any]:
     """Admit modeled rows in time order within each predeclared variant.
 
     Same-day exit prices have unknown intraday ordering and are not available
@@ -55,8 +59,9 @@ def simulate(replay: dict[str, Any], *, capital: Decimal = Decimal("5000"),
     if not isinstance(replay.get("by_variant"), dict) or not isinstance(replay.get("rows"), list):
         raise ValueError("invalid replay summary")
     for key in replay["by_variant"]:
-        rows = sorted(grouped.get(key, []),
-                      key=lambda r: (r["entry"], r["decision"], r["name"], r["expiry"]))
+        rows = sorted(
+            grouped.get(key, []), key=lambda r: (r["entry"], r["decision"], r["name"], r["expiry"])
+        )
         active: list[tuple[date, Decimal, Decimal]] = []
         admitted: list[str] = []
         skipped = {"trade_cap": 0, "open_cap": 0, "capital": 0}
@@ -101,8 +106,10 @@ def simulate(replay: dict[str, Any], *, capital: Decimal = Decimal("5000"),
             closed_cash += pnl
             low_closed_cash = min(low_closed_cash, closed_cash)
         variants[key] = {
-            "considered": len(rows), "admitted": len(admitted),
-            "skipped": skipped, "admitted_decision_names": admitted,
+            "considered": len(rows),
+            "admitted": len(admitted),
+            "skipped": skipped,
+            "admitted_decision_names": admitted,
             "peak_open_loss_reserved": str(peak_reserved),
             "closed_pnl": str(closed_cash - capital),
             "ending_closed_capital": str(closed_cash),
@@ -111,11 +118,16 @@ def simulate(replay: dict[str, Any], *, capital: Decimal = Decimal("5000"),
     return {
         "schema": "desk-portfolio-scenario/1",
         "label": "exploratory closed-VWAP scenario by fixed variant",
-        "spec": {"intended_capital": str(capital), "max_trade_loss": str(max_trade_loss),
-                 "max_open_loss": str(max_open_loss)},
-        "limitations": ["same-day exit proceeds are unavailable to new entries",
-                        "intraday and daily loss stops cannot be tested from these daily bars",
-                        "modeled VWAP and assumed haircut are not executable quotes or broker fills",
-                        "each variant is projected separately; no adaptive selection or combined book"],
+        "spec": {
+            "intended_capital": str(capital),
+            "max_trade_loss": str(max_trade_loss),
+            "max_open_loss": str(max_open_loss),
+        },
+        "limitations": [
+            "same-day exit proceeds are unavailable to new entries",
+            "intraday and daily loss stops cannot be tested from these daily bars",
+            "modeled VWAP and assumed haircut are not executable quotes or broker fills",
+            "each variant is projected separately; no adaptive selection or combined book",
+        ],
         "variants": variants,
     }

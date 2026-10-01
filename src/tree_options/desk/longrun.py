@@ -579,7 +579,26 @@ class OutcomeCache:
         self._memo: dict[tuple[str, str, str | None], tuple[float, float] | None] = {}
         self._exits: dict[tuple[str, str, str | None], str | None] = {}
         self._reasons: dict[tuple[str, str, str | None], str | None] = {}
+        self._bound_boards: dict[str, frozenset[str]] | None = None
         self._lock = threading.Lock()
+
+    def bind_boards(self, boards: Sequence[Board]) -> None:
+        """Freeze each snapshot's row membership before scoring (quant-research
+        lane, adopted). A snapshot repeated with DIFFERENT rows, or a second
+        binding that disagrees with the first, is refused outright: one
+        board's rows must never answer for another's choices, and a repeat
+        copy must not inflate what looks like independent coverage."""
+        bindings: dict[str, frozenset[str]] = {}
+        for board in boards:
+            ids = frozenset(board.ids)
+            if board.snapshot in bindings and bindings[board.snapshot] != ids:
+                raise ValueError("conflicting outcome board snapshot membership")
+            bindings[board.snapshot] = ids
+        with self._lock:
+            if self._bound_boards is None:
+                self._bound_boards = bindings
+            elif self._bound_boards != bindings:
+                raise ValueError("outcome board binding cannot change")
 
     def get(self, snapshot: str, candidate: str, horizon: str | None) -> tuple[float, float] | None:
         legs = pair_legs(candidate)
@@ -1295,7 +1314,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               clock: Clock = _utcnow,
               skill_options: Mapping[str, Any] | None = None,
               no_price: Any = None,
-              cost_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
+              cost_provenance: Mapping[str, Any] | None = None,
+              assessment_class: str = "registered_protocol") -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout).
 
     ``no_price`` is the refusal ledger the pricing seam recorded into. It
@@ -1507,6 +1527,12 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         "promotion": {"promoted": False, "rule": PREREGISTERED_RULE,
                       "pre_registered_at": plan_created,
                       "amendments": [dict(entry) for entry in (amendments or ())]},
+        # (quant-research lane, adopted): a live run under the pre-registered
+        # protocol is "registered_protocol"; a protocol applied after the fact
+        # (redigest, frozen-corpus rescoring) is "retrospective_descriptive"
+        # and must never claim confirmatory standing. The scorer does not
+        # guess: callers that re-score history pass it explicitly.
+        "assessment_class": assessment_class,
         "headline": headline,
         "evaluation_valid": bool(aa["valid"]),
         "complete": complete,
@@ -1924,6 +1950,56 @@ def boards_fingerprint(boards: Sequence[Board]) -> str:
         digest.update(json.dumps([board.snapshot, board.session, board.clock,
                                   board.ids]).encode())
     return digest.hexdigest()
+
+
+def longrun_engine_identity() -> str:
+    """Bind the scorer and shipped board/outcome/policy helpers to exact source.
+
+    Injected callbacks still require an explicit identity in caller metadata.
+    This does not infer arbitrary closure identity or freeze third-party code.
+    (From the quant-research lane; additive.)
+    """
+    from tree_options.desk import (
+        cost,
+        forecast,
+        hindsight,
+        intraday_action_graph,
+        lab,
+        outcomes,
+        purge,
+        sessions,
+        skill,
+        theory_rules,
+    )
+
+    # Bind the actual statically imported helpers, rather than naming script
+    # paths that could be confused with the desk's subprocess entrypoints.
+    sources = {__name__: Path(__file__)}
+    for module in (
+        cost,
+        forecast,
+        hindsight,
+        intraday_action_graph,
+        lab,
+        outcomes,
+        purge,
+        sessions,
+        skill,
+        theory_rules,
+    ):
+        if module.__file__ is None:
+            raise RuntimeError(f"desk helper source unavailable: {module.__name__}")
+        sources[module.__name__] = Path(module.__file__)
+    modules = {
+        name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in sources.items()
+    }
+    return hashlib.sha256(
+        json.dumps(
+            {"modules": modules, "python": sys.version, "numpy": np.__version__},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 def _roster_amendments(before: Sequence[Mapping[str, Any]],
@@ -2372,7 +2448,14 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     table_path = params.get("table")
     if table_path:
         table: dict[tuple[str, str, str], dict[str, Any] | None] = {}
-        with _resolve_path(ctx, table_path).open(encoding="utf-8") as stream:
+        resolved = _resolve_path(ctx, table_path)
+        # source custody (from the quant-research lane, additive): the table
+        # that ACTUALLY priced the run is hashed into shared state the moment
+        # it is loaded, so any digest/result can bind its exact inputs.
+        body = resolved.read_bytes()
+        ctx.shared.setdefault("source_hashes", {})["outcome_table_sha256"] = \
+            hashlib.sha256(body).hexdigest()
+        with resolved.open(encoding="utf-8") as stream:
             for line in stream:
                 row = json.loads(line)
                 if row.get("status") == "no_fill" or row.get("net") is None:
@@ -2385,7 +2468,15 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
                 else:  # exit_at feeds the purged walk-forward (desk.purge)
                     value = {"gross": float(row["gross"]), "net": float(row["net"]),
                              "exit_at": row.get("exit_at")}
-                table[(row["snapshot"], row["candidate_id"], row["exit_mode"])] = value
+                key = (row["snapshot"], row["candidate_id"], row["exit_mode"])
+                # (quant-research lane, adopted) a repeated key with a
+                # DIFFERENT payload is corruption, not an update: last-wins
+                # would silently price the same trade two ways.
+                if key in table and table[key] != value:
+                    raise ValueError(
+                        f"outcome table collision: {key[0]}/{key[1]}/{key[2]} "
+                        "appears with conflicting payloads")
+                table[key] = value
 
         def lookup(snapshot: str, candidate_id: str,
                    horizon: str | None) -> dict[str, Any] | None:

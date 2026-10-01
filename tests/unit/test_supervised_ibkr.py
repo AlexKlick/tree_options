@@ -51,15 +51,24 @@ CON = {
     ("STK", "SPY", "", 0.0, ""): 1,
 }
 DEBIT_PUT = LegStructure(
-    id="dv", underlying="SPY", kind="debit_vertical",
-    legs=[{"right": "P", "action": "BUY", "strike": "100", "expiry": date(2026, 10, 16)},
-          {"right": "P", "action": "SELL", "strike": "95", "expiry": date(2026, 10, 16)}],
-    quantity=2, entry_date=date(2026, 9, 28), exit_deadline=date(2026, 10, 9),
-    limit="1.00", exits={"touch": False, "breach": False})
+    id="dv",
+    underlying="SPY",
+    kind="debit_vertical",
+    legs=[
+        {"right": "P", "action": "BUY", "strike": "100", "expiry": date(2026, 10, 16)},
+        {"right": "P", "action": "SELL", "strike": "95", "expiry": date(2026, 10, 16)},
+    ],
+    quantity=2,
+    entry_date=date(2026, 9, 28),
+    exit_deadline=date(2026, 10, 9),
+    limit="1.00",
+    exits={"touch": False, "breach": False},
+)
 
 
-def _session(port: int = GATEWAY_PAPER_PORT,
-             client_id: int = SUPERVISED_CLIENT_ID) -> tuple[IbkrTrex, SupervisedGateway]:
+def _session(
+    port: int = GATEWAY_PAPER_PORT, client_id: int = SUPERVISED_CLIENT_ID
+) -> tuple[IbkrTrex, SupervisedGateway]:
     gw = SupervisedGateway(CON, ACCOUNT)
     ib = IbkrTrex(port=port, client_id=client_id)
     ib._ib = gw
@@ -68,17 +77,26 @@ def _session(port: int = GATEWAY_PAPER_PORT,
 
 def _effect(intent_id: str = "sup-001", **overrides: Any) -> SupervisedEffect:
     fields: dict[str, Any] = {
-        "intent_id": intent_id, "account_id": ACCOUNT, "structure": DEBIT_PUT,
-        "side": "BUY", "quantity": 1, "limit": Decimal("0.90"),
-        "order_ref": supervised_order_ref(intent_id)}
+        "intent_id": intent_id,
+        "account_id": ACCOUNT,
+        "structure": DEBIT_PUT,
+        "side": "BUY",
+        "quantity": 1,
+        "limit": Decimal("0.90"),
+        "order_ref": supervised_order_ref(intent_id),
+    }
     fields.update(overrides)
     return SupervisedEffect(**fields)
 
 
 def _attempt(intent_id: str = "sup-001") -> SubmitAttempt:
-    return SubmitAttempt(record_id=f"sup-send-{intent_id}", intent_id=intent_id,
-                         send_attempt_at=T0, source="supervised",
-                         source_sequence_id=f"permit-{intent_id}")
+    return SubmitAttempt(
+        record_id=f"sup-send-{intent_id}",
+        intent_id=intent_id,
+        send_attempt_at=T0,
+        source="supervised",
+        source_sequence_id=f"permit-{intent_id}",
+    )
 
 
 def _broker(ib: IbkrTrex, **kwargs: Any) -> IbkrSupervisedBroker:
@@ -108,13 +126,16 @@ def test_unhashed_extra_field_refused():
         decode_effect(json.dumps(document, sort_keys=True, separators=(",", ":")).encode())
 
 
-@pytest.mark.parametrize("overrides, message", [
-    ({"order_ref": "trex:dv"}, "supervised tag"),
-    ({"account_id": "U7654321"}, "paper accounts"),
-    ({"side": "SELL"}, "opens packages only"),
-    ({"quantity": 3}, "exceeds"),
-    ({"structure": DEBIT_PUT.model_copy(update={"id": "sup:x"})}, "collide"),
-])
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"order_ref": "trex:dv"}, "supervised tag"),
+        ({"account_id": "U7654321"}, "paper accounts"),
+        ({"side": "SELL"}, "opens packages only"),
+        ({"quantity": 3}, "exceeds"),
+        ({"structure": DEBIT_PUT.model_copy(update={"id": "sup:x"})}, "collide"),
+    ],
+)
 def test_effect_binding_rules(overrides, message):
     with pytest.raises(ValueError, match=message):
         _effect(**overrides)
@@ -128,10 +149,13 @@ def test_paper_session_has_no_blockers():
     assert _broker(ib).paper_blockers(ACCOUNT) == []
 
 
-@pytest.mark.parametrize("setup, blocker", [
-    (lambda gw: setattr(gw, "is_connected", False), "gateway_disconnected"),
-    (lambda gw: setattr(gw, "accounts", ["DU9999999"]), "account_not_managed_by_session"),
-])
+@pytest.mark.parametrize(
+    "setup, blocker",
+    [
+        (lambda gw: setattr(gw, "is_connected", False), "gateway_disconnected"),
+        (lambda gw: setattr(gw, "accounts", ["DU9999999"]), "account_not_managed_by_session"),
+    ],
+)
 def test_paper_blockers_from_session_state(setup, blocker):
     ib, gw = _session()
     setup(gw)
@@ -177,11 +201,20 @@ def test_submit_places_the_permitted_order_with_tag_and_account():
     assert trade.order.tif == "DAY"
     assert outcome.acknowledgement.broker_order_id == str(trade.order.orderId)
     # The acknowledgement folds cleanly into the execution lifecycle.
-    intent = OrderIntent(intent_id="sup-001", contract_id="BAG:dv", side="BUY",
-                         position_effect="OPEN_LONG", quantity=1, order_type="LIMIT",
-                         limit_price=Decimal("0.90"), execution_style="package",
-                         package_id="dv", intent_created_at=T0, source="supervised",
-                         source_sequence_id="seq-sup-001")
+    intent = OrderIntent(
+        intent_id="sup-001",
+        contract_id="BAG:dv",
+        side="BUY",
+        position_effect="OPEN_LONG",
+        quantity=1,
+        order_type="LIMIT",
+        limit_price=Decimal("0.90"),
+        execution_style="package",
+        package_id="dv",
+        intent_created_at=T0,
+        source="supervised",
+        source_sequence_id="seq-sup-001",
+    )
     lifecycle = ExecutionLifecycle.start(intent).apply(_attempt()).apply(outcome.acknowledgement)
     assert lifecycle.state == ExecutionState.ACKNOWLEDGED
 
@@ -207,21 +240,32 @@ def test_submit_ack_timeout_is_uncertain_after_bounded_polls():
     ib, gw = _session()
     gw.status_script = ["PendingSubmit"]
     outcome = _broker(ib, ack_timeout_s=1.0, poll_s=0.25).submit(
-        _attempt(), effect_bytes(_effect()))
+        _attempt(), effect_bytes(_effect())
+    )
     assert isinstance(outcome, Uncertain)
     assert outcome.reason == "ack_timeout"
     assert gw.slept.count(0.25) == math.ceil(1.0 / 0.25)
     assert len(gw.trades) == 1, "one order on the wire, never a retry"
 
 
-@pytest.mark.parametrize("setup, reason", [
-    (lambda gw: gw.completed.append(SimpleNamespace(order=SimpleNamespace(
-        orderRef="trex:sup:sup-001", orderId=41, permId=9001))),
-     "not_sent:tag_already_at_broker"),
-    (lambda gw: setattr(gw, "views_error", ConnectionError("down")),
-     "not_sent:duplicate_check_unreadable"),
-    (lambda gw: setattr(gw, "accounts", ["DU9999999"]), "not_sent:session"),
-])
+@pytest.mark.parametrize(
+    "setup, reason",
+    [
+        (
+            lambda gw: gw.completed.append(
+                SimpleNamespace(
+                    order=SimpleNamespace(orderRef="trex:sup:sup-001", orderId=41, permId=9001)
+                )
+            ),
+            "not_sent:tag_already_at_broker",
+        ),
+        (
+            lambda gw: setattr(gw, "views_error", ConnectionError("down")),
+            "not_sent:duplicate_check_unreadable",
+        ),
+        (lambda gw: setattr(gw, "accounts", ["DU9999999"]), "not_sent:session"),
+    ],
+)
 def test_submit_refusals_never_touch_the_wire(setup, reason):
     ib, gw = _session()
     setup(gw)
@@ -264,10 +308,12 @@ def test_lookup_finds_our_own_submitted_order():
 def test_lookup_dedupes_one_order_seen_in_several_views():
     ib, gw = _session()
     ref = supervised_order_ref("sup-001")
-    gw.foreign_open.append(SimpleNamespace(order=SimpleNamespace(
-        orderRef=ref, orderId=41, permId=9001)))
-    gw.executions.append(SimpleNamespace(execution=SimpleNamespace(
-        orderRef=ref, orderId=0, permId=9001)))
+    gw.foreign_open.append(
+        SimpleNamespace(order=SimpleNamespace(orderRef=ref, orderId=41, permId=9001))
+    )
+    gw.executions.append(
+        SimpleNamespace(execution=SimpleNamespace(orderRef=ref, orderId=0, permId=9001))
+    )
     assert _broker(ib).lookup("sup-001") == Submitted("41")
 
 
@@ -275,8 +321,9 @@ def test_lookup_refuses_to_pick_between_two_orders():
     ib, gw = _session()
     ref = supervised_order_ref("sup-001")
     for perm in (9001, 9002):
-        gw.completed.append(SimpleNamespace(order=SimpleNamespace(
-            orderRef=ref, orderId=perm - 8960, permId=perm)))
+        gw.completed.append(
+            SimpleNamespace(order=SimpleNamespace(orderRef=ref, orderId=perm - 8960, permId=perm))
+        )
     verdict = _broker(ib).lookup("sup-001")
     assert isinstance(verdict, LookupUnknown)
     assert verdict.reason.startswith("multiple_orders_for_tag")

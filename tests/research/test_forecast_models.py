@@ -10,6 +10,7 @@ the one-step residual width, which the direct h-step errors do not
 have. The theoretical innovation factor sqrt(sum phi^(2j)) is pinned
 separately as a unit check of the FACT, not of any estimator.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -55,8 +56,7 @@ class TestRwFull:
         out = rw_full(closes, h=1, taus=ORDER_STAT_TAUS)
         assert out is not None
         for got, d in zip(out, changes, strict=True):
-            assert got == pytest.approx(
-                math.log(closes[-1]) + d, rel=1e-12)
+            assert got == pytest.approx(math.log(closes[-1]) + d, rel=1e-12)
 
     def test_too_few_pairs_refuses(self) -> None:
         assert rw_full((100.0, 101.0), h=5, taus=QUANTILE_GRID) is None
@@ -80,8 +80,7 @@ class TestRwWindow:
         # the window's minimum change is calm; the full history's is
         # the -0.5 extreme:
         assert win[0] > math.log(closes[-1]) - 0.4
-        assert full[0] == pytest.approx(math.log(closes[-1]) - 0.5,
-                                        rel=1e-9)
+        assert full[0] == pytest.approx(math.log(closes[-1]) - 0.5, rel=1e-9)
         # rw_window == rw_full on the series truncated to the last 250
         # changes (3 leading closes dropped):
         truncated = tuple(closes[3:])
@@ -132,15 +131,17 @@ class TestAr1Direct:
         p = (n * sxy - sx * sy) / det
 
         last = len(x) - 1
-        geom = (1.0 - p ** h) / (1.0 - p)
+        geom = (1.0 - p**h) / (1.0 - p)
 
         def point(idx: int) -> float:
-            return b0 * geom + (p ** h) * x[idx]
+            return b0 * geom + (p**h) * x[idx]
 
         errors = sorted(x[u + h] - point(u) for u in range(last - h + 1))
-        expected = [point(last) + errors[0],
-                    point(last) + errors[len(errors) // 2],
-                    point(last) + errors[-1]]
+        expected = [
+            point(last) + errors[0],
+            point(last) + errors[len(errors) // 2],
+            point(last) + errors[-1],
+        ]
         for got, want in zip(out, expected, strict=True):
             assert got == pytest.approx(want, abs=1e-9)
 
@@ -155,8 +156,8 @@ class TestAr1Direct:
         closes = tuple(math.exp(v) for v in x)
         out = ar1_direct(closes, h=h, taus=(0.0, 0.5, 1.0))
         assert out is not None
-        geom = (1.0 - 0.5 ** h) / (1.0 - 0.5)
-        point = 0.2 * geom + (0.5 ** h) * x[-1]
+        geom = (1.0 - 0.5**h) / (1.0 - 0.5)
+        point = 0.2 * geom + (0.5**h) * x[-1]
         for got in out:
             assert got == pytest.approx(point, abs=1e-9)
 
@@ -182,7 +183,7 @@ class TestAr1Direct:
 
 class TestBind:
     def test_bound_closures_do_not_interfere(self) -> None:
-        closes = tuple(100.0 * (1.01 ** i) for i in range(40))
+        closes = tuple(100.0 * (1.01**i) for i in range(40))
         narrow = bind(rw_full, h=5, taus=(0.5,))
         wide = bind(rw_full, h=20, taus=(0.05, 0.95))
         a = narrow(closes)

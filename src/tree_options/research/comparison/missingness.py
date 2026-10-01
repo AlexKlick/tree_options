@@ -57,8 +57,7 @@ def reason_benchmark_overlap_missing(date_iso: str) -> MissingnessReason:
     return MissingnessReason(
         code=REASON_BENCHMARK_OVERLAP_MISSING,
         description=(
-            f"baseline has no supported observation on {date_iso}; "
-            "the diff cell renders as null"
+            f"baseline has no supported observation on {date_iso}; the diff cell renders as null"
         ),
     )
 
@@ -66,18 +65,14 @@ def reason_benchmark_overlap_missing(date_iso: str) -> MissingnessReason:
 def reason_unsupported_horizon(requested: str, supported: str) -> MissingnessReason:
     return MissingnessReason(
         code=REASON_UNSUPPORTED_HORIZON,
-        description=(
-            f"requested {requested} extends past supported coverage {supported}"
-        ),
+        description=(f"requested {requested} extends past supported coverage {supported}"),
     )
 
 
 def reason_data_gated(scope: str) -> MissingnessReason:
     return MissingnessReason(
         code=REASON_DATA_GATED,
-        description=(
-            f"scope {scope} is DATA-GATED-NOT-RUN — no chartable evidence yet"
-        ),
+        description=(f"scope {scope} is DATA-GATED-NOT-RUN — no chartable evidence yet"),
     )
 
 

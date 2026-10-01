@@ -3,6 +3,7 @@
 Parsing proves internal consistency, not permission to trade. Keep the miner's
 sealed files and its real wire format; never infer an entry date from wall time.
 """
+
 from __future__ import annotations
 
 import copy
@@ -128,13 +129,17 @@ class Deal:
     raw: dict[str, Any]
 
 
-def parse_queue(doc: Mapping[str, Any], cal: Calendar, *, expected_session: date | None = None) -> Queue:
+def parse_queue(
+    doc: Mapping[str, Any], cal: Calendar, *, expected_session: date | None = None
+) -> Queue:
     if not isinstance(doc, Mapping) or doc.get("schema") != "trex.deal/1":
         raise ContractError("queue_schema")
     raw = copy.deepcopy(dict(doc))
     session = iso_date(raw.get("session"), "queue_session")
     entry = iso_date(raw.get("entry_session"), "entry_session")
-    if not cal.is_session(session) or (expected_session is not None and session != expected_session):
+    if not cal.is_session(session) or (
+        expected_session is not None and session != expected_session
+    ):
         raise ContractError("queue_session")
     if entry != first_session_after(session, cal):
         raise ContractError("entry_session")
@@ -144,7 +149,10 @@ def parse_queue(doc: Mapping[str, Any], cal: Calendar, *, expected_session: date
     if until != datetime.combine(entry, time(11, 30), ET):
         raise ContractError("valid_until")
     cfg, pb = selection.load_config(), playbook.load_playbook()
-    for key, version, sha in (("miner", cfg.version, cfg.sha256), ("playbook", pb.version, pb.sha256)):
+    for key, version, sha in (
+        ("miner", cfg.version, cfg.sha256),
+        ("playbook", pb.version, pb.sha256),
+    ):
         obj = raw.get(key)
         if not isinstance(obj, dict) or obj.get("version") != version or obj.get("sha256") != sha:
             raise ContractError(f"{key}_seal")
@@ -167,7 +175,16 @@ def parse_queue(doc: Mapping[str, Any], cal: Calendar, *, expected_session: date
     ranks = [r.get("rank") for r in raw["admissible"]]
     if any(type(r) is not int for r in ranks) or ranks != list(range(1, len(ranks) + 1)):
         raise ContractError("queue_rank")
-    return Queue(raw, session, entry, cutoff, until, digest(raw), tuple(raw["admissible"]), tuple(raw["surfaced"]))
+    return Queue(
+        raw,
+        session,
+        entry,
+        cutoff,
+        until,
+        digest(raw),
+        tuple(raw["admissible"]),
+        tuple(raw["surfaced"]),
+    )
 
 
 def _leg_identity(raw: Any) -> tuple[Any, ...]:
@@ -226,7 +243,10 @@ def parse_deal(doc: Mapping[str, Any], queue: Queue, cal: Calendar) -> Deal:
     for k in ("underlying", "kind", "quantity"):
         if raw.get(k) != getattr(spec, k):
             raise ContractError(f"{k}_mismatch")
-    if iso_date(raw.get("entry_session"), "entry_session") != queue.entry_session or spec.entry_date != queue.entry_session:
+    if (
+        iso_date(raw.get("entry_session"), "entry_session") != queue.entry_session
+        or spec.entry_date != queue.entry_session
+    ):
         raise ContractError("entry_session")
     deadline = iso_date(raw.get("exit_deadline"), "exit_deadline")
     if deadline != spec.exit_deadline or not cal.is_session(deadline):
