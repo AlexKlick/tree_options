@@ -76,6 +76,12 @@ RAW_KEEP_SESSIONS = 20
 # measured ~2-4 min publication lag, so captures fire at clock+3.
 EOD = "eod"
 CLOCK_WINDOW_S = 600
+# clock-tier retry policy: after the first sweep, re-fetch only the stale
+# names this many times, pausing between passes so late rolls land (the
+# 2026-10-01 cohorts: 13-16 stale per sweep, publications rolling 1-4 min
+# behind the clock; a pass costs one paced request per stale name)
+CLOCK_RETRY_PASSES = 2
+CLOCK_RETRY_PAUSE_S = 60.0
 
 
 def clock_instant(session: date, clock: str) -> datetime:
@@ -212,6 +218,39 @@ class ChainStore:
             with contextlib.suppress(ValueError):
                 out.append(date.fromisoformat(p.stem))
         return sorted(out)
+
+    def clock_coverage(self, session: date) -> list[dict[str, Any]]:
+        """One row per captured clock of ``session`` (clock, ok, stale,
+        stale_names), newest clock last. The per-clock manifests are the
+        only source: a clock without a manifest simply did not capture."""
+        rows: list[dict[str, Any]] = []
+        clocks = self.root / "manifest"
+        if not clocks.is_dir():
+            return rows
+        names = sorted(
+            p.name.removeprefix("clock=")
+            for p in clocks.iterdir()
+            if p.is_dir() and p.name.startswith("clock=")
+        )
+        for clock in names:
+            path = self.manifest_path(session, clock=clock)
+            if not path.exists():
+                continue
+            try:
+                doc = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            symbols = doc.get("symbols") if isinstance(doc, dict) else None
+            if not isinstance(symbols, dict):
+                continue
+            stale = sorted(s for s, r in symbols.items() if str(r.get("status")) == "stale")
+            ok = sum(
+                1
+                for r in symbols.values()
+                if str(r.get("status")) in ("ok", "exists", "conflict")
+            )
+            rows.append({"clock": clock, "ok": ok, "stale": len(stale), "stale_names": stale})
+        return rows
 
 
 # --------------------------------------------------------------- validation
@@ -684,6 +723,31 @@ def record_session(
             tier=tier,
             before_fetch=pace,
         )
+    if tier != EOD and not dry_run:
+        # the delayed feed publishes per-name on its own schedule: a name
+        # stale at sweep time has often rolled a minute or two later. Two
+        # bounded passes over ONLY the stale names, inside the clock's own
+        # freshness window (the validate branch refuses anything past it
+        # anyway, so the window is the bound).
+        for attempt in range(CLOCK_RETRY_PASSES):
+            stale = [s for s, r in results.items() if r.status == "stale"]
+            if not stale:
+                break
+            sleep(CLOCK_RETRY_PAUSE_S)
+            fetched[0] = False  # the first retry fetch is not paced behind the sweep
+            for sym in stale:
+                results[sym] = record_symbol(
+                    store,
+                    session,
+                    sym,
+                    transport=transport,
+                    clock=clock,
+                    cal=cal,
+                    dry_run=dry_run,
+                    recheck=recheck,
+                    tier=tier,
+                    before_fetch=pace,
+                )
     summary = RunSummary(session, results)
     if dry_run:
         return summary
