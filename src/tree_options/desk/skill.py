@@ -1105,6 +1105,25 @@ def load_boards(run_dir: Path) -> list[Board]:
     return boards
 
 
+def _archive_prior_digest(run_dir: Path, moment: datetime) -> str:
+    """Move the run's current digest into ``digest.history/`` - APPEND-ONLY.
+    Every redigest preserves the digest it replaces under a fresh name
+    (sequence number + the redigest's UTC moment), so no rewrite ever
+    destroys evidence; a name collision bumps the sequence instead of
+    overwriting. The old single backup slot (``digest.pre-redigest.json``)
+    burned the prior on the second redigest and is gone. Returns the archived
+    name relative to the run dir."""
+    history = run_dir / "digest.history"
+    history.mkdir(exist_ok=True)
+    stamp = moment.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    seq = sum(1 for _ in history.glob("*.json")) + 1
+    while (history / f"{seq:04d}-{stamp}.json").exists():
+        seq += 1
+    name = f"{seq:04d}-{stamp}.json"
+    (run_dir / "digest.json").replace(history / name)
+    return f"digest.history/{name}"
+
+
 def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = None,
              sessions: tuple[str | None, str | None] | None = None,
              arms: Sequence[str] | None = None,
@@ -1122,7 +1141,10 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
     what a mid-run partial read needs (the executor shuffles its worklist,
     so the full pairing stays empty until the run is nearly done). It needs
     ``out`` (a subset digest never replaces the run's) and is labelled
-    ARM SUBSET in the headline, the markdown and ``redigest["arms"]``."""
+    ARM SUBSET in the headline, the markdown and ``redigest["arms"]``.
+    An in-place redigest preserves the digest it replaces APPEND-ONLY in
+    ``digest.history/`` (``redigest["prior_in"]`` names it); the former
+    single backup slot is gone."""
     if arms is not None and out is None:
         raise ValueError("an arm-subset redigest needs --out")
     named = []  # deduped, order-preserving, empty entries dropped
@@ -1211,10 +1233,12 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
                            "source": "receipts on disk + the outcome table (no model, no bundle)",
                            "table": str(table_path), "notes": notes,
                            "written_to": str(out if out is not None else run_dir),
+                           "prior_in": None,
                            "arms": [a.name for a in arms_used] if named else None,
                            "sessions": None if sessions is None else {
                                "first": sessions[0], "last": sessions[1],
                                "boards": len(boards)}}
+        doc["provenance"] = longrun.provenance_block(run_dir, cfg, table=table_path)
         return doc
 
     if out is not None:
@@ -1227,10 +1251,8 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
             raise longrun.RunLocked(f"{run_dir.name} is live (its lock is held); pass --out DIR "
                                     "to redigest without touching it")
         doc = score()
-        prior = run_dir / "digest.json"
-        backup = run_dir / "digest.pre-redigest.json"
-        if prior.is_file() and not backup.exists():
-            prior.replace(backup)
+        if (run_dir / "digest.json").is_file():
+            doc["redigest"]["prior_in"] = _archive_prior_digest(run_dir, clock())
         longrun.write_digest(run_dir, doc)
     return doc
 

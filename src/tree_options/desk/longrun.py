@@ -56,6 +56,7 @@ import math
 import os
 import random
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -1582,6 +1583,8 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
             window = again["sessions"]
             said.append(f"session window {window['first'] or '..'}..{window['last'] or '..'} "
                         f"({window['boards']} boards)")
+        if again.get("prior_in"):
+            said.append(f"prior digest preserved append-only at {again['prior_in']}")
         add("> Redigest: " + "; ".join(said) + ".")
         add("")
     promotion = doc["promotion"]
@@ -1745,6 +1748,25 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         add("")
         add(str((section or {}).get("markdown") or json.dumps(section, default=str)[:4000]))
         add("")
+    prov = doc.get("provenance")
+    if isinstance(prov, Mapping) and prov:
+        add("## Provenance (what produced these numbers)")
+        add("")
+        table_doc = prov.get("outcome_table")
+        if isinstance(table_doc, Mapping) and table_doc.get("sha256"):
+            add(f"- outcome table: {table_doc.get('path')} - {table_doc.get('bytes')} bytes, "
+                f"sha256 {table_doc['sha256']}")
+        elif isinstance(table_doc, Mapping):
+            add(f"- outcome table: {table_doc.get('note') or 'unknown'}"
+                + (f" (configured path {table_doc.get('path')})"
+                   if table_doc.get("path") else ""))
+        for key, label in (("boards_fingerprint", "boards fingerprint"),
+                           ("protocol_sha256", "protocol sha256")):
+            if prov.get(key):
+                add(f"- {label}: {prov[key]}")
+        if prov.get("code_version"):
+            add(f"- code version: {prov['code_version']} (git describe --always --dirty)")
+        add("")
     add("## Receipts")
     add("")
     for arm, path in doc["receipts"].items():
@@ -1756,6 +1778,91 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
 def write_digest(run_dir: Path, doc: Mapping[str, Any]) -> None:
     _write_json(run_dir / "digest.json", doc)
     (run_dir / "digest.md").write_text(digest_markdown(doc), encoding="utf-8")
+
+
+def _git_describe(start: Path) -> str | None:
+    """``git describe --always --dirty`` run at ``start``, or None anywhere git
+    cannot answer (not a repository, no git binary). Never raises: code run
+    outside a repository simply makes no version claim."""
+    try:
+        done = subprocess.run(["git", "-C", str(start), "describe", "--always", "--dirty"],
+                              capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    described = (done.stdout or "").strip()
+    return described or None
+
+
+def provenance_block(run_dir: Path, cfg: Mapping[str, Any] | None = None,
+                     *, table: Path | str | None = None) -> dict[str, Any]:
+    """The digest's provenance: what produced every number it carries.
+
+    - ``outcome_table``: the identity (path, byte size, sha256) of the table
+      every P&L number was priced from. The table lives OUTSIDE the repo (its
+      run dirs are gitignored and the table itself usually sits in the state
+      store), so the sha256 is the only durable pin - a digest that cannot
+      name its table cannot be audited.
+    - ``boards_fingerprint`` and ``protocol_sha256``: carried from the
+      pre-registered plan.json (the pairing and the protocol, canonical JSON:
+      sort_keys with (",", ":") separators).
+    - ``code_version``: ``git describe --always --dirty`` of the CODE that
+      wrote the digest, omitted cleanly when run outside a repository.
+
+    ``table`` (e.g. a redigest's explicit --table) overrides the config's
+    outcome.table; ``cfg`` is the run's parsed config when the caller already
+    has it, else the config.json copy in the run dir is read. Everything is
+    additive: digests written before this block existed simply lack it."""
+    block: dict[str, Any] = {"schema": "desk-longrun-provenance/1"}
+    outcome_cfg: Mapping[str, Any] = {}
+    if isinstance(cfg, Mapping) and isinstance(cfg.get("outcome"), Mapping):
+        outcome_cfg = cfg["outcome"]
+    else:
+        config_copy = run_dir / "config.json"
+        if config_copy.is_file():
+            try:
+                loaded = json.loads(config_copy.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                loaded = None
+            if isinstance(loaded, Mapping) and isinstance(loaded.get("outcome"), Mapping):
+                outcome_cfg = loaded["outcome"]
+    resolved = table if table is not None else outcome_cfg.get("table")
+    if resolved:
+        path = Path(str(resolved)).expanduser()
+        entry: dict[str, Any] = {"path": str(resolved)}
+        if path.is_file():
+            digest = hashlib.sha256()
+            size = 0
+            with path.open("rb") as stream:  # streamed: the real table is ~70 MB
+                for chunk in iter(lambda: stream.read(1 << 20), b""):
+                    size += len(chunk)
+                    digest.update(chunk)
+            entry |= {"bytes": size, "sha256": digest.hexdigest()}
+        else:
+            entry["note"] = "table not found at digest time (path recorded as configured)"
+        block["outcome_table"] = entry
+    elif outcome_cfg:
+        block["outcome_table"] = {"path": None,
+                                  "note": f"no outcome table in config.json (outcome plug-in "
+                                          f"{outcome_cfg.get('plugin')!r})"}
+    else:
+        block["outcome_table"] = {"path": None, "note": "no config.json in the run dir"}
+    plan_path = run_dir / "plan.json"
+    if plan_path.is_file():
+        try:
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            plan = None
+        if isinstance(plan, Mapping):
+            if isinstance(plan.get("boards_fingerprint"), str) and plan["boards_fingerprint"]:
+                block["boards_fingerprint"] = plan["boards_fingerprint"]
+            if isinstance(plan.get("protocol"), Mapping) and plan["protocol"]:
+                canonical = json.dumps(plan["protocol"], sort_keys=True,
+                                       separators=(",", ":")).encode()
+                block["protocol_sha256"] = hashlib.sha256(canonical).hexdigest()
+    version = _git_describe(Path(__file__).resolve().parent)
+    if version:
+        block["code_version"] = version
+    return block
 
 
 # --------------------------------------------------------------------- run
@@ -1950,6 +2057,7 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
             raise
         if sections:
             digest["reports"] = sections
+        digest["provenance"] = provenance_block(run_dir)
         write_digest(run_dir, digest)
         executor.status = "finished"
         executor.digest = "digest.json"
@@ -2599,7 +2707,8 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
             projected.pop("heals", None)  # additive: a clean arm carries no heals key
         standings.append(projected)
     standings.sort(key=_standing_order)
-    return {"headline": doc.get("headline"), "untrusted_note": doc.get("untrusted_note"),
+    projection: dict[str, Any] = {"headline": doc.get("headline"),
+            "untrusted_note": doc.get("untrusted_note"),
             "evaluation_valid": doc.get("evaluation_valid"), "complete": doc.get("complete"),
             "at": doc.get("at"),
             "promotion": {"promoted": False, "rule": promotion.get("rule")},
@@ -2620,6 +2729,20 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
                              for f in wf.get("finalists", [])]},
             "benchmarks": doc.get("benchmarks", []),
             "skill": _skill_projection(doc.get("skill"))}
+    prov = doc.get("provenance")
+    if isinstance(prov, Mapping) and prov:
+        # additive: digests written before provenance existed project unchanged;
+        # the table's PATH stays out (the cockpit never leaks absolute paths)
+        entry = prov.get("outcome_table")
+        carry = {"schema": prov.get("schema"),
+                 "outcome_table": ({k: entry.get(k) for k in ("bytes", "sha256", "note")
+                                    if entry.get(k) is not None}
+                                   if isinstance(entry, Mapping) else None)}
+        for key in ("boards_fingerprint", "protocol_sha256", "code_version"):
+            if prov.get(key):
+                carry[key] = prov[key]
+        projection["provenance"] = carry
+    return projection
 
 
 def _skill_projection(section: Any) -> dict[str, Any] | None:

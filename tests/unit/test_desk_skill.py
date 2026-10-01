@@ -466,7 +466,9 @@ def test_redigest_rescores_from_receipts_with_zero_model_calls(
     assert printed["model_calls"] == 0 and printed["complete"] is True
     assert len(ask.calls) == calls
     after = json.loads((run_dir / "digest.json").read_text())
-    assert (run_dir / "digest.pre-redigest.json").is_file()
+    priors = sorted((run_dir / "digest.history").glob("*.json"))
+    assert len(priors) == 1  # append-only: the run's own digest survives in
+    # digest.history/; the old single backup slot is gone
     assert after["redigest"]["model_calls"] == 0
     assert [(r["arm"], r["net_total"], r["net_ci95"]) for r in after["standings"]] == [
         (r["arm"], r["net_total"], r["net_ci95"]) for r in before["standings"]]
