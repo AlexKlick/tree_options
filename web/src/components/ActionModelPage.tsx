@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { getActionModelExample, getAutomation, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getLongRun, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
-import type { ActionNode, LabScoreboard, LongRunDigest, LongRunPaired, SupervisedDeskStatus } from '../lib/types'
+import { getActionModelExample, getAutomation, getDeskStandings, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getLongRun, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
+import type { ActionNode, DeskStandings, LabScoreboard, LongRunDigest, LongRunPaired, SupervisedDeskStatus } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
 import { AccountExposureBanner } from './AccountExposureBanner'
+import { Pill } from './Pill'
 
 function NodeInspector({ node }: { node: ActionNode }) {
   return (
@@ -264,6 +265,59 @@ function LongRunCard() {
   )
 }
 
+/** A closed-pnl decimal string ("17", "-3.5") as the deck's money shape. */
+const decimalMoney = (value: string) => {
+  const n = Number(value)
+  return Number.isFinite(n) ? money(n) : value
+}
+
+function StandingsCard() {
+  const standings = usePoll(getDeskStandings, 60_000)
+  const view: DeskStandings | null = standings.data
+  return (
+    <section className="card" aria-label="Desk challenge rule standings">
+      <div className="eyebrow">Desk challenge · sealed rule · evidence only</div>
+      <h2>Rule standings</h2>
+      {standings.error && <p role="alert">Rule standings unavailable: {standings.error}</p>}
+      {view && (
+        <>
+          <p className="muted">
+            Cross-digest standings over {view.games_counted} post-seal game
+            {view.games_counted === 1 ? '' : 's'} — every number is mechanical
+            replay accounting from the digests; the sealed rule&apos;s clauses
+            are the operator&apos;s to read on them.
+          </p>
+          <div className="pill-row" style={{ marginBottom: 10 }}>
+            <Pill variant="empty">cost baseline ${view.cost_baseline_per_game.toFixed(2)} / game</Pill>
+            <Pill variant="empty">registration sample through {view.registration_sample_through}</Pill>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr><th scope="col">Policy</th><th scope="col">Kind</th><th scope="col">Games</th><th scope="col">Boards</th><th scope="col">Closed pnl</th><th scope="col">Sessions</th></tr>
+              </thead>
+              <tbody>
+                {view.policies.map((row) => (
+                  <tr key={row.policy} data-testid={`standings-row-${row.policy}`}>
+                    <th scope="row">{row.policy}</th>
+                    <td>{row.kind}</td>
+                    <td>{row.games}</td>
+                    <td>{row.boards}</td>
+                    <td>{decimalMoney(row.closed_pnl_sum)}</td>
+                    <td>{row.sessions_distinct}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {view.policies.length === 0 && <p className="muted">No post-seal challenge game has completed yet.</p>}
+          <p className="muted" data-testid="standings-untrusted-note">{view.untrusted_note}</p>
+        </>
+      )}
+    </section>
+  )
+}
+
 export function ActionModelPage() {
   const poll = usePoll(getActionModelExample, 0)
   const accountPoll = usePoll(getPlans, 30_000)
@@ -280,6 +334,7 @@ export function ActionModelPage() {
     <AppShell title="Action model" poll={poll}>
       <AutomationCard />
       <LongRunCard />
+      <StandingsCard />
       <section className="card" aria-label="Supervised paper desk">
         <div className="eyebrow">Existing TREX paper system · local observations</div>
         <h2>Supervised desk (paper)</h2>

@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ActionModelPage } from './ActionModelPage'
-import { getActionModelExample, getAutomation, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getLongRun, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
-import type { AccountExposure, LongRunView, PlansResponse } from '../lib/types'
+import { getActionModelExample, getAutomation, getDeskStandings, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getLongRun, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
+import type { AccountExposure, DeskStandings, LongRunView, PlansResponse } from '../lib/types'
 
 vi.mock('../lib/api', () => ({
   getActionModelExample: vi.fn(),
@@ -13,6 +13,7 @@ vi.mock('../lib/api', () => ({
   getSupervisedDesk: vi.fn(),
   getLabScoreboard: vi.fn(),
   getLongRun: vi.fn(),
+  getDeskStandings: vi.fn(),
   getAutomation: vi.fn(),
   postAutomationAction: vi.fn(),
   postSupervisedControl: vi.fn(),
@@ -342,6 +343,59 @@ it('flags an invalid A/A pair and the empty store', async () => {
   vi.mocked(getLongRun).mockResolvedValue({ schema: 'desk-longrun-view/1', run: null, progress: null, digest: null, execution_enabled: false })
   render(<ActionModelPage />)
   expect(await screen.findByText('No long run has started in this cockpit store.')).toBeTruthy()
+})
+
+// Mirrors challenge.UNTRUSTED_NOTE verbatim (the footnote must quote it).
+const UNTRUSTED_NOTE =
+  "Model output is untrusted prose. Outcomes are mechanical proxies from " +
+  "replay accounting on last-traded-minute closes, not executable fills. " +
+  "Nothing in this digest is promoted: promotion is the operator's " +
+  "pre-registered-rule path (docs/desk/PROMOTION-RULE.md)."
+
+const STANDINGS: DeskStandings = {
+  schema: 'desk-challenge-standings/1',
+  registration_sample_through: '20261001T162152Z',
+  games_counted: 2,
+  cost_baseline_per_game: 14.6,
+  policies: [
+    // hand arithmetic over two fixture digests: winner 30+25 boards,
+    // pnl 8+(-3); the control 30+25 boards, pnl 1+0
+    { policy: 'gepa:alpha', kind: 'model', games: 2, boards: 55, entered: 9,
+      closed_pnl_sum: '5', worst_minimum_capital: '4980', model_calls: 20,
+      model_failures: 1, sessions_distinct: 2,
+      session_pnl: { '20261002T010000Z:2026-10-02': 8.0, '20261003T010000Z:2026-10-03': -3.0 } },
+    { policy: 'no_trade', kind: 'rules', games: 2, boards: 55, entered: 0,
+      closed_pnl_sum: '1', worst_minimum_capital: '4999', model_calls: 0,
+      model_failures: 0, sessions_distinct: 2, session_pnl: {} },
+  ],
+  untrusted_note: UNTRUSTED_NOTE,
+}
+
+it('renders the rule standings: per-policy rows, cost badge, the note verbatim', async () => {
+  vi.mocked(getDeskStandings).mockResolvedValue(STANDINGS)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk challenge rule standings' })
+  const winner = await screen.findByTestId('standings-row-gepa:alpha')
+  expect(winner.textContent).toMatch(/gepa:alpha/)
+  expect(winner.textContent).toMatch(/model/) // kind column
+  expect(card.textContent).toMatch(/Games.*Boards.*Closed pnl.*Sessions/s)
+  expect(winner.textContent).toMatch(/\+\$5\.00/) // closed_pnl_sum "5"
+  const control = screen.getByTestId('standings-row-no_trade')
+  expect(control.textContent).toMatch(/no_trade/)
+  expect(control.textContent).toMatch(/\+\$1\.00/)
+  expect(card.textContent).toMatch(/2 post-seal games/)
+  expect(card.textContent).toMatch(/cost baseline \$14\.60 \/ game/)
+  expect(card.textContent).toMatch(/registration sample through 20261001T162152Z/)
+  // the footnote quotes the standings' untrusted note VERBATIM
+  expect(screen.getByTestId('standings-untrusted-note').textContent).toBe(UNTRUSTED_NOTE)
+  // read-only card: no promote control ever
+  expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
+})
+
+it('answers an empty standings store honestly', async () => {
+  vi.mocked(getDeskStandings).mockResolvedValue({ ...STANDINGS, games_counted: 0, policies: [] })
+  render(<ActionModelPage />)
+  expect(await screen.findByText('No post-seal challenge game has completed yet.')).toBeTruthy()
 })
 
 // The account is not the desk book, and the canary's flat-book rule

@@ -454,6 +454,36 @@ export interface LongRunView {
   execution_enabled: false
 }
 
+// GET /api/desk/standings: the cross-digest challenge standings every
+// clause of the sealed promotion rule reads (desk-challenge-standings/1).
+// Every number is mechanical replay accounting over POST-SEAL digests; a
+// model-claimed figure is never a score. Nothing here promotes.
+export interface StandingsPolicyRow {
+  policy: string
+  kind: 'rules' | 'model'
+  games: number
+  boards: number
+  entered: number
+  /** Decimal-as-string; this app formats. */
+  closed_pnl_sum: string
+  worst_minimum_capital: string | null
+  model_calls: number
+  model_failures: number
+  sessions_distinct: number
+  /** Per-session closed PnL keyed "<digest_id>:<session>" — the paired
+   * bars the rule's clauses read (printable client-side; not rendered). */
+  session_pnl: Record<string, number>
+}
+
+export interface DeskStandings {
+  schema: 'desk-challenge-standings/1'
+  registration_sample_through: string
+  games_counted: number
+  cost_baseline_per_game: number
+  policies: StandingsPolicyRow[]
+  untrusted_note: string
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).
@@ -1115,6 +1145,12 @@ export interface OptionsRecorded {
   /** [expiry, dte, atm_iv, n_strikes, how] rows. */
   atm_term: [string, number, number, number, string][] | null
   slice: OptionsSliceRow[] | null
+  /** The session's captured decision clocks ("HH:MM", ascending; A2).
+   *  Absent when the session has none — an eod-only store. */
+  clocks?: string[]
+  /** The clock the slice was served from ("HH:MM"); present only when the
+   *  request asked for one (clock=latest resolves to it here). */
+  clock?: string
 }
 
 export interface Iv30History {

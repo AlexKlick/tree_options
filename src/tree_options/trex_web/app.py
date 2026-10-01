@@ -486,6 +486,7 @@ def create_app(
         intraday_dir=desk_store_root / "evaluations" / "intraday-graph",
         trade_floor_dir=desk_store_root / "evaluations" / "trade-floor",
         longrun_dir=desk_store_root / "evaluations" / "longrun",
+        challenge_dir=desk_store_root / "evaluations" / "challenge",
         plans_root=plans_root,
         state_root=state_root,
     )
@@ -690,19 +691,33 @@ def create_app(
 
     @app.get("/api/market/{sym}/options")
     def api_market_symbol_options(
-        sym: str, window: int = 5, max_expiries: int = 6
+        sym: str, window: int = 5, max_expiries: int = 6, clock: str | None = None
     ) -> dict[str, object]:
         """The desk's RECORDED per-name options surface (features cards +
         ATM-term + chain slice around ATM + iv30 history) plus the LIVE
         delayed viewchain the discovery lane warmed (``live``; null when no
-        envelope). Read-only, all sections nullable."""
-        from tree_options.trex_web.options_view import options_payload
+        envelope). Read-only, all sections nullable. ``clock=HH:MM`` (or
+        ``latest``) serves that decision clock's intraday capture as the
+        slice — cards/features stay eod; an absent clock is eod exactly."""
+        from tree_options.trex_web.options_view import (
+            CLOCK_RE,
+            LATEST_CLOCK,
+            options_payload,
+        )
 
         sym_up = sym.upper()
         if not re.match(r"^[A-Z.]{1,6}$", sym_up):
             raise HTTPException(status_code=404, detail="unknown symbol")
+        if clock is not None and clock != LATEST_CLOCK and not CLOCK_RE.match(clock):
+            raise HTTPException(status_code=422, detail="clock must be HH:MM or latest")
         return options_payload(
-            desk_store_root, sym_up, window, max_expiries, now_et(), market_cache_root
+            desk_store_root,
+            sym_up,
+            window,
+            max_expiries,
+            now_et(),
+            market_cache_root,
+            clock=clock,
         )
 
     @app.get("/api/market/{sym}/ideas")

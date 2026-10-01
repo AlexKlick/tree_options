@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -33,6 +34,11 @@ from tree_options.trex_web.automation import (
 )
 
 _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
+
+#: how long the cockpit serves the standings file the nightly
+#: ``challenge standings`` rebuild owns; past this it recomputes (and only
+#: RETURNS — the web lane never writes the store)
+STANDINGS_FRESH_S = 26 * 3600
 
 #: who owns a book, by the ``BookPosition.source`` the adapter gives it.
 #: The desk book is the supervised desk's; every other book under the same
@@ -126,6 +132,7 @@ def attach(
     intraday_dir: Path | None = None,
     trade_floor_dir: Path | None = None,
     longrun_dir: Path | None = None,
+    challenge_dir: Path | None = None,
     plans_root: Path | None = None,
     state_root: Path | None = None,
 ) -> None:
@@ -471,6 +478,32 @@ def attach(
         return JSONResponse(
             {**doc, "execution_enabled": False}, headers={"Cache-Control": "no-store"}
         )
+
+    @app.get("/api/desk/standings")
+    def standings_view() -> JSONResponse:
+        """The challenge standings every clause of the sealed promotion rule
+        reads: ``evaluations/challenge/standings.json`` when present and
+        fresh (< 26 h), else RECOMPUTED from the post-seal digests and
+        returned without being written (the web lane never mutates the
+        store). Strictly read-only: no rule_check runs here — the clauses
+        are printable client-side, and the web layer computes no stats."""
+        from tree_options.desk.challenge import accumulate_standings
+
+        root = challenge_dir or database.parent.parent / "evaluations" / "challenge"
+        doc: dict[str, Any] | None = None
+        path = root / "standings.json"
+        try:
+            if path.is_file() and (time.time() - path.stat().st_mtime) < STANDINGS_FRESH_S:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                doc = loaded if isinstance(loaded, dict) else None
+        except (OSError, ValueError):
+            doc = None  # a torn file falls through to the recompute
+        if doc is None:
+            try:
+                doc = accumulate_standings(root.parent.parent)
+            except (OSError, ValueError, KeyError, TypeError):
+                return _unavailable()
+        return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
     @app.get("/desk/evidence")
     def page() -> HTMLResponse:
