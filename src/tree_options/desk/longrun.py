@@ -2387,13 +2387,20 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
                                   f.get("eligible_for_operator_review")}
                              for f in wf.get("finalists", [])]},
             "benchmarks": doc.get("benchmarks", []),
-            "skill": _skill_projection(doc.get("skill"))}
+            "skill": _skill_projection(doc.get("skill")),
+            "skill_no_price": _skill_no_price(doc.get("skill"))}
 
 
 def _skill_projection(section: Any) -> dict[str, Any] | None:
     from tree_options.desk import skill
 
     return skill.cockpit_projection(section)
+
+
+def _skill_no_price(section: Any) -> dict[str, Any] | None:
+    from tree_options.desk import skill
+
+    return skill.section_no_price(section)
 
 
 def cockpit_view(root: Path) -> dict[str, Any]:

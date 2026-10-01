@@ -889,14 +889,33 @@ def progress_skill(boards: Sequence[Board], arms: Sequence[Arm],
 
 
 def cockpit_projection(section: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The read-only view's per-arm projection.
+
+    ``no_price``/``boards_dropped_unpriced`` ride along ONLY when the arm's
+    doc carries them (the measured cost model's refusal ledger): a digest
+    that predates the ledger projects exactly as before, and the view never
+    invents a refusal count. A fully-refused arm must reach the cockpit as
+    NO PRICE, not as a quiet break-even.
+    """
     if not isinstance(section, Mapping):
         return None
     arms = section.get("arms") or {}
     return {name: {"verdict": a.get("verdict"), "excess_total": a.get("excess_total"),
                    "excess_block_ci95": ((a.get("intervals") or {}).get("excess") or {})
                    .get("block_ci95"),
-                   "forward_significant": (a.get("cs_forward") or {}).get("significant")}
+                   "forward_significant": (a.get("cs_forward") or {}).get("significant"),
+                   **({"no_price": dict(a["no_price"])}
+                      if isinstance(a.get("no_price"), Mapping) else {}),
+                   **({"boards_dropped_unpriced": a["boards_dropped_unpriced"]}
+                      if a.get("boards_dropped_unpriced") is not None else {})}
             for name, a in arms.items() if isinstance(a, Mapping)}
+
+
+def section_no_price(section: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The skill section's whole-run refusal ledger, or None when absent."""
+    if isinstance(section, Mapping) and isinstance(section.get("no_price"), Mapping):
+        return dict(section["no_price"])
+    return None
 
 
 def _ci(ci: Sequence[float | None] | None) -> str:

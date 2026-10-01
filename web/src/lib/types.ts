@@ -316,6 +316,10 @@ export interface LongRunStanding {
   // vs the always_bullish regime baseline (null for that arm itself)
   vs_regime?: LongRunPaired | null
   null_percentile: number
+  /** paired diff vs a random null matched at THIS arm's own entry rate (#45);
+   *  the headline skill comparison. Absent on digests that predate #45. */
+  vs_random_own?: (LongRunPaired & { p_enter: number }) | null
+  null_percentile_own?: number | null
 }
 
 export interface LongRunBenchmark {
@@ -337,6 +341,8 @@ export interface LongRunFinalist {
     vs_random: LongRunPaired
     vs_incumbent: LongRunPaired | null
   }
+  /** evaluated entries in the confirmatory test window (clause 6's floor) */
+  test_entries?: number | null
   eligible_for_operator_review: boolean
 }
 
@@ -382,9 +388,32 @@ export interface LongRunDigest {
     tune_sessions?: number | null
     test_sessions?: number | null
     reason?: string | null
+    min_test_entries?: number | null
     finalists: LongRunFinalist[]
   }
   benchmarks: LongRunBenchmark[]
+  /** per-arm exact-counterfactual verdicts (desk.skill); absent when the run
+   *  predates the skill section or it errored. */
+  skill?: Record<string, LongRunSkillArm> | null
+  /** section-level unpriced-board ledger (#48); null when the digest predates
+   *  the measured cost model — never fabricated. */
+  skill_no_price?: LongRunSkillNoPrice | null
+}
+
+export interface LongRunSkillArm {
+  verdict: string
+  excess_total: number | null
+  excess_block_ci95: [number, number] | null
+  forward_significant: boolean | null
+  /** the measured cost model's per-arm refusal ledger; absent pre-#48 */
+  no_price?: { total: number; snapshots?: string[]; reasons?: Record<string, string> }
+  boards_dropped_unpriced?: number
+}
+
+export interface LongRunSkillNoPrice {
+  total: number
+  by_arm: Record<string, number>
+  by_reason: Record<string, number>
 }
 
 export interface LongRunView {
