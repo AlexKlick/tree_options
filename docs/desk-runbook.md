@@ -456,7 +456,10 @@ cp ~/documents/tree_options/deploy/desk/desk-forward-select.{service,timer} \
    ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemd-analyze --user verify ~/.config/systemd/user/desk-forward-{select,minutes}.{service,timer}
-# ENABLE (operator decision; this is what starts the daily wire spend):
+# ENABLE (operator decision; this is what starts the daily wire spend).
+# ENABLE ONLY AFTER THIS BRANCH IS MERGED INTO the main checkout the units'
+# ExecStart runs from: before the merge the service exits 1 (module not
+# found) and burns no wire — but enabling pre-merge only buys error logs:
 systemctl --user enable --now desk-forward-select.timer desk-forward-minutes.timer
 # and one manual pass each:
 systemctl --user start desk-forward-select.service; journalctl --user -u desk-forward-select -n 20
