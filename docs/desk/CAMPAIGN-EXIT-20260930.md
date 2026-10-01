@@ -272,6 +272,20 @@ and lie about the fill clock — the exact class of error #48 pins
 `describes_fill_clock: false` for. DOCUMENTED-NOT-BUILT; build it only
 behind a vendor that actually publishes intraday quotes.
 
+**ADDENDUM 2026-10-01 (A0 probe, 10:03–10:07 ET): the premise above no
+longer holds — the feed NOW publishes intraday.** Three SPY fetches through
+the recorder's own transport, two minutes apart, returned ROLLING
+publications: payload timestamps 10:02:03 ET (sha256 `c29beaa8…09c6f`,
+5.8 MB, 13,098 rows) then 10:03:03 ET (`b6100dd9…12c3`) fetched at 10:06:55
+ET — a ~1-minute publication cadence with ~2–4 min content lag, during
+RTH. The 2026-09-24 evidence (37/37 names stale through 12:30 ET) was real
+when recorded; the vendor's behavior changed within the week. The A2
+clock-tier design above therefore REVIVES as a live option: a fetch at
+clock+2..3 min carries the clock's book, and the design should be re-costed
+against the Massive forward capture (#55) rather than assumed dead. Full
+evidence: `~/.local/state/trex/A0-cboe-inaday-probe-20261001.md`. Re-probe
+on the day of any build decision; feed behavior is evidently not stable.
+
 ## The paid alternative (operator's option)
 
 ThetaData Standard at **$80/mo, cancel anytime** — the cheapest
