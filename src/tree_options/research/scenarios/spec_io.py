@@ -11,6 +11,7 @@ This module is intentionally FREE of imports from
 either side can be loaded before the other — the import graph stays
 acyclic.
 """
+
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
@@ -31,8 +32,7 @@ from tree_options.research.scenarios.contracts import (
 )
 
 
-def scenario_from_dict(parent_run_id: str,
-                       payload: dict[str, Any]) -> ScenarioSpec:
+def scenario_from_dict(parent_run_id: str, payload: dict[str, Any]) -> ScenarioSpec:
     """Parse a wire-format scenario fork body (RL-2).
 
     The body's shape is::
@@ -64,8 +64,7 @@ def scenario_from_dict(parent_run_id: str,
     if not isinstance(parent_run_id, str) or not parent_run_id.strip():
         raise ValueError("parent_run_id must be a non-empty string")
     kind = ScenarioKind(payload.get("kind", "contribution_planning"))
-    access_mode = ScenarioAccessMode(
-        payload.get("access_mode", "exploratory"))
+    access_mode = ScenarioAccessMode(payload.get("access_mode", "exploratory"))
     diff_payload = payload.get("diff") or {}
     if not isinstance(diff_payload, dict):
         raise ValueError("'diff' must be a JSON object")
@@ -78,19 +77,13 @@ def scenario_from_dict(parent_run_id: str,
     contrib = diff_payload.get("contribution_per_period")
     if contrib is not None:
         if not isinstance(contrib, (str, int, float)):
-            raise ValueError(
-                f"'contribution_per_period' must be a decimal string, got "
-                f"{contrib!r}")
+            raise ValueError(f"'contribution_per_period' must be a decimal string, got {contrib!r}")
         try:
             contrib_d = Decimal(str(contrib))
         except (InvalidOperation, ValueError) as exc:
-            raise ValueError(
-                f"'contribution_per_period' not a decimal: {contrib!r}"
-            ) from exc
+            raise ValueError(f"'contribution_per_period' not a decimal: {contrib!r}") from exc
         if not contrib_d.is_finite():
-            raise ValueError(
-                f"'contribution_per_period' must be finite, got {contrib!r}"
-            )
+            raise ValueError(f"'contribution_per_period' must be finite, got {contrib!r}")
     else:
         contrib_d = None
     cashflow_timing_raw = diff_payload.get("cashflow_timing")
@@ -110,21 +103,11 @@ def scenario_from_dict(parent_run_id: str,
         diff=ScenarioDiff(
             contribution_per_period=contrib_d,
             cashflow_timing=(
-                CashflowTiming(cashflow_timing_raw)
-                if cashflow_timing_raw is not None else None
+                CashflowTiming(cashflow_timing_raw) if cashflow_timing_raw is not None else None
             ),
-            cost_model_kind=(
-                CostModelKind(cost_model_raw)
-                if cost_model_raw is not None else None
-            ),
-            rebalancing=(
-                Rebalancing(rebalancing_raw)
-                if rebalancing_raw is not None else None
-            ),
-            position_sizing=(
-                PositionSizing(sizing_raw)
-                if sizing_raw is not None else None
-            ),
+            cost_model_kind=(CostModelKind(cost_model_raw) if cost_model_raw is not None else None),
+            rebalancing=(Rebalancing(rebalancing_raw) if rebalancing_raw is not None else None),
+            position_sizing=(PositionSizing(sizing_raw) if sizing_raw is not None else None),
         ),
         proposed_by=proposed_by,
         notes=notes,

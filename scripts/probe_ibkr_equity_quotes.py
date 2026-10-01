@@ -76,10 +76,7 @@ def main() -> None:
         second = _read(tickers)
 
         arrived = any(
-            v is not None
-            for row in second.values()
-            for k, v in row.items()
-            if k != "close"
+            v is not None for row in second.values() for k, v in row.items() if k != "close"
         )
         changed = any(
             first[s][k] != second[s][k]

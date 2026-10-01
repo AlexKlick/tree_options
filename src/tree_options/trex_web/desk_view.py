@@ -1,4 +1,5 @@
 """Read-only shadow-evidence projection on the existing cockpit application."""
+
 from __future__ import annotations
 
 import base64
@@ -37,10 +38,10 @@ _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 #: The desk book is the supervised desk's; every other book under the same
 #: state root belongs to the legacy trex monitor (a different service, on
 #: the same paper account).
-OWNERS = {'desk': 'supervised-desk'}
+OWNERS = {"desk": "supervised-desk"}
 
 #: the service that owns every non-desk book on this account
-LEGACY_OWNER = 'trex-monitor'
+LEGACY_OWNER = "trex-monitor"
 
 
 def _owner(source: str) -> str:
@@ -56,28 +57,32 @@ def _money(value: Decimal | None) -> str | None:
 def _slice_block(slice_: BookSlice) -> dict[str, Any]:
     deadline = slice_.earliest_exit_deadline
     return {
-        'structures': slice_.structures,
-        'legs': slice_.legs,
-        'max_loss_usd': _money(slice_.max_loss_usd),
-        'earliest_exit_deadline': None if deadline is None else deadline.isoformat(),
-        'exit_deadlines_unknown': slice_.unknown_deadlines,
-        'owners': sorted({_owner(p.source) for p in slice_.positions}),
-        'books': list(slice_.books),
-        'positions': [{
-            'id': p.id,
-            'book': p.source,
-            'owner': _owner(p.source),
-            'underlying': p.underlying,
-            'status': p.status,
-            'quantity': p.quantity,
-            'max_loss_usd': _money(p.max_loss_usd),
-            'exit_deadline': None if p.exit_deadline is None else p.exit_deadline.isoformat(),
-        } for p in slice_.positions],
+        "structures": slice_.structures,
+        "legs": slice_.legs,
+        "max_loss_usd": _money(slice_.max_loss_usd),
+        "earliest_exit_deadline": None if deadline is None else deadline.isoformat(),
+        "exit_deadlines_unknown": slice_.unknown_deadlines,
+        "owners": sorted({_owner(p.source) for p in slice_.positions}),
+        "books": list(slice_.books),
+        "positions": [
+            {
+                "id": p.id,
+                "book": p.source,
+                "owner": _owner(p.source),
+                "underlying": p.underlying,
+                "status": p.status,
+                "quantity": p.quantity,
+                "max_loss_usd": _money(p.max_loss_usd),
+                "exit_deadline": None if p.exit_deadline is None else p.exit_deadline.isoformat(),
+            }
+            for p in slice_.positions
+        ],
     }
 
 
-def account_block(paths: DeskPaths, *, plans_root: Path | None,
-                  state_root: Path | None, as_of: date) -> dict[str, Any]:
+def account_block(
+    paths: DeskPaths, *, plans_root: Path | None, state_root: Path | None, as_of: date
+) -> dict[str, Any]:
     """The ACCOUNT's exposure as the files stand, split by owner: the desk
     book against every other book under the same state root.
 
@@ -86,172 +91,290 @@ def account_block(paths: DeskPaths, *, plans_root: Path | None,
     legacy books), never a broker call. ``countable`` false means a book
     could not be read and no total may be claimed from this block."""
     exposure = desk_book.account_exposure(
-        as_of=as_of, plans_root=plans_root, state_root=state_root,
-        desk_specs=paths.specs(), desk_book=paths.book())
+        as_of=as_of,
+        plans_root=plans_root,
+        state_root=state_root,
+        desk_specs=paths.specs(),
+        desk_book=paths.book(),
+    )
     return {
-        'schema': 'desk-account-exposure/1',
-        'as_of': as_of.isoformat(),
-        'state_root': None if state_root is None else str(state_root),
-        'desk_run_dir': str(paths.root),
-        'countable': exposure.countable,
-        'max_loss_usd': (
-            None if not exposure.countable
-            else _money((exposure.outside.max_loss_usd or Decimal(0))
-                        + (exposure.desk.max_loss_usd or Decimal(0)))),
-        'outside_desk_book': _slice_block(exposure.outside),
-        'desk_book': _slice_block(exposure.desk),
-        'problems': list(exposure.problems),
+        "schema": "desk-account-exposure/1",
+        "as_of": as_of.isoformat(),
+        "state_root": None if state_root is None else str(state_root),
+        "desk_run_dir": str(paths.root),
+        "countable": exposure.countable,
+        "max_loss_usd": (
+            None
+            if not exposure.countable
+            else _money(
+                (exposure.outside.max_loss_usd or Decimal(0))
+                + (exposure.desk.max_loss_usd or Decimal(0))
+            )
+        ),
+        "outside_desk_book": _slice_block(exposure.outside),
+        "desk_book": _slice_block(exposure.desk),
+        "problems": list(exposure.problems),
     }
 
 
-def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
-           portfolio_dir: Path | None = None, intraday_dir: Path | None = None,
-           trade_floor_dir: Path | None = None, longrun_dir: Path | None = None,
-           plans_root: Path | None = None, state_root: Path | None = None) -> None:
-    @app.get('/api/desk/health')
+def attach(
+    app: FastAPI,
+    *,
+    database: Path,
+    replay_dir: Path | None = None,
+    portfolio_dir: Path | None = None,
+    intraday_dir: Path | None = None,
+    trade_floor_dir: Path | None = None,
+    longrun_dir: Path | None = None,
+    plans_root: Path | None = None,
+    state_root: Path | None = None,
+) -> None:
+    @app.get("/api/desk/health")
     def health() -> JSONResponse:
         try:
             doc = production.health(database=database, now=now_et(), cal=session_calendar())
-            return JSONResponse(doc, status_code=200 if doc['evidence_status'] == 'ready' else 503,
-                                headers={'Cache-Control': 'no-store'})
+            return JSONResponse(
+                doc,
+                status_code=200 if doc["evidence_status"] == "ready" else 503,
+                headers={"Cache-Control": "no-store"},
+            )
         except _ERRORS:
             return _unavailable()
 
-    @app.get('/api/desk/scorecards')
+    @app.get("/api/desk/scorecards")
     def summary() -> JSONResponse:
         try:
-            return JSONResponse(scorecards.build_scorecards(database), headers={'Cache-Control': 'no-store'})
+            return JSONResponse(
+                scorecards.build_scorecards(database), headers={"Cache-Control": "no-store"}
+            )
         except _ERRORS:
             return _unavailable()
 
-    @app.get('/api/desk/historical-replays')
+    @app.get("/api/desk/historical-replays")
     def historical_replays() -> JSONResponse:
         """Read the latest bounded exploratory reports; never launch work."""
-        root = replay_dir or database.parent.parent / 'evaluations' / 'historical-replay'
+        root = replay_dir or database.parent.parent / "evaluations" / "historical-replay"
         reports: list[dict[str, Any]] = []
         try:
-            for path in sorted(root.glob('replay-*.json'), reverse=True)[:12]:
+            for path in sorted(root.glob("replay-*.json"), reverse=True)[:12]:
                 if path.stat().st_size > 20_000_000:
                     continue
-                doc = json.loads(path.read_text(encoding='utf-8'))
-                if not isinstance(doc, dict) or doc.get('schema') != 'desk-historical-replay/1':
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(doc, dict) or doc.get("schema") != "desk-historical-replay/1":
                     continue
-                if any(not isinstance(doc.get(key), dict) for key in
-                       ('spec', 'counts', 'by_structure', 'by_variant', 'provenance')):
+                if any(
+                    not isinstance(doc.get(key), dict)
+                    for key in ("spec", "counts", "by_structure", "by_variant", "provenance")
+                ):
                     continue
-                reports.append({
-                    'id': path.stem, 'label': doc.get('label'), 'spec': doc.get('spec'),
-                    'counts': doc.get('counts'), 'by_structure': doc.get('by_structure'),
-                    'by_variant': doc['by_variant'],
-                    'eligibility_by_variant': doc.get('eligibility_by_variant'),
-                    'provenance': doc.get('provenance'), 'limitations': doc.get('limitations'),
-                })
+                reports.append(
+                    {
+                        "id": path.stem,
+                        "label": doc.get("label"),
+                        "spec": doc.get("spec"),
+                        "counts": doc.get("counts"),
+                        "by_structure": doc.get("by_structure"),
+                        "by_variant": doc["by_variant"],
+                        "eligibility_by_variant": doc.get("eligibility_by_variant"),
+                        "provenance": doc.get("provenance"),
+                        "limitations": doc.get("limitations"),
+                    }
+                )
         except (OSError, ValueError, json.JSONDecodeError):
             return _unavailable()
-        return JSONResponse({'schema': 'desk-historical-replay-list/1', 'reports': reports,
-                             'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(
+            {
+                "schema": "desk-historical-replay-list/1",
+                "reports": reports,
+                "execution_enabled": False,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
-    @app.get('/api/desk/portfolio-scenarios')
+    @app.get("/api/desk/portfolio-scenarios")
     def portfolio_scenarios() -> JSONResponse:
         """Summaries of frozen modeled risk budgets, without trade rows or effects."""
-        root = portfolio_dir or database.parent.parent / 'evaluations' / 'portfolio-scenario'
+        root = portfolio_dir or database.parent.parent / "evaluations" / "portfolio-scenario"
         reports: list[dict[str, Any]] = []
         try:
-            for path in sorted(root.glob('portfolio-*.json'), reverse=True)[:12]:
+            for path in sorted(root.glob("portfolio-*.json"), reverse=True)[:12]:
                 if path.is_symlink() or path.stat().st_size > 20_000_000:
                     continue
-                doc = json.loads(path.read_text(encoding='utf-8'))
-                if not isinstance(doc, dict) or doc.get('schema') != 'desk-portfolio-scenario/1':
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(doc, dict) or doc.get("schema") != "desk-portfolio-scenario/1":
                     continue
-                if any(not isinstance(doc.get(key), dict) for key in ('spec', 'variants', 'provenance')):
+                if any(
+                    not isinstance(doc.get(key), dict) for key in ("spec", "variants", "provenance")
+                ):
                     continue
-                spec, provenance = doc['spec'], doc['provenance']
-                if any(not isinstance(spec.get(key), str) for key in (
-                    'intended_capital', 'max_trade_loss', 'max_open_loss')):
+                spec, provenance = doc["spec"], doc["provenance"]
+                if any(
+                    not isinstance(spec.get(key), str)
+                    for key in ("intended_capital", "max_trade_loss", "max_open_loss")
+                ):
                     continue
-                if (not isinstance(provenance.get('replay_sha256'), str)
-                    or len(provenance['replay_sha256']) != 64
-                    or not isinstance(provenance.get('code_dirty'), bool)
-                    or not isinstance(doc.get('limitations'), list)):
+                if (
+                    not isinstance(provenance.get("replay_sha256"), str)
+                    or len(provenance["replay_sha256"]) != 64
+                    or not isinstance(provenance.get("code_dirty"), bool)
+                    or not isinstance(doc.get("limitations"), list)
+                ):
                     continue
                 variants = {}
-                for name, row in doc['variants'].items():
+                for name, row in doc["variants"].items():
                     if not isinstance(name, str) or not isinstance(row, dict):
                         continue
-                    if any(key not in row for key in (
-                        'considered', 'admitted', 'skipped', 'peak_open_loss_reserved',
-                        'closed_pnl', 'ending_closed_capital', 'minimum_closed_capital')):
+                    if any(
+                        key not in row
+                        for key in (
+                            "considered",
+                            "admitted",
+                            "skipped",
+                            "peak_open_loss_reserved",
+                            "closed_pnl",
+                            "ending_closed_capital",
+                            "minimum_closed_capital",
+                        )
+                    ):
                         continue
-                    variants[name] = {key: row[key] for key in (
-                        'considered', 'admitted', 'skipped', 'peak_open_loss_reserved',
-                        'closed_pnl', 'ending_closed_capital', 'minimum_closed_capital') if key in row}
-                reports.append({'id': path.stem, 'label': doc.get('label'),
-                                'spec': doc['spec'], 'variants': variants,
-                                'provenance': {key: doc['provenance'].get(key) for key in (
-                                    'replay_sha256', 'code_head', 'code_dirty')},
-                                'limitations': doc.get('limitations')})
+                    variants[name] = {
+                        key: row[key]
+                        for key in (
+                            "considered",
+                            "admitted",
+                            "skipped",
+                            "peak_open_loss_reserved",
+                            "closed_pnl",
+                            "ending_closed_capital",
+                            "minimum_closed_capital",
+                        )
+                        if key in row
+                    }
+                reports.append(
+                    {
+                        "id": path.stem,
+                        "label": doc.get("label"),
+                        "spec": doc["spec"],
+                        "variants": variants,
+                        "provenance": {
+                            key: doc["provenance"].get(key)
+                            for key in ("replay_sha256", "code_head", "code_dirty")
+                        },
+                        "limitations": doc.get("limitations"),
+                    }
+                )
         except (OSError, ValueError, json.JSONDecodeError):
             return _unavailable()
-        return JSONResponse({'schema': 'desk-portfolio-scenario-list/1', 'reports': reports,
-                             'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(
+            {
+                "schema": "desk-portfolio-scenario-list/1",
+                "reports": reports,
+                "execution_enabled": False,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
-    @app.get('/api/desk/intraday-graphs')
+    @app.get("/api/desk/intraday-graphs")
     def intraday_graphs() -> JSONResponse:
         """Project bounded graph summaries; never serve full bars or trigger replay."""
-        root = intraday_dir or database.parent.parent / 'evaluations' / 'intraday-graph'
+        root = intraday_dir or database.parent.parent / "evaluations" / "intraday-graph"
         reports: list[dict[str, Any]] = []
         try:
-            for path in sorted(root.glob('*/*.summary.json'), reverse=True)[:24]:
+            for path in sorted(root.glob("*/*.summary.json"), reverse=True)[:24]:
                 if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 1_000_000:
                     continue
-                doc = json.loads(path.read_text(encoding='utf-8'))
-                if (not isinstance(doc, dict) or doc.get('schema') != 'desk-intraday-graph-summary/1'
-                        or doc.get('execution_authorized') is not False
-                        or not isinstance(doc.get('windows'), list)
-                        or any(not isinstance(row, dict) or any(key not in row for key in (
-                            'start', 'end', 'sessions', 'scheduled_snapshots', 'potential_trades',
-                            'entered', 'modeled_wins', 'modeled_losses', 'open_at_end',
-                            'closed_capital_proxy', 'minimum_closed_capital_proxy',
-                            'peak_open_loss_reserved'))
-                            for row in doc['windows'])
-                        or not isinstance(doc.get('limitations'), list)
-                        or not isinstance(doc.get('source_sha256'), str)
-                        or len(doc['source_sha256']) != 64):
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                if (
+                    not isinstance(doc, dict)
+                    or doc.get("schema") != "desk-intraday-graph-summary/1"
+                    or doc.get("execution_authorized") is not False
+                    or not isinstance(doc.get("windows"), list)
+                    or any(
+                        not isinstance(row, dict)
+                        or any(
+                            key not in row
+                            for key in (
+                                "start",
+                                "end",
+                                "sessions",
+                                "scheduled_snapshots",
+                                "potential_trades",
+                                "entered",
+                                "modeled_wins",
+                                "modeled_losses",
+                                "open_at_end",
+                                "closed_capital_proxy",
+                                "minimum_closed_capital_proxy",
+                                "peak_open_loss_reserved",
+                            )
+                        )
+                        for row in doc["windows"]
+                    )
+                    or not isinstance(doc.get("limitations"), list)
+                    or not isinstance(doc.get("source_sha256"), str)
+                    or len(doc["source_sha256"]) != 64
+                ):
                     continue
-                reports.append({'id': f"{path.parent.name}/{path.stem.removesuffix('.summary')}",
-                                'policy': doc.get('policy'), 'source_sha256': doc['source_sha256'],
-                                'requested_contracts': doc.get('requested_contracts'),
-                                'captured_contracts': doc.get('captured_contracts'),
-                                'traded_minute_bars': doc.get('traded_minute_bars'),
-                                'windows': [{key: row.get(key) for key in (
-                                    'start', 'end', 'sessions', 'scheduled_snapshots',
-                                    'potential_trades', 'entered', 'modeled_wins', 'modeled_losses',
-                                    'open_at_end', 'closed_capital_proxy',
-                                    'minimum_closed_capital_proxy', 'peak_open_loss_reserved')}
-                                    for row in doc['windows']],
-                                'limitations': doc['limitations']})
+                reports.append(
+                    {
+                        "id": f"{path.parent.name}/{path.stem.removesuffix('.summary')}",
+                        "policy": doc.get("policy"),
+                        "source_sha256": doc["source_sha256"],
+                        "requested_contracts": doc.get("requested_contracts"),
+                        "captured_contracts": doc.get("captured_contracts"),
+                        "traded_minute_bars": doc.get("traded_minute_bars"),
+                        "windows": [
+                            {
+                                key: row.get(key)
+                                for key in (
+                                    "start",
+                                    "end",
+                                    "sessions",
+                                    "scheduled_snapshots",
+                                    "potential_trades",
+                                    "entered",
+                                    "modeled_wins",
+                                    "modeled_losses",
+                                    "open_at_end",
+                                    "closed_capital_proxy",
+                                    "minimum_closed_capital_proxy",
+                                    "peak_open_loss_reserved",
+                                )
+                            }
+                            for row in doc["windows"]
+                        ],
+                        "limitations": doc["limitations"],
+                    }
+                )
         except (OSError, ValueError, json.JSONDecodeError):
             return _unavailable()
-        return JSONResponse({'schema': 'desk-intraday-graph-list/1', 'reports': reports,
-                             'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(
+            {
+                "schema": "desk-intraday-graph-list/1",
+                "reports": reports,
+                "execution_enabled": False,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
-    @app.get('/api/desk/trade-floor')
+    @app.get("/api/desk/trade-floor")
     def trade_floor() -> JSONResponse:
         """Serve compact historical spectator rounds; never launch model or broker work."""
-        root = trade_floor_dir or database.parent.parent / 'evaluations' / 'trade-floor'
+        root = trade_floor_dir or database.parent.parent / "evaluations" / "trade-floor"
         replays: list[dict[str, Any]] = []
         try:
-            for path in sorted(root.glob('*.json'), reverse=True)[:4]:
-                if (path.is_symlink() or path.parent.is_symlink()
-                        or path.stat().st_size > 2_000_000):
+            for path in sorted(root.glob("*.json"), reverse=True)[:4]:
+                if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 2_000_000:
                     return _unavailable()
-                replays.append(project_replay(json.loads(path.read_text(encoding='utf-8'))))
+                replays.append(project_replay(json.loads(path.read_text(encoding="utf-8"))))
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             return _unavailable()
-        return JSONResponse({'schema': 'desk-trade-floor-list/1', 'replays': replays,
-                             'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(
+            {"schema": "desk-trade-floor-list/1", "replays": replays, "execution_enabled": False},
+            headers={"Cache-Control": "no-store"},
+        )
 
-    @app.get('/api/desk/supervised')
+    @app.get("/api/desk/supervised")
     def supervised_status() -> JSONResponse:
         """One read-only dump of the supervised desk's on-disk paper state.
 
@@ -263,55 +386,54 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
         try:
             now = now_et()
             desk_paths = DeskPaths.default()
-            doc = collect_status(desk_paths, SupervisedPaths.default(),
-                                 now=now, events=20)
-            doc['account_exposure'] = account_block(
-                desk_paths, plans_root=plans_root, state_root=state_root,
-                as_of=now.date())
+            doc = collect_status(desk_paths, SupervisedPaths.default(), now=now, events=20)
+            doc["account_exposure"] = account_block(
+                desk_paths, plans_root=plans_root, state_root=state_root, as_of=now.date()
+            )
         except (*_ERRORS, OSError, ValueError, KeyError, TypeError):
             return _unavailable()
-        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
-    @app.get('/api/desk/automation')
+    @app.get("/api/desk/automation")
     def automation() -> JSONResponse:
         """Timer settings + kill-file states for the desk's own units."""
         try:
             doc = automation_status(DeskPaths.default().root)
         except (OSError, RuntimeError):
             return _unavailable()
-        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
-    @app.post('/api/desk/automation/{key}/{action}')
+    @app.post("/api/desk/automation/{key}/{action}")
     def automation_control(key: str, action: str) -> JSONResponse:
         """Enable/disable a whitelisted desk timer, or run its service now.
 
         The unit whitelist is the whole surface: an unknown key or action
         is a 404/422, never a shell. Every action is audited to
         automation.jsonl (actor: cockpit)."""
-        if action not in ('enable', 'disable', 'run'):
-            return JSONResponse({'error': 'unknown_action'}, status_code=422)
+        if action not in ("enable", "disable", "run"):
+            return JSONResponse({"error": "unknown_action"}, status_code=422)
         try:
             doc = automation_action(DeskPaths.default().root, key, action)
         except KeyError:
-            return JSONResponse({'error': 'unknown_unit'}, status_code=404)
+            return JSONResponse({"error": "unknown_unit"}, status_code=404)
         except (OSError, RuntimeError):
             return _unavailable()
-        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
-    @app.post('/api/desk/supervised/{action}')
+    @app.post("/api/desk/supervised/{action}")
     def supervised_control(action: str) -> JSONResponse:
         """HALT / FLATTEN / resume for the supervised desk (the desk_cli
         verbs, surfaced; the running desk observes the files on its next
         tick - nothing here contacts the broker)."""
-        if action not in ('halt', 'flatten', 'resume'):
-            return JSONResponse({'error': 'unknown_action'}, status_code=422)
+        if action not in ("halt", "flatten", "resume"):
+            return JSONResponse({"error": "unknown_action"}, status_code=422)
         try:
             doc = kill_file_action(DeskPaths.default().root, action)
         except OSError:
             return _unavailable()
-        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+        return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
-    @app.get('/api/desk/lab')
+    @app.get("/api/desk/lab")
     def lab_scoreboard() -> JSONResponse:
         """Fold the lab's run summaries into a per-policy scoreboard.
 
@@ -324,40 +446,54 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
             advisory = best_advisory(scoreboard)
         except (*_ERRORS, OSError, ValueError, KeyError, TypeError):
             return _unavailable()
-        return JSONResponse({**scoreboard, 'advisory': advisory,
-                             'execution_enabled': False},
-                            headers={'Cache-Control': 'no-store'})
+        return JSONResponse(
+            {**scoreboard, "advisory": advisory, "execution_enabled": False},
+            headers={"Cache-Control": "no-store"},
+        )
 
-    @app.get('/api/desk/longrun')
+    @app.get("/api/desk/longrun")
     def longrun_view() -> JSONResponse:
         """The latest long run: live progress, plus the digest's standings once
         finished. Read-only; ``TREX_DESK_LONGRUN_DIR`` (a run dir or a root of
         run dirs) overrides the store default. Never promotes, never launches."""
         from tree_options.desk import longrun
 
-        override = os.environ.get(longrun.DIR_ENV, '').strip()
-        root = (Path(override).expanduser() if override
-                else longrun_dir or database.parent.parent / 'evaluations' / 'longrun')
+        override = os.environ.get(longrun.DIR_ENV, "").strip()
+        root = (
+            Path(override).expanduser()
+            if override
+            else longrun_dir or database.parent.parent / "evaluations" / "longrun"
+        )
         try:
             doc = longrun.cockpit_view(root)
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return _unavailable()
-        return JSONResponse({**doc, 'execution_enabled': False},
-                            headers={'Cache-Control': 'no-store'})
+        return JSONResponse(
+            {**doc, "execution_enabled": False}, headers={"Cache-Control": "no-store"}
+        )
 
-    @app.get('/desk/evidence')
+    @app.get("/desk/evidence")
     def page() -> HTMLResponse:
-        html = Path(__file__).with_name('desk_evidence.html').read_text(encoding='utf-8')
-        script = html.split('<script>', 1)[1].split('</script>', 1)[0]
+        html = Path(__file__).with_name("desk_evidence.html").read_text(encoding="utf-8")
+        script = html.split("<script>", 1)[1].split("</script>", 1)[0]
         sha = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
-        return HTMLResponse(html, headers={'Cache-Control': 'no-store',
-            'X-Content-Type-Options': 'nosniff',
-            'Content-Security-Policy': f"default-src 'none'; script-src 'sha256-{sha}'; "
+        return HTMLResponse(
+            html,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": f"default-src 'none'; script-src 'sha256-{sha}'; "
                 "style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; "
-                "frame-ancestors 'none'; form-action 'none'; object-src 'none'"})
+                "frame-ancestors 'none'; form-action 'none'; object-src 'none'",
+            },
+        )
 
 
 def _unavailable() -> JSONResponse:
-    doc: dict[str, Any] = {'schema': 'desk-error/1', 'error': 'evidence_unavailable',
-        'execution_enabled': False, 'evidence_status': 'unavailable'}
-    return JSONResponse(doc, status_code=503, headers={'Cache-Control': 'no-store'})
+    doc: dict[str, Any] = {
+        "schema": "desk-error/1",
+        "error": "evidence_unavailable",
+        "execution_enabled": False,
+        "evidence_status": "unavailable",
+    }
+    return JSONResponse(doc, status_code=503, headers={"Cache-Control": "no-store"})

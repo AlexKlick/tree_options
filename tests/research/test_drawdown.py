@@ -38,9 +38,9 @@ def test_drawdown_then_recovery_marks_recovery_end_date() -> None:
         ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         {
             date(2024, 1, 2): Decimal("100"),
-            date(2024, 1, 3): Decimal("90"),   # drawdown
-            date(2024, 1, 4): Decimal("85"),   # deeper drawdown
-            date(2024, 1, 5): Decimal("95"),   # recovery partial
+            date(2024, 1, 3): Decimal("90"),  # drawdown
+            date(2024, 1, 4): Decimal("85"),  # deeper drawdown
+            date(2024, 1, 5): Decimal("95"),  # recovery partial
             date(2024, 1, 8): Decimal("100"),  # recovered to peak
         },
     )
@@ -96,8 +96,7 @@ def test_drawdown_percentage_handles_zero_peak() -> None:
     s = compute_drawdown(
         "cand-v2",
         ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
-        {date(2024, 1, 2): Decimal("0"),
-         date(2024, 1, 3): Decimal("-10")},
+        {date(2024, 1, 2): Decimal("0"), date(2024, 1, 3): Decimal("-10")},
     )
     assert all(c.drawdown_pct == Decimal("0") for c in s.cells)
     assert all(c.drawdown_dollar <= Decimal("0") for c in s.cells)

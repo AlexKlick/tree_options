@@ -116,8 +116,10 @@ class TestParseIbcLog:
         assert parse_ibc_log(WARM) == IbcState("starting", parse_ts("2026-09-24T03:45:04Z"))
 
     def test_every_session_start_redates_the_phase(self) -> None:
-        lines = [STALLED[1],
-                 "2026-09-23T03:45:04.100000000Z 2026-09-22 23:45:04:100 IBC: Re-starting session"]
+        lines = [
+            STALLED[1],
+            "2026-09-23T03:45:04.100000000Z 2026-09-22 23:45:04:100 IBC: Re-starting session",
+        ]
         assert parse_ibc_log(lines) == IbcState("starting", parse_ts("2026-09-23T03:45:04Z"))
 
 
@@ -164,8 +166,9 @@ class TestProbeApi:
 
 class TestClassifyAndDecide:
     def test_api_answering_is_ok_and_quiet(self) -> None:
-        state, actions = decide(_obs(api_ok=True, api_detail="server_version=187",
-                                     ibc=parse_ibc_log(COMPLETED)), {})
+        state, actions = decide(
+            _obs(api_ok=True, api_detail="server_version=187", ibc=parse_ibc_log(COMPLETED)), {}
+        )
         assert state["status"] == "ok"
         assert actions == []
 
@@ -190,8 +193,13 @@ class TestClassifyAndDecide:
 
     def test_restart_cap_cooldown_and_daily_limit(self) -> None:
         now = T0 + 5 * 3600
-        prior = {"status": "needs_login", "since": T0, "restarts": [now - 600],
-                 "last_notified_status": "needs_login", "last_notified_at": now - 600}
+        prior = {
+            "status": "needs_login",
+            "since": T0,
+            "restarts": [now - 600],
+            "last_notified_status": "needs_login",
+            "last_notified_at": now - 600,
+        }
         _, actions = decide(_obs(now=now), prior)
         assert "restart_gateway" not in [a.kind for a in actions]  # inside cooldown
         prior["restarts"] = [now - RESTART_COOLDOWN_S - 1]
@@ -206,8 +214,13 @@ class TestClassifyAndDecide:
 
     def test_same_bad_status_does_not_renotify_until_reminder(self) -> None:
         now = T0 + 3 * 3600
-        prior = {"status": "needs_login", "since": T0, "restarts": [now - 60],
-                 "last_notified_status": "needs_login", "last_notified_at": now - 120}
+        prior = {
+            "status": "needs_login",
+            "since": T0,
+            "restarts": [now - 60],
+            "last_notified_status": "needs_login",
+            "last_notified_at": now - 120,
+        }
         _, actions = decide(_obs(now=now), prior)
         assert "notify" not in [a.kind for a in actions]
         prior["last_notified_at"] = now - 5 * 3600
@@ -215,8 +228,12 @@ class TestClassifyAndDecide:
         assert "notify" in [a.kind for a in actions]
 
     def test_recovery_notifies_once(self) -> None:
-        prior = {"status": "needs_login", "since": T0, "last_notified_status": "needs_login",
-                 "last_notified_at": T0}
+        prior = {
+            "status": "needs_login",
+            "since": T0,
+            "last_notified_status": "needs_login",
+            "last_notified_at": T0,
+        }
         state, actions = decide(_obs(api_ok=True, ibc=parse_ibc_log(COMPLETED)), prior)
         assert state["status"] == "ok"
         notes = [a for a in actions if a.kind == "notify"]
@@ -231,11 +248,14 @@ class TestClassifyAndDecide:
         assert "restart_gateway" not in [a.kind for a in actions]  # IBC re-prompts itself
 
     def test_missing_vnc_is_restarted_with_backoff(self) -> None:
-        state, actions = decide(_obs(api_ok=True, ibc=parse_ibc_log(COMPLETED),
-                                     vnc_running=False), {})
+        state, actions = decide(
+            _obs(api_ok=True, ibc=parse_ibc_log(COMPLETED), vnc_running=False), {}
+        )
         assert [a.kind for a in actions] == ["restart_vnc"]
-        _, again = decide(_obs(api_ok=True, ibc=parse_ibc_log(COMPLETED), vnc_running=False,
-                               now=T0 + 3600 + 60), state)
+        _, again = decide(
+            _obs(api_ok=True, ibc=parse_ibc_log(COMPLETED), vnc_running=False, now=T0 + 3600 + 60),
+            state,
+        )
         assert "restart_vnc" not in [a.kind for a in again]  # 5 min backoff
 
     def test_container_down(self) -> None:
@@ -249,10 +269,16 @@ class TestClassifyAndDecide:
         assert done is not None
         early, _ = decide(_obs(now=done + 30, ibc=parse_ibc_log(COMPLETED)), {})
         assert early["status"] == "starting"
-        failing = {"status": "checking", "since": done + STARTUP_GRACE_S, "api_ok": False,
-                   "api_fail_since": done + STARTUP_GRACE_S}
-        late, actions = decide(_obs(now=done + STARTUP_GRACE_S + API_DOWN_AFTER_S,
-                                    ibc=parse_ibc_log(COMPLETED)), failing)
+        failing = {
+            "status": "checking",
+            "since": done + STARTUP_GRACE_S,
+            "api_ok": False,
+            "api_fail_since": done + STARTUP_GRACE_S,
+        }
+        late, actions = decide(
+            _obs(now=done + STARTUP_GRACE_S + API_DOWN_AFTER_S, ibc=parse_ibc_log(COMPLETED)),
+            failing,
+        )
         assert late["status"] == "api_down"
         assert "restart_gateway" in [a.kind for a in actions]
 
@@ -265,16 +291,24 @@ class TestClassifyAndDecide:
         state, actions = decide(_obs(now=done + 3600, ibc=parse_ibc_log(COMPLETED)), healthy)
         assert state["status"] == "checking"
         assert actions == []  # no restart, no push for a blip
-        still, actions = decide(_obs(now=done + 3600 + API_DOWN_AFTER_S - 60,
-                                     ibc=parse_ibc_log(COMPLETED)), state)
+        still, actions = decide(
+            _obs(now=done + 3600 + API_DOWN_AFTER_S - 60, ibc=parse_ibc_log(COMPLETED)), state
+        )
         assert still["status"] == "checking" and actions == []
         assert still["api_fail_since"] == done + 3600  # dated from the first miss
 
     def test_phase_aged_out_of_the_log_window_is_carried_forward(self) -> None:
         """Codex P2: the phase came only from the last 26h of logs, so a 2FA
         wait whose marker aged out read as "unknown" and became restartable."""
-        prior = {"status": "needs_2fa", "since": T0, "ibc_phase": "twofa", "ibc_since": T0,
-                 "container_started": T0 - 5 * 86_400, "api_ok": False, "api_fail_since": T0}
+        prior = {
+            "status": "needs_2fa",
+            "since": T0,
+            "ibc_phase": "twofa",
+            "ibc_since": T0,
+            "container_started": T0 - 5 * 86_400,
+            "api_ok": False,
+            "api_fail_since": T0,
+        }
         state, actions = decide(_obs(ibc=IbcState("unknown", None)), prior)
         assert state["status"] == "needs_2fa"
         assert (state["ibc_phase"], state["ibc_since"]) == ("twofa", T0)
@@ -289,8 +323,9 @@ class TestClassifyAndDecide:
 class FakeDocker:
     """``lines=None`` = the log read failed (timeout / docker error)."""
 
-    def __init__(self, lines: list[str] | None, running: bool = True,
-                 vnc: bool | None = True) -> None:
+    def __init__(
+        self, lines: list[str] | None, running: bool = True, vnc: bool | None = True
+    ) -> None:
         self.lines, self.running, self.vnc = lines, running, vnc
         self.calls: list[str] = []
 
@@ -318,32 +353,50 @@ class TestWatchOnce:
         docker = FakeDocker(STALLED, vnc=False)
         state_path = tmp_path / "gateway.json"
         state = watch_once(
-            state_path, docker, probe=lambda: (False, "closed before reply"),
+            state_path,
+            docker,
+            probe=lambda: (False, "closed before reply"),
             notify=lambda t, m, p: sent.append((t, m, p)) or True,
-            now=T0 + 3600, login_url="https://example.invalid/vnc.html?path=vnc",
+            now=T0 + 3600,
+            login_url="https://example.invalid/vnc.html?path=vnc",
         )
         assert state["status"] == "needs_login"
         assert docker.calls == ["start_vnc", "restart"]
         assert len(sent) == 1
         saved = json.loads(state_path.read_text())
         assert saved["login_url"].endswith("path=vnc")
-        assert [e["kind"] for e in saved["events"]][-3:] == ["restart_vnc", "restart_gateway",
-                                                            "notify"]
+        assert [e["kind"] for e in saved["events"]][-3:] == [
+            "restart_vnc",
+            "restart_gateway",
+            "notify",
+        ]
         assert "Setting user name" not in state_path.read_text()  # raw log never persisted
 
     def test_dry_run_changes_nothing(self, tmp_path: Path) -> None:
         docker = FakeDocker(STALLED, vnc=False)
         sent: list[object] = []
-        watch_once(tmp_path / "g.json", docker, probe=lambda: (False, "x"),
-                   notify=lambda *a: sent.append(a) or True, now=T0 + 3600,
-                   login_url="u", dry_run=True)
+        watch_once(
+            tmp_path / "g.json",
+            docker,
+            probe=lambda: (False, "x"),
+            notify=lambda *a: sent.append(a) or True,
+            now=T0 + 3600,
+            login_url="u",
+            dry_run=True,
+        )
         assert docker.calls == [] and sent == []
 
     def test_corrupt_prior_state_is_tolerated(self, tmp_path: Path) -> None:
         path = tmp_path / "g.json"
         path.write_text("{not json")
-        state = watch_once(path, FakeDocker(COMPLETED), probe=lambda: (True, "ok"),
-                           notify=lambda *a: True, now=T0 + 3600, login_url="u")
+        state = watch_once(
+            path,
+            FakeDocker(COMPLETED),
+            probe=lambda: (True, "ok"),
+            notify=lambda *a: True,
+            now=T0 + 3600,
+            login_url="u",
+        )
         assert state["status"] == "ok"
 
     def test_corrupt_ledger_holds_restarts_for_a_cooldown(self, tmp_path: Path) -> None:
@@ -351,8 +404,14 @@ class TestWatchOnce:
         path = tmp_path / "g.json"
         path.write_text("{not json")
         docker = FakeDocker(STALLED)
-        state = watch_once(path, docker, probe=lambda: (False, "closed"),
-                           notify=lambda *a: True, now=T0 + 3600, login_url="u")
+        state = watch_once(
+            path,
+            docker,
+            probe=lambda: (False, "closed"),
+            notify=lambda *a: True,
+            now=T0 + 3600,
+            login_url="u",
+        )
         assert state["status"] == "needs_login"
         assert "restart" not in docker.calls
         assert state["restart_hold_until"] == T0 + 3600 + RESTART_COOLDOWN_S
@@ -368,8 +427,14 @@ class TestWatchOnce:
                 seen["restarts"] = json.loads(path.read_text())["restarts"]
                 return super().restart()
 
-        watch_once(path, Recording(STALLED), probe=lambda: (False, "closed"),
-                   notify=lambda *a: True, now=T0 + 3600, login_url="u")
+        watch_once(
+            path,
+            Recording(STALLED),
+            probe=lambda: (False, "closed"),
+            notify=lambda *a: True,
+            now=T0 + 3600,
+            login_url="u",
+        )
         assert seen["restarts"] == [T0 + 3600]
 
     def test_unwritable_ledger_refuses_the_restart(self, tmp_path: Path) -> None:
@@ -379,16 +444,28 @@ class TestWatchOnce:
             raise OSError("No space left on device")
 
         with pytest.raises(OSError):
-            watch_once(tmp_path / "g.json", docker, probe=lambda: (False, "closed"),
-                       notify=lambda *a: True, now=T0 + 3600, login_url="u",
-                       write_state=no_disk)
+            watch_once(
+                tmp_path / "g.json",
+                docker,
+                probe=lambda: (False, "closed"),
+                notify=lambda *a: True,
+                now=T0 + 3600,
+                login_url="u",
+                write_state=no_disk,
+            )
         assert "restart" not in docker.calls
 
     def test_restart_is_cancelled_when_the_api_answers_on_recheck(self, tmp_path: Path) -> None:
         answers = iter([(False, "closed before reply"), (True, "server_version=187")])
         docker = FakeDocker(STALLED)
-        state = watch_once(tmp_path / "g.json", docker, probe=lambda: next(answers),
-                           notify=lambda *a: True, now=T0 + 3600, login_url="u")
+        state = watch_once(
+            tmp_path / "g.json",
+            docker,
+            probe=lambda: next(answers),
+            notify=lambda *a: True,
+            now=T0 + 3600,
+            login_url="u",
+        )
         assert "restart" not in docker.calls
         assert state["restarts"] == [] and state["restarts_left"] == RESTARTS_PER_DAY
         assert "restart_skipped" in [e["kind"] for e in state["events"]]
@@ -397,13 +474,28 @@ class TestWatchOnce:
         """Codex P2: a timed-out `docker logs` returned [] = phase unknown, so
         a gateway known to be waiting on 2FA could be restarted."""
         path = tmp_path / "g.json"
-        path.write_text(json.dumps({
-            "status": "api_down", "since": T0, "ibc_phase": "logged_in", "ibc_since": T0 - 3600,
-            "container_started": T0 - 86_400, "api_ok": False, "api_fail_since": T0,
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "api_down",
+                    "since": T0,
+                    "ibc_phase": "logged_in",
+                    "ibc_since": T0 - 3600,
+                    "container_started": T0 - 86_400,
+                    "api_ok": False,
+                    "api_fail_since": T0,
+                }
+            )
+        )
         docker = FakeDocker(None)
-        state = watch_once(path, docker, probe=lambda: (False, "closed"),
-                           notify=lambda *a: True, now=T0 + 3600, login_url="u")
+        state = watch_once(
+            path,
+            docker,
+            probe=lambda: (False, "closed"),
+            notify=lambda *a: True,
+            now=T0 + 3600,
+            login_url="u",
+        )
         assert state["status"] == "api_down"
         assert state["ibc_observed"] is False
         assert "restart" not in docker.calls
@@ -412,8 +504,14 @@ class TestWatchOnce:
         """Codex P2: a failed push advanced last_notified_* and suppressed the
         alert for 4 hours."""
         path = tmp_path / "g.json"
-        first = watch_once(path, FakeDocker(STALLED), probe=lambda: (False, "closed"),
-                           notify=lambda *a: False, now=T0 + 3600, login_url="u")
+        first = watch_once(
+            path,
+            FakeDocker(STALLED),
+            probe=lambda: (False, "closed"),
+            notify=lambda *a: False,
+            now=T0 + 3600,
+            login_url="u",
+        )
         assert first["last_notified_status"] is None
         sent: list[tuple[str, str, str]] = []
 
@@ -421,11 +519,23 @@ class TestWatchOnce:
             sent.append((t, m, p))
             return True
 
-        watch_once(path, FakeDocker(STALLED), probe=lambda: (False, "closed"),
-                   notify=record, now=T0 + 3660, login_url="u")
+        watch_once(
+            path,
+            FakeDocker(STALLED),
+            probe=lambda: (False, "closed"),
+            notify=record,
+            now=T0 + 3660,
+            login_url="u",
+        )
         assert sent == []  # inside the retry backoff
-        after = watch_once(path, FakeDocker(STALLED), probe=lambda: (False, "closed"),
-                           notify=record, now=T0 + 3600 + NOTIFY_RETRY_S, login_url="u")
+        after = watch_once(
+            path,
+            FakeDocker(STALLED),
+            probe=lambda: (False, "closed"),
+            notify=record,
+            now=T0 + 3600 + NOTIFY_RETRY_S,
+            login_url="u",
+        )
         assert len(sent) == 1 and after["last_notified_status"] == "needs_login"
 
 
@@ -469,10 +579,14 @@ class TestVncScripts:
         bin_dir.mkdir(exist_ok=True)
         _stub(bin_dir, "x11vnc", 'printf "%s\\n" "$@" > "$STUB_OUT"')
         _stub(bin_dir, "pgrep", 'exit "${PGREP_RC:-1}"')
-        full = {"PATH": f"{bin_dir}:/usr/bin:/bin", "STUB_OUT": str(tmp_path / "x11vnc.args"),
-                **env}
-        return subprocess.run(["sh", "-c", script], env=full, capture_output=True, text=True,
-                              timeout=10, check=False)
+        full = {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "STUB_OUT": str(tmp_path / "x11vnc.args"),
+            **env,
+        }
+        return subprocess.run(
+            ["sh", "-c", script], env=full, capture_output=True, text=True, timeout=10, check=False
+        )
 
     def _args(self, tmp_path: Path) -> list[str]:
         return (tmp_path / "x11vnc.args").read_text().splitlines()
@@ -490,8 +604,7 @@ class TestVncScripts:
         assert args[args.index("-display") + 1] == ":1"
         secret = tmp_path / "vnc.secret"
         secret.write_text("pw-file\n")
-        out = self._sh(tmp_path, x11vnc_script(str(tmp_path)),
-                       VNC_SERVER_PASSWORD_FILE=str(secret))
+        out = self._sh(tmp_path, x11vnc_script(str(tmp_path)), VNC_SERVER_PASSWORD_FILE=str(secret))
         assert out.returncode == 0
         args = self._args(tmp_path)
         assert args[args.index("-passwd") + 1] == "pw-file"
@@ -550,12 +663,20 @@ def test_env_example_uses_the_image_variable_names() -> None:
     """Root cause 2026-09-22: the image renders IbLoginId from TWS_USERID;
     ib.env set TWS_USERNAME, so every automated login typed a blank user."""
     root = Path(__file__).resolve().parents[2] / "deploy" / "trex"
-    names = {line.split("=", 1)[0] for line in (root / "ib.env.example").read_text().splitlines()
-             if "=" in line and not line.startswith("#")}
+    names = {
+        line.split("=", 1)[0]
+        for line in (root / "ib.env.example").read_text().splitlines()
+        if "=" in line and not line.startswith("#")
+    }
     assert {"TWS_USERID", "TWS_PASSWORD"} <= names
     compose = (root / "docker-compose.yml").read_text()
-    for setting in ("AUTO_RESTART_TIME", "TWOFA_TIMEOUT_ACTION", "RELOGIN_AFTER_TWOFA_TIMEOUT",
-                    "EXISTING_SESSION_DETECTED_ACTION", "TZ: America/New_York"):
+    for setting in (
+        "AUTO_RESTART_TIME",
+        "TWOFA_TIMEOUT_ACTION",
+        "RELOGIN_AFTER_TWOFA_TIMEOUT",
+        "EXISTING_SESSION_DETECTED_ACTION",
+        "TZ: America/New_York",
+    ):
         assert setting in compose, setting
 
 
@@ -589,18 +710,28 @@ class TestUrgency:
 
     def test_market_hours_with_positions_is_high_and_hourly(self) -> None:
         now = self._stuck_at() + 5 * 3600
-        prior = {"status": "needs_login", "since": T0, "restarts": [now - 60],
-                 "last_notified_status": "needs_login", "last_notified_at": now - REMIND_MARKET_S}
+        prior = {
+            "status": "needs_login",
+            "since": T0,
+            "restarts": [now - 60],
+            "last_notified_status": "needs_login",
+            "last_notified_at": now - REMIND_MARKET_S,
+        }
         _, actions = decide(_obs(now=now), prior, urgency=self.LOUD)
         assert [a.priority for a in actions if a.kind == "notify"] == ["high"]
         _, actions = decide(_obs(now=now), prior, urgency=self.DAY)
         assert "notify" not in [a.kind for a in actions]  # 4 h cadence off-market
 
     def test_recovery_after_a_held_alarm_is_silent(self) -> None:
-        prior = {"status": "needs_login", "since": T0, "last_notified_status": None,
-                 "notify_held": True}
-        _, actions = decide(_obs(api_ok=True, ibc=parse_ibc_log(COMPLETED)), prior,
-                            urgency=self.DAY)
+        prior = {
+            "status": "needs_login",
+            "since": T0,
+            "last_notified_status": None,
+            "notify_held": True,
+        }
+        _, actions = decide(
+            _obs(api_ok=True, ibc=parse_ibc_log(COMPLETED)), prior, urgency=self.DAY
+        )
         assert actions == []
 
 
@@ -611,9 +742,11 @@ LOUD = Urgency("high", REMIND_EVERY_S, quiet=False)
 
 
 def _sunday(iso_day: str, hh: int = 0, mm: int = 0) -> float:
-    return datetime.fromisoformat(f"{iso_day}T{hh:02d}:{mm:02d}:00").replace(
-        tzinfo=ZoneInfo("America/New_York")
-    ).timestamp()
+    return (
+        datetime.fromisoformat(f"{iso_day}T{hh:02d}:{mm:02d}:00")
+        .replace(tzinfo=ZoneInfo("America/New_York"))
+        .timestamp()
+    )
 
 
 class TestColdRestartPreAlert:
@@ -629,20 +762,32 @@ class TestColdRestartPreAlert:
 
     def test_the_helper_picks_the_next_sunday_noon_et(self) -> None:
         # Monday -> the coming Sunday, DST-correct
-        assert next_cold_restart(
-            datetime(2026, 9, 28, 9, 0, tzinfo=ZoneInfo("America/New_York"))
-        ).isoformat() == "2026-10-04T12:00:00-04:00"
+        assert (
+            next_cold_restart(
+                datetime(2026, 9, 28, 9, 0, tzinfo=ZoneInfo("America/New_York"))
+            ).isoformat()
+            == "2026-10-04T12:00:00-04:00"
+        )
         # Sunday before noon -> today; Sunday after noon -> next Sunday
-        assert next_cold_restart(
-            datetime(2026, 10, 4, 9, 0, tzinfo=ZoneInfo("America/New_York"))
-        ).date().isoformat() == self.SUNDAY
-        assert next_cold_restart(
-            datetime(2026, 10, 4, 12, 0, 1, tzinfo=ZoneInfo("America/New_York"))
-        ).date().isoformat() == self.NEXT_SUNDAY
+        assert (
+            next_cold_restart(datetime(2026, 10, 4, 9, 0, tzinfo=ZoneInfo("America/New_York")))
+            .date()
+            .isoformat()
+            == self.SUNDAY
+        )
+        assert (
+            next_cold_restart(datetime(2026, 10, 4, 12, 0, 1, tzinfo=ZoneInfo("America/New_York")))
+            .date()
+            .isoformat()
+            == self.NEXT_SUNDAY
+        )
         # Saturday evening -> tomorrow
-        assert next_cold_restart(
-            datetime(2026, 10, 3, 20, 0, tzinfo=ZoneInfo("America/New_York"))
-        ).date().isoformat() == self.SUNDAY
+        assert (
+            next_cold_restart(datetime(2026, 10, 3, 20, 0, tzinfo=ZoneInfo("America/New_York")))
+            .date()
+            .isoformat()
+            == self.SUNDAY
+        )
 
     def test_it_fires_an_hour_ahead_and_not_before(self) -> None:
         assert cold_restart_due({}, _sunday(self.SUNDAY, 10, 59)) is None
@@ -702,9 +847,7 @@ class TestColdRestartPreAlert:
         held, actions = decide(self._healthy(_sunday(self.SUNDAY, 11, 0)), {}, urgency=hush)
         assert "cold_restart_prealert" not in [a.detail for a in actions]
         assert held["cold_restart_notified_for"] is None, "a held push booked the week"
-        fired, actions = decide(
-            self._healthy(_sunday(self.SUNDAY, 11, 0)), held, urgency=day
-        )
+        fired, actions = decide(self._healthy(_sunday(self.SUNDAY, 11, 0)), held, urgency=day)
         assert "cold_restart_prealert" in [a.detail for a in actions]
         assert fired["cold_restart_notified_for"] == self.SUNDAY
 
@@ -733,8 +876,11 @@ class TestColdRestartPreAlert:
         prior = decide(self._healthy(_sunday(self.SUNDAY, 11, 0)), {}, urgency=LOUD)[0]
         back = decide(
             self._healthy(_sunday(self.SUNDAY, 12, 30)),
-            {**prior, "last_notified_status": "api_down", "last_notified_at":
-             _sunday(self.SUNDAY, 11, 0)},
+            {
+                **prior,
+                "last_notified_status": "api_down",
+                "last_notified_at": _sunday(self.SUNDAY, 11, 0),
+            },
             urgency=LOUD,
         )[1]
         titles = [a.title for a in back if a.kind == "notify"]

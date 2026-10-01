@@ -53,7 +53,9 @@ class TestStamp:
         s = _stamp()
         assert s.config_hash == config_hash_of({"a": 1})
 
-    def test_git_rev_prefixed_when_dirty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_git_rev_prefixed_when_dirty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             "tree_options.trex.discovery.artifact._git_state",
             lambda repo: ("abc1234", True),
@@ -61,7 +63,9 @@ class TestStamp:
         stamp = build_stamp(repo=tmp_path, config={}, generated_at=NOW, runner="manual")
         assert stamp.git_sha.startswith("dirty:abc1234")
 
-    def test_git_rev_unknown_outside_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_git_rev_unknown_outside_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(
             "tree_options.trex.discovery.artifact._git_state",
             lambda repo: None,

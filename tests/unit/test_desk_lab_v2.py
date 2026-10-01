@@ -31,9 +31,21 @@ from tree_options.desk.outcomes import prepare_index, spot_series
 
 CTX_DAYS = parity_days(24)
 AT = 21  # the board session: 21 prior sessions exist for the 20-session context
-V2_FIELDS = {"id", "structure", "direction", "underlying", "width", "observed_premium",
-             "max_loss", "max_gain", "reward_risk", "dte", "short_strike_moneyness_pct",
-             "long_recent_move", "short_recent_move"}
+V2_FIELDS = {
+    "id",
+    "structure",
+    "direction",
+    "underlying",
+    "width",
+    "observed_premium",
+    "max_loss",
+    "max_gain",
+    "reward_risk",
+    "dte",
+    "short_strike_moneyness_pct",
+    "long_recent_move",
+    "short_recent_move",
+}
 
 
 @pytest.fixture(scope="module")
@@ -90,8 +102,11 @@ def test_future_prints_change_nothing_the_model_sees(ctx_raw: dict[str, Any]) ->
         if iag.parse_contract(ticker).right == "C":
             # same session after the 10:00 ET decision (10:05 and 15:50 ET) and
             # the next session: all would move a leaked spot/close estimate
-            body["results"] += [_b(day, 14, 5, "77.77"), _b(day, 19, 50, "77.77"),
-                                _b(following, 14, 5, "77.77")]
+            body["results"] += [
+                _b(day, 14, 5, "77.77"),
+                _b(day, 19, 50, "77.77"),
+                _b(following, 14, 5, "77.77"),
+            ]
             body["results"].sort(key=lambda bar: bar["t"])
     assert _render(planted, day, "10:00") == before
     # the planted prints are not inert: the SAME-session close does move
@@ -104,21 +119,34 @@ def test_future_prints_change_nothing_the_model_sees(ctx_raw: dict[str, Any]) ->
 
 def _cand(structure: str, rr: str, *, short_strike: int = 500, cid: str = "") -> dict[str, Any]:
     right = "P" if structure.startswith("put") else "C"
-    return {"id": cid or f"{structure}-{rr}", "structure": structure, "underlying": "SPY",
-            "expiry": "2026-10-16", "long": f"O:SPY261016{right}00495000",
-            "short": f"O:SPY261016{right}{short_strike * 1000:08d}", "width": "5",
-            "observed_premium": "1.00", "max_loss_proxy": "100", "max_gain_proxy": "400",
-            "reward_to_risk_proxy": rr, "long_recent_trade_move": "0.0100",
-            "short_recent_trade_move": None, "data_kind": "last-traded-minute-close"}
+    return {
+        "id": cid or f"{structure}-{rr}",
+        "structure": structure,
+        "underlying": "SPY",
+        "expiry": "2026-10-16",
+        "long": f"O:SPY261016{right}00495000",
+        "short": f"O:SPY261016{right}{short_strike * 1000:08d}",
+        "width": "5",
+        "observed_premium": "1.00",
+        "max_loss_proxy": "100",
+        "max_gain_proxy": "400",
+        "reward_to_risk_proxy": rr,
+        "long_recent_trade_move": "0.0100",
+        "short_recent_trade_move": None,
+        "data_kind": "last-traded-minute-close",
+    }
 
 
 AS_OF = datetime(2026, 9, 24, 14, 0, tzinfo=UTC)
 
 
 def _context(spot: str = "500") -> lab.BoardContext:
-    return lab.BoardContext(public={"time_of_day": "open", "session_ordinal": 1,
-                                    "underlyings": {"U1": {}}},
-                            aliases={"SPY": "U1"}, spot={"SPY": Decimal(spot)}, as_of=AS_OF)
+    return lab.BoardContext(
+        public={"time_of_day": "open", "session_ordinal": 1, "underlyings": {"U1": {}}},
+        aliases={"SPY": "U1"},
+        spot={"SPY": Decimal(spot)},
+        as_of=AS_OF,
+    )
 
 
 def test_rows_v2_stratify_by_structure_without_reward_risk_sorting() -> None:
@@ -133,15 +161,21 @@ def test_rows_v2_stratify_by_structure_without_reward_risk_sorting() -> None:
     assert not any(r["structure"] in ("put_credit", "call_debit") for r in v1)
     rows = lab.board_rows_v2(packet, _context())
     assert len(rows) == 16
-    by = {s: sorted(r["reward_risk"] for r in rows if r["structure"] == s)
-          for s in ("put_credit", "put_debit", "call_credit", "call_debit")}
+    by = {
+        s: sorted(r["reward_risk"] for r in rows if r["structure"] == s)
+        for s in ("put_credit", "put_debit", "call_credit", "call_debit")
+    }
     # nearest-to-median (4): 4, then 3 and 5, then the 2/6 tie broken by id -> 2
     assert by["put_debit"] == by["call_credit"] == ["2.00", "3.00", "4.00", "5.00"]
     assert by["put_credit"] == by["call_debit"] == ["0.20", "0.30", "0.40", "0.50"]
     assert [r["id"] for r in rows] == sorted(r["id"] for r in rows)  # no rr ordering either
     directions = {r["structure"]: r["direction"] for r in rows}
-    assert directions == {"put_credit": "bullish", "call_debit": "bullish",
-                          "put_debit": "bearish", "call_credit": "bearish"}
+    assert directions == {
+        "put_credit": "bullish",
+        "call_debit": "bullish",
+        "put_debit": "bearish",
+        "call_credit": "bearish",
+    }
     assert all(set(r) == V2_FIELDS for r in rows)
     even = [_cand("put_debit", f"{k}.00") for k in range(1, 7)]
     picked = lab.board_rows_v2({"as_of": AS_OF.isoformat(), "candidates": even}, _context())
@@ -149,19 +183,32 @@ def test_rows_v2_stratify_by_structure_without_reward_risk_sorting() -> None:
 
 
 def test_rows_v2_fields_dte_and_moneyness() -> None:
-    packet = {"as_of": AS_OF.isoformat(),
-              "candidates": [_cand("call_debit", "1.50", short_strike=505, cid="a"),
-                             _cand("put_credit", "0.50", short_strike=500, cid="b")]}
+    packet = {
+        "as_of": AS_OF.isoformat(),
+        "candidates": [
+            _cand("call_debit", "1.50", short_strike=505, cid="a"),
+            _cand("put_credit", "0.50", short_strike=500, cid="b"),
+        ],
+    }
     rows = {r["id"]: r for r in lab.board_rows_v2(packet, _context("500"))}
-    assert rows["a"] == {"id": "a", "structure": "call_debit", "direction": "bullish",
-                         "underlying": "U1", "width": "5", "observed_premium": "1.00",
-                         "max_loss": "100", "max_gain": "400", "reward_risk": "1.50",
-                         "dte": 22, "short_strike_moneyness_pct": "1.00",
-                         "long_recent_move": "0.0100", "short_recent_move": None}
+    assert rows["a"] == {
+        "id": "a",
+        "structure": "call_debit",
+        "direction": "bullish",
+        "underlying": "U1",
+        "width": "5",
+        "observed_premium": "1.00",
+        "max_loss": "100",
+        "max_gain": "400",
+        "reward_risk": "1.50",
+        "dte": 22,
+        "short_strike_moneyness_pct": "1.00",
+        "long_recent_move": "0.0100",
+        "short_recent_move": None,
+    }
     assert rows["b"]["short_strike_moneyness_pct"] == "0.00"
     no_spot = lab.BoardContext(public={}, aliases={"SPY": "U1"}, spot={}, as_of=AS_OF)
-    assert all(r["short_strike_moneyness_pct"] is None
-               for r in lab.board_rows_v2(packet, no_spot))
+    assert all(r["short_strike_moneyness_pct"] is None for r in lab.board_rows_v2(packet, no_spot))
     with pytest.raises(ValueError):  # a context for another board is refused
         lab.board_rows_v2({**packet, "as_of": "2026-09-24T14:45:00+00:00"}, _context())
     with pytest.raises(ValueError):  # an unaliased underlying never falls back to its ticker
@@ -172,13 +219,19 @@ def test_real_board_has_both_directions_and_no_leaks(ctx_raw: dict[str, Any]) ->
     day = CTX_DAYS[AT]
     public, rows, prompt = _render(ctx_raw, day, "10:00")
     assert {r["direction"] for r in rows} == {"bullish", "bearish"}
-    assert {r["structure"] for r in rows} == {"put_credit", "put_debit", "call_credit",
-                                              "call_debit"}
+    assert {r["structure"] for r in rows} == {
+        "put_credit",
+        "put_debit",
+        "call_credit",
+        "call_debit",
+    }
     assert max(sum(r["structure"] == s for r in rows) for s in {r["structure"] for r in rows}) <= 4
     content = prompt[0]["content"]
     for leak in ("SPY", "QQQ", "O:", "T10:00", "T14:00", "+00:00"):
         assert leak not in content, leak
-    assert re.search(r"(19|20)\d\d-\d\d-\d\d", content) is None  # no dates (hex ids may hold digits)
+    assert (
+        re.search(r"(19|20)\d\d-\d\d-\d\d", content) is None
+    )  # no dates (hex ids may hold digits)
     for symbol in SPOT_BASE:  # no spot LEVEL (a level identifies ticker and era)
         for level in spot_path(symbol, AT):
             assert str(level) not in content
@@ -191,13 +244,17 @@ def test_real_board_has_both_directions_and_no_leaks(ctx_raw: dict[str, Any]) ->
 
 
 def test_prompt_v2_contract_and_policy_sentence() -> None:
-    rows = lab.board_rows_v2({"as_of": AS_OF.isoformat(),
-                              "candidates": [_cand("put_credit", "0.50", cid="r1")]}, _context())
+    rows = lab.board_rows_v2(
+        {"as_of": AS_OF.isoformat(), "candidates": [_cand("put_credit", "0.50", cid="r1")]},
+        _context(),
+    )
     task = json.loads(lab.board_prompt_v2(rows, _context())[0]["content"])["task"]
     assert task.startswith(lab.POLICY_SENTENCE)
     assert '"horizon": "intraday" | "eod" | "hold:5" | "expiry"' in task
     assert '"choice": "<row id>" | null' in task and "14.60" in task
-    custom = json.loads(lab.board_prompt_v2(rows, _context(), policy_prompt="Be bold.")[0]["content"])
+    custom = json.loads(
+        lab.board_prompt_v2(rows, _context(), policy_prompt="Be bold.")[0]["content"]
+    )
     assert custom["task"] == task.replace(lab.POLICY_SENTENCE, "Be bold.", 1)
     leaky = [{**rows[0], "long": "O:SPY261016P00495000"}]  # extra keys are never rendered
     assert "O:SPY" not in lab.board_prompt_v2(leaky, _context())[0]["content"]
@@ -206,13 +263,22 @@ def test_prompt_v2_contract_and_policy_sentence() -> None:
 def test_parse_choice_v2_rejects_unknown_ids_and_horizons_never_repairs() -> None:
     ids = {"a1", "b2"}
     assert lab.parse_choice_v2({"choice": "a1", "horizon": "eod", "note": "ok"}, ids) == (
-        "a1", "eod", "ok")
+        "a1",
+        "eod",
+        "ok",
+    )
     for horizon in lab.V2_HORIZONS:
         assert lab.parse_choice_v2({"choice": "b2", "horizon": horizon}, ids) == ("b2", horizon, "")
     assert lab.parse_choice_v2({"choice": None, "horizon": "whatever", "note": "skip"}, ids) == (
-        None, None, "skip")
+        None,
+        None,
+        "skip",
+    )
     assert lab.parse_choice_v2({"choice": "zz", "horizon": "eod"}, ids) == (
-        None, None, "unknown id rejected: zz")
+        None,
+        None,
+        "unknown id rejected: zz",
+    )
     for bad in ("hold:3", "EOD", " eod", "hold:05", None, 5):
         choice, horizon, note = lab.parse_choice_v2({"choice": "a1", "horizon": bad}, ids)
         assert (choice, horizon) == (None, None), bad
@@ -238,10 +304,14 @@ def test_minimax_flash_is_a_model_provider(tmp_path: Any, monkeypatch: pytest.Mo
     bundle = tmp_path / "bundle.json"
     bundle.write_text(json.dumps(_bundle(datetime(2026, 9, 24).date())))
     transport = FakeTransport("first")
-    document = lab.run_lab(lab.LabConfig(bundle=bundle, policy="model:minimax-flash",
-                                         sessions=1, lab_root=tmp_path / "lab"),
-                           windows=UNDER, transport=transport,
-                           now=datetime(2026, 9, 28, 20, 0, tzinfo=UTC))
+    document = lab.run_lab(
+        lab.LabConfig(
+            bundle=bundle, policy="model:minimax-flash", sessions=1, lab_root=tmp_path / "lab"
+        ),
+        windows=UNDER,
+        transport=transport,
+        now=datetime(2026, 9, 28, 20, 0, tzinfo=UTC),
+    )
     assert document["status"] == "ok" and document["model_failures"] == 0
     assert transport.calls[0]["url"] == "https://api.minimax.io/v1/chat/completions"
     assert transport.calls[0]["body"]["model"] == "MiniMax-M3.1-Flash-Preview"

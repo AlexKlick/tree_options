@@ -29,7 +29,9 @@ ET = ZoneInfo("America/New_York")
 NOW = datetime(2026, 9, 22, 15, 55, tzinfo=ET)
 
 
-def _row(strike: float, bid: float | None, ask: float | None, delta: float | None = None) -> ChainRow:
+def _row(
+    strike: float, bid: float | None, ask: float | None, delta: float | None = None
+) -> ChainRow:
     return ChainRow(strike=strike, bid=bid, ask=ask, delta=delta, ts=NOW)
 
 
@@ -45,7 +47,9 @@ def _chain() -> list[ChainRow]:
 
 
 def _input(rows: list[ChainRow] | None = None, dte: int = 24) -> ScanInput:
-    return ScanInput(underlying="NVDA", expiry="20261016", dte=dte, rows=_chain() if rows is None else rows)
+    return ScanInput(
+        underlying="NVDA", expiry="20261016", dte=dte, rows=_chain() if rows is None else rows
+    )
 
 
 def _cfg(**overrides: object) -> ScanConfig:
@@ -141,16 +145,12 @@ class TestRules:
         cfg = _cfg(target_mode="premium", min_debit=5.0)  # impossible floor
         result = scan(_input(), cfg, None, NOW)
         assert result.candidates == []
-        assert any(
-            r.rule == "min_debit" for c in result.rejected for r in c.rules
-        )
+        assert any(r.rule == "min_debit" for c in result.rejected for r in c.rules)
 
     def test_dte_window_rule(self) -> None:
         result = scan(_input(dte=10), _cfg(), None, NOW)
         assert result.candidates == []
-        assert all(
-            any(r.rule == "dte" for r in c.rules) for c in result.rejected
-        )
+        assert all(any(r.rule == "dte" for r in c.rules) for c in result.rejected)
 
     def test_delta_rule_not_applicable_without_greeks(self) -> None:
         rows = [_row(r.strike, r.bid, r.ask, None) for r in _chain()]
@@ -238,8 +238,6 @@ class TestHonesty:
     def test_debit_mid_matches_leg_mids(self) -> None:
         result = scan(_input(), _cfg(target_mode="premium"), None, NOW)
         c = result.candidates[0]
-        long_mid = row_mid(
-            next(r for r in _chain() if r.strike == c.long_strike)
-        )
+        long_mid = row_mid(next(r for r in _chain() if r.strike == c.long_strike))
         short_mid = row_mid(next(r for r in _chain() if r.strike == c.short_strike))
         assert c.debit_mid == pytest.approx(long_mid - short_mid)  # type: ignore[arg-type]

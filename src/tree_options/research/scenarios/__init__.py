@@ -31,6 +31,7 @@ type B (conditional stress valuation for option shocks) is left
 explicit as a typed refusal until the supported shock surface is
 defined.
 """
+
 from __future__ import annotations
 
 from tree_options.research.scenarios.contracts import (
@@ -79,14 +80,21 @@ def __getattr__(name: str):
     ``__getattr__`` proxy resolves on first attribute access.
     """
     if name in {
-        "ForkOutcome", "fork_parent_and_replay",
-        "PARENT_KIND", "ParentRef", "ChildRef",
-        "store_parent_ref", "load_parent_ref",
-        "attach_child", "list_children",
-        "parent_changed", "parent_missing",
+        "ForkOutcome",
+        "fork_parent_and_replay",
+        "PARENT_KIND",
+        "ParentRef",
+        "ChildRef",
+        "store_parent_ref",
+        "load_parent_ref",
+        "attach_child",
+        "list_children",
+        "parent_changed",
+        "parent_missing",
     }:
         from tree_options.research.scenarios import engine as _engine_mod
         from tree_options.research.scenarios import lineage as _lineage_mod
+
         g = {**_engine_mod.__dict__, **_lineage_mod.__dict__}
         value = g.get(name)
         if value is not None:

@@ -8,8 +8,10 @@ from tree_options.desk import ivhist
 
 class Calendar:
     def sessions(self) -> tuple[date, ...]:
-        return tuple(date.fromisoformat(d) for d in (
-            "2025-03-03", "2025-03-04", "2025-03-05", "2025-03-06", "2025-03-07"))
+        return tuple(
+            date.fromisoformat(d)
+            for d in ("2025-03-03", "2025-03-04", "2025-03-05", "2025-03-06", "2025-03-07")
+        )
 
 
 def bar(day: str, right: str, strike: float, price: float) -> ivhist.OptionBar:
@@ -18,10 +20,16 @@ def bar(day: str, right: str, strike: float, price: float) -> ivhist.OptionBar:
 
 def test_cross_cache_conflicts_are_dropped() -> None:
     day = date(2025, 3, 4)
-    a = ivhist.CacheScan(source="a", options={"SPY": {day: [bar("2025-04-18", "C", 100, 4)]}},
-                         spot={"SPY": {day: 100}})
-    b = ivhist.CacheScan(source="b", options={"SPY": {day: [bar("2025-04-18", "C", 100, 5)]}},
-                         spot={"SPY": {day: 101}})
+    a = ivhist.CacheScan(
+        source="a",
+        options={"SPY": {day: [bar("2025-04-18", "C", 100, 4)]}},
+        spot={"SPY": {day: 100}},
+    )
+    b = ivhist.CacheScan(
+        source="b",
+        options={"SPY": {day: [bar("2025-04-18", "C", 100, 5)]}},
+        spot={"SPY": {day: 101}},
+    )
     merged = replay.merge_scans((a, b))
     assert merged.options == {}
     assert merged.spot["SPY"] == {}
@@ -35,15 +43,32 @@ def test_replay_uses_next_session_entry_and_records_missing_exit(monkeypatch) ->
     exit_day = date(2025, 3, 5)
     expiry = date(2025, 4, 18)
     rows = [ivhist.OptionBar(expiry, "C", 100, 4), ivhist.OptionBar(expiry, "P", 100, 3)]
-    entry_rows = [*rows, ivhist.OptionBar(expiry, "C", 110, 2),
-                  ivhist.OptionBar(expiry, "P", 110, 8)]
-    scan = ivhist.CacheScan(source="fixture", options={"SPY": {decision: rows, entry: entry_rows,
-                               exit_day: [ivhist.OptionBar(expiry, "C", 100, 5)]}},
-                            spot={"SPY": {decision: 100, entry: 110}})
+    entry_rows = [
+        *rows,
+        ivhist.OptionBar(expiry, "C", 110, 2),
+        ivhist.OptionBar(expiry, "P", 110, 8),
+    ]
+    scan = ivhist.CacheScan(
+        source="fixture",
+        options={
+            "SPY": {
+                decision: rows,
+                entry: entry_rows,
+                exit_day: [ivhist.OptionBar(expiry, "C", 100, 5)],
+            }
+        },
+        spot={"SPY": {decision: 100, entry: 110}},
+    )
     monkeypatch.setattr(replay, "_signals_on", lambda *_args: [("xsmom_top3", "SPY")])
-    spec = replay.ReplaySpec(date(2025, 3, 3), date(2025, 3, 3), ("SPY",),
-                             signals=("xsmom_top3",), structures=("long_call",),
-                             hold_sessions=1, max_loss=500)
+    spec = replay.ReplaySpec(
+        date(2025, 3, 3),
+        date(2025, 3, 3),
+        ("SPY",),
+        signals=("xsmom_top3",),
+        structures=("long_call",),
+        hold_sessions=1,
+        max_loss=500,
+    )
     result = replay.replay(scan, {}, {}, Calendar(), spec)
     assert result["counts"]["evaluable_within_trade_cap"] == 1
     assert result["rows"][0]["entry"] == "2025-03-04"
@@ -64,15 +89,30 @@ def test_risk_cap_excludes_trade_without_turning_it_into_loss(monkeypatch) -> No
     entry = date(2025, 3, 4)
     exit_day = date(2025, 3, 5)
     expiry = date(2025, 4, 18)
-    decision_rows = [ivhist.OptionBar(expiry, "C", 100, 4),
-                     ivhist.OptionBar(expiry, "P", 100, 3)]
-    scan = ivhist.CacheScan(source="fixture", options={"SPY": {decision: decision_rows, entry: [
-        ivhist.OptionBar(expiry, "C", 100, 4), ivhist.OptionBar(expiry, "P", 100, 3)],
-        exit_day: [ivhist.OptionBar(expiry, "C", 100, 5)]}},
-        spot={"SPY": {decision: 100}})
+    decision_rows = [ivhist.OptionBar(expiry, "C", 100, 4), ivhist.OptionBar(expiry, "P", 100, 3)]
+    scan = ivhist.CacheScan(
+        source="fixture",
+        options={
+            "SPY": {
+                decision: decision_rows,
+                entry: [
+                    ivhist.OptionBar(expiry, "C", 100, 4),
+                    ivhist.OptionBar(expiry, "P", 100, 3),
+                ],
+                exit_day: [ivhist.OptionBar(expiry, "C", 100, 5)],
+            }
+        },
+        spot={"SPY": {decision: 100}},
+    )
     monkeypatch.setattr(replay, "_signals_on", lambda *_args: [("xsmom_top3", "SPY")])
-    spec = replay.ReplaySpec(date(2025, 3, 3), date(2025, 3, 3), ("SPY",),
-                             structures=("long_call",), hold_sessions=1, max_loss=300)
+    spec = replay.ReplaySpec(
+        date(2025, 3, 3),
+        date(2025, 3, 3),
+        ("SPY",),
+        structures=("long_call",),
+        hold_sessions=1,
+        max_loss=300,
+    )
     result = replay.replay(scan, {}, {}, Calendar(), spec)
     assert result["counts"]["over_trade_loss_cap"] == 1
     assert result["attempts"][0]["status"] == "over_trade_loss_cap"
@@ -88,5 +128,7 @@ def test_pre_attempt_missing_decision_data_has_one_record_per_structure(monkeypa
     assert result["counts"] == {"missing_decision_spot_or_options": 3}
     assert len(result["attempts"]) == 3
     assert {row["status"] for row in result["attempts"]} == {"missing_decision_spot_or_options"}
-    assert all(counts == {"missing_decision_spot_or_options": 1}
-               for counts in result["eligibility_by_variant"].values())
+    assert all(
+        counts == {"missing_decision_spot_or_options": 1}
+        for counts in result["eligibility_by_variant"].values()
+    )

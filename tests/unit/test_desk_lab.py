@@ -31,17 +31,23 @@ from tree_options.desk.lab import (
 from tree_options.trex.grant_policy import WINDOWS_SCHEMA, QuotaWindow
 
 T0 = datetime(2026, 9, 28, 20, 0, tzinfo=UTC)
-UNDER = (QuotaWindow(name="zai", actual_left_pct=Decimal("94.0"),
-                     planned_left_pct=Decimal("51.9")),)
-ON_PLAN = (QuotaWindow(name="zai", actual_left_pct=Decimal("40.0"),
-                       planned_left_pct=Decimal("50.0")),)
+UNDER = (
+    QuotaWindow(name="zai", actual_left_pct=Decimal("94.0"), planned_left_pct=Decimal("51.9")),
+)
+ON_PLAN = (
+    QuotaWindow(name="zai", actual_left_pct=Decimal("40.0"), planned_left_pct=Decimal("50.0")),
+)
 
 
 def _windows_file(path: Path) -> Path:
-    path.write_text(json.dumps({
-        "schema": WINDOWS_SCHEMA,
-        "windows": [{"name": "zai", "actual_left_pct": "94.0",
-                     "planned_left_pct": "51.9"}]}))
+    path.write_text(
+        json.dumps(
+            {
+                "schema": WINDOWS_SCHEMA,
+                "windows": [{"name": "zai", "actual_left_pct": "94.0", "planned_left_pct": "51.9"}],
+            }
+        )
+    )
     return path
 
 
@@ -55,8 +61,9 @@ class FakeTransport:
         self.mode = mode
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.calls.append({"url": url, "body": json.loads(body)})
         if self.mode == "http500":
             return 500, b""
@@ -68,8 +75,7 @@ class FakeTransport:
             content = json.dumps({"choice": "not-a-real-id", "note": "x"})
         else:
             content = json.dumps({"choice": rows[0]["id"], "note": "top rr"})
-        envelope = {"choices": [{"message": {"content": content},
-                                 "finish_reason": "stop"}]}
+        envelope = {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
         return 200, json.dumps(envelope).encode()
 
 
@@ -114,15 +120,13 @@ def test_a_rules_policy_runs_without_quota(bundle, tmp_path):
 
 def test_model_choices_flow_into_the_replay_accounting(bundle, tmp_path):
     transport = FakeTransport("first")
-    config = LabConfig(bundle=bundle, policy="model:zai", sessions=1,
-                       lab_root=tmp_path / "lab")
+    config = LabConfig(bundle=bundle, policy="model:zai", sessions=1, lab_root=tmp_path / "lab")
     document = run_lab(config, windows=UNDER, transport=transport, now=T0)
     assert document["status"] == "ok"
     assert document["model_calls"] == len(transport.calls) >= 1
     assert document["model_failures"] == 0
     # oracle: the same decisions through replay() reproduce the summary
-    decisions = {r["snapshot"]: r["choice"] for r in document["receipts"]
-                 if r.get("choice")}
+    decisions = {r["snapshot"]: r["choice"] for r in document["receipts"] if r.get("choice")}
     raw = json.loads(bundle.read_bytes())
     sessions = latest_sessions(raw, 1)
     expected = iag.replay(raw, sessions, decisions)
@@ -136,8 +140,7 @@ def test_model_choices_flow_into_the_replay_accounting(bundle, tmp_path):
 
 
 def test_a_bogus_choice_is_rejected_not_adopted(bundle, tmp_path):
-    config = LabConfig(bundle=bundle, policy="model:zai", sessions=1,
-                       lab_root=tmp_path / "lab")
+    config = LabConfig(bundle=bundle, policy="model:zai", sessions=1, lab_root=tmp_path / "lab")
     document = run_lab(config, windows=UNDER, transport=FakeTransport("bogus"), now=T0)
     assert document["model_failures"] == 0  # the call succeeded; the CHOICE was refused
     assert all(r["choice"] is None for r in document["receipts"])
@@ -146,10 +149,10 @@ def test_a_bogus_choice_is_rejected_not_adopted(bundle, tmp_path):
 
 
 def test_provider_failures_are_recorded_and_the_run_continues(bundle, tmp_path):
-    config = LabConfig(bundle=bundle, policy="model:zai", sessions=1,
-                       boards_cap=3, lab_root=tmp_path / "lab")
-    document = run_lab(config, windows=UNDER, transport=FakeTransport("http500"),
-                       now=T0)
+    config = LabConfig(
+        bundle=bundle, policy="model:zai", sessions=1, boards_cap=3, lab_root=tmp_path / "lab"
+    )
+    document = run_lab(config, windows=UNDER, transport=FakeTransport("http500"), now=T0)
     assert document["model_calls"] >= 1
     assert document["model_failures"] == document["model_calls"]
     assert all("HTTP 500" in (r.get("error") or "") for r in document["receipts"])
@@ -158,12 +161,18 @@ def test_provider_failures_are_recorded_and_the_run_continues(bundle, tmp_path):
 
 def test_two_runs_never_share_a_directory(bundle, tmp_path):
     root = tmp_path / "lab"
-    first = run_lab(LabConfig(bundle=bundle, policy="model:zai", sessions=1,
-                              lab_root=root), windows=UNDER,
-                    transport=FakeTransport(), now=T0)
-    second = run_lab(LabConfig(bundle=bundle, policy="model:zai", sessions=1,
-                               lab_root=root), windows=UNDER,
-                     transport=FakeTransport(), now=T0)
+    first = run_lab(
+        LabConfig(bundle=bundle, policy="model:zai", sessions=1, lab_root=root),
+        windows=UNDER,
+        transport=FakeTransport(),
+        now=T0,
+    )
+    second = run_lab(
+        LabConfig(bundle=bundle, policy="model:zai", sessions=1, lab_root=root),
+        windows=UNDER,
+        transport=FakeTransport(),
+        now=T0,
+    )
     assert first["run_dir"] != second["run_dir"]
 
 
@@ -171,10 +180,21 @@ def test_two_runs_never_share_a_directory(bundle, tmp_path):
 
 
 def test_board_rows_are_capped_aliased_and_choice_validated():
-    rows = [{"id": f"c{i}", "structure": "put_credit", "width": "2",
-             "observed_premium": "1.0", "max_loss_proxy": "100", "max_gain_proxy": "100",
-             "reward_to_risk_proxy": "1.00", "long_recent_trade_move": None,
-             "short_recent_trade_move": None, "data_kind": "x"} for i in range(30)]
+    rows = [
+        {
+            "id": f"c{i}",
+            "structure": "put_credit",
+            "width": "2",
+            "observed_premium": "1.0",
+            "max_loss_proxy": "100",
+            "max_gain_proxy": "100",
+            "reward_to_risk_proxy": "1.00",
+            "long_recent_trade_move": None,
+            "short_recent_trade_move": None,
+            "data_kind": "x",
+        }
+        for i in range(30)
+    ]
     board = board_rows({"candidates": rows})
     assert len(board) == 12 and "ticker" not in json.dumps(board).lower()
     prompt = board_prompt(board)
@@ -188,10 +208,27 @@ def test_board_rows_are_capped_aliased_and_choice_validated():
 
 def test_ask_board_uses_the_injected_transport():
     transport = FakeTransport("first")
-    reply = ask_board("zai", board_rows({"candidates": [
-        {"id": "c1", "structure": "put_credit", "width": "2", "observed_premium": "1.0",
-         "max_loss_proxy": "100", "max_gain_proxy": "100", "reward_to_risk_proxy": "1.00",
-         "long_recent_trade_move": None, "short_recent_trade_move": None,
-         "data_kind": "x"}]}), transport=transport)
+    reply = ask_board(
+        "zai",
+        board_rows(
+            {
+                "candidates": [
+                    {
+                        "id": "c1",
+                        "structure": "put_credit",
+                        "width": "2",
+                        "observed_premium": "1.0",
+                        "max_loss_proxy": "100",
+                        "max_gain_proxy": "100",
+                        "reward_to_risk_proxy": "1.00",
+                        "long_recent_trade_move": None,
+                        "short_recent_trade_move": None,
+                        "data_kind": "x",
+                    }
+                ]
+            }
+        ),
+        transport=transport,
+    )
     assert reply["choice"].startswith("c") or reply["choice"] is None
     assert len(transport.calls) == 1

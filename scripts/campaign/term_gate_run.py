@@ -94,11 +94,12 @@ import statistics
 import subprocess
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 for _name in (
     "OPENBLAS_NUM_THREADS",
@@ -166,20 +167,38 @@ INDEX_FILES = ("VIX.csv", "VIX1Y.csv", "VIX3M.csv", "VIX9D.csv")
 # (copy-faithfulness anchor for the T2 re-derivation; pooled over regimes).
 EXITGRID_ANCHOR = {
     "60-skip5-tercile": {
-        "hold60_n": 8009, "hold60_days": 683,
-        "hold1": -0.05078, "tp100c": -0.03996, "oco100_150": -0.05174,
+        "hold60_n": 8009,
+        "hold60_days": 683,
+        "hold1": -0.05078,
+        "tp100c": -0.03996,
+        "oco100_150": -0.05174,
     },
     "252-skip21-top3": {
-        "hold60_n": 1425, "hold60_days": 475,
-        "hold1": -0.10768, "tp100c": -0.09128, "oco100_150": -0.10804,
+        "hold60_n": 1425,
+        "hold60_days": 475,
+        "hold1": -0.10768,
+        "tp100c": -0.09128,
+        "oco100_150": -0.10804,
     },
 }
 ANCHOR_TOL = 6e-4  # published at 1e-5 precision; absorbs nothing larger
 
 # The 24 registered cells (menu config_ids + slot doc section 5 tables).
 T1_CELLS: tuple[dict[str, str], ...] = (
-    {"id": "T1-01", "gate": "r93", "style": "Q60", "rule": "xsmom_top3", "role": "new-quantity (PRIMARY)"},
-    {"id": "T1-02", "gate": "r93", "style": "Q60", "rule": "pead_beat", "role": "new-quantity (PRIMARY)"},
+    {
+        "id": "T1-01",
+        "gate": "r93",
+        "style": "Q60",
+        "rule": "xsmom_top3",
+        "role": "new-quantity (PRIMARY)",
+    },
+    {
+        "id": "T1-02",
+        "gate": "r93",
+        "style": "Q60",
+        "rule": "pead_beat",
+        "role": "new-quantity (PRIMARY)",
+    },
     {"id": "T1-03", "gate": "r93", "style": "SIGN", "rule": "xsmom_top3", "role": "new-quantity"},
     {"id": "T1-04", "gate": "r93", "style": "SIGN", "rule": "pead_beat", "role": "new-quantity"},
     {"id": "T1-05", "gate": "inc", "style": "Q60", "rule": "xsmom_top3", "role": "incumbent"},
@@ -197,13 +216,23 @@ T2_CELLS: tuple[dict[str, str], ...] = (
     {"id": "T2-03", "construction": "60-skip5-tercile", "variant": "tp100c", "regime": "CALM"},
     {"id": "T2-04", "construction": "60-skip5-tercile", "variant": "tp100c", "regime": "STRESSED"},
     {"id": "T2-05", "construction": "60-skip5-tercile", "variant": "oco100_150", "regime": "CALM"},
-    {"id": "T2-06", "construction": "60-skip5-tercile", "variant": "oco100_150", "regime": "STRESSED"},
+    {
+        "id": "T2-06",
+        "construction": "60-skip5-tercile",
+        "variant": "oco100_150",
+        "regime": "STRESSED",
+    },
     {"id": "T2-07", "construction": "252-skip21-top3", "variant": "hold1", "regime": "CALM"},
     {"id": "T2-08", "construction": "252-skip21-top3", "variant": "hold1", "regime": "STRESSED"},
     {"id": "T2-09", "construction": "252-skip21-top3", "variant": "tp100c", "regime": "CALM"},
     {"id": "T2-10", "construction": "252-skip21-top3", "variant": "tp100c", "regime": "STRESSED"},
     {"id": "T2-11", "construction": "252-skip21-top3", "variant": "oco100_150", "regime": "CALM"},
-    {"id": "T2-12", "construction": "252-skip21-top3", "variant": "oco100_150", "regime": "STRESSED"},
+    {
+        "id": "T2-12",
+        "construction": "252-skip21-top3",
+        "variant": "oco100_150",
+        "regime": "STRESSED",
+    },
 )
 ALL_CELLS = tuple({**c, "arm": "T1"} for c in T1_CELLS) + tuple(
     {**c, "arm": "T2"} for c in T2_CELLS
@@ -376,7 +405,9 @@ def _verify_slot_grid(slot: Mapping[str, Any]) -> None:
 
 def _load_calibration(menu_sha256: str) -> tuple[Mapping[str, Any], str]:
     if not CALIBRATION_V3_PATH.exists():
-        raise Refused(f"{CALIBRATION_V3_PATH} is missing — the v3 null calibration gates every family run")
+        raise Refused(
+            f"{CALIBRATION_V3_PATH} is missing — the v3 null calibration gates every family run"
+        )
     body = json.loads(CALIBRATION_V3_PATH.read_text(encoding="utf-8"))
     stamp = body.get("stamp", {})
     if body.get("verdict", {}).get("slot") != "CALIBRATED":
@@ -393,10 +424,7 @@ def _bind_B(calibration: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     Never recomputed. The card-era window (term-gate's declared evaluation
     window) must not be in the v3 NOT_EVALUABLE list — else the sealed round
     is governed by B alone (standing drift gate)."""
-    ne = {
-        (c["window"], c["shape"])
-        for c in calibration.get("not_evaluable_cells", [])
-    }
+    ne = {(c["window"], c["shape"]) for c in calibration.get("not_evaluable_cells", [])}
     b_table = calibration["baseline"]["B"]
     out: dict[str, dict[str, Any]] = {}
     for shape in ("xsmom", "event"):
@@ -450,7 +478,9 @@ def load_and_bind() -> Inputs:
     for label, digest in got.items():
         want = pinning.get(label)
         if want is None or want != digest:
-            raise Refused(f"{label}: sha256 {digest} != the menu's pinned {want} -- swapped inputs refuse")
+            raise Refused(
+                f"{label}: sha256 {digest} != the menu's pinned {want} -- swapped inputs refuse"
+            )
 
     panel = json.loads(PANEL_PATH.read_text(encoding="utf-8"))
     earnings = json.loads(EARNINGS_PATH.read_text(encoding="utf-8"))
@@ -482,9 +512,7 @@ def load_and_bind() -> Inputs:
     # the gate series on the index-session grid
     closes = {f[:-4]: _load_index_closes(INDICES_DIR / f) for f in INDEX_FILES}
     sessions = calendar.sessions()
-    gate_sessions = tuple(
-        s for s in sessions if all(s.isoformat() in closes[k] for k in closes)
-    )
+    gate_sessions = tuple(s for s in sessions if all(s.isoformat() in closes[k] for k in closes))
     missing = tuple(s for s in sessions if s not in set(gate_sessions))
     values: dict[str, dict[date, float]] = {
         "r93": {
@@ -768,7 +796,7 @@ def run_t1(inputs: Inputs, cell: Mapping[str, str]) -> dict[str, Any]:
     )
     # criterion-3 analog (disclosure only; the utility bar binds at the sealed round)
     card_nets: dict[str, tuple[float, int]] = {}
-    for rows, keep in ((rows_on, True), (rows_off, False)):
+    for rows, _keep in ((rows_on, True), (rows_off, False)):
         for t in rows:
             if t["gross"] is None:
                 continue
@@ -777,11 +805,7 @@ def run_t1(inputs: Inputs, cell: Mapping[str, str]) -> dict[str, Any]:
     ungated_mean_per_card = (
         statistics.fmean(v / n for v, n in card_nets.values()) if card_nets else None
     )
-    on_cards = {
-        e: (v, n)
-        for e, (v, n) in card_nets.items()
-        if readings[e]["off"] is False
-    }
+    on_cards = {e: (v, n) for e, (v, n) in card_nets.items() if readings[e]["off"] is False}
     gated_mean_per_card = (
         statistics.fmean(v / n for v, n in on_cards.values()) if on_cards else None
     )
@@ -791,8 +815,7 @@ def run_t1(inputs: Inputs, cell: Mapping[str, str]) -> dict[str, Any]:
         "arm": "T1",
         "config": dict(cell),
         "cards": [
-            {"entry": e, "top3": list(top3), **readings[e]}
-            for e, top3 in inputs.tuning_cards
+            {"entry": e, "top3": list(top3), **readings[e]} for e, top3 in inputs.tuning_cards
         ],
         "on": on,
         "off": off,
@@ -824,9 +847,7 @@ def run_t1(inputs: Inputs, cell: Mapping[str, str]) -> dict[str, Any]:
 
 
 def _load_frozen_exitgrid():
-    spec = importlib.util.spec_from_file_location(
-        "xsmom_exitgrid_frozen", EXITGRID_SCRIPT_PATH
-    )
+    spec = importlib.util.spec_from_file_location("xsmom_exitgrid_frozen", EXITGRID_SCRIPT_PATH)
     if spec is None or spec.loader is None:
         raise Refused(f"cannot import the frozen grid script at {EXITGRID_SCRIPT_PATH}")
     module = importlib.util.module_from_spec(spec)
@@ -913,8 +934,7 @@ def _t2_core(inputs: Inputs) -> tuple[dict[str, Any], dict[str, Any]]:
         leg_all, _everything = frozen.signals_for(series, lb, sk, tk)
         leg = [s for s in leg_all if date.fromisoformat(s[0]) <= holdout_end]
         h60 = {
-            (d, n): series[n][1][p + frozen.HOLD] / entry - 1 - frozen.RT
-            for d, n, p, entry in leg
+            (d, n): series[n][1][p + frozen.HOLD] / entry - 1 - frozen.RT for d, n, p, entry in leg
         }
         regimes = {d: regime_of(inputs, date.fromisoformat(d)) for d, _n, _p, _e in leg}
         per_variant: dict[str, dict[str, Any]] = {}
@@ -941,9 +961,7 @@ def _t2_core(inputs: Inputs) -> tuple[dict[str, Any], dict[str, Any]]:
                     "t_naive": tn,
                     "t_clust": tc,
                     "t_cons": min(tn, tc) if diffs else float("nan"),
-                    "hit": (
-                        sum(1 for x in diffs if x > 0) / len(diffs) if diffs else float("nan")
-                    ),
+                    "hit": (sum(1 for x in diffs if x > 0) / len(diffs) if diffs else float("nan")),
                 }
             per_variant[key] = cells
             # pooled (regime-ignored) copy-faithfulness anchor vs the published table
@@ -1124,7 +1142,7 @@ def phase_register() -> int:
         existing = [cid for cid in CONFIG_IDS if registry.is_registered(_trial_id(cid))]
         if existing:
             raise Refused(
-                f"registration is one-shot: {[ _trial_id(c) for c in existing ]} already registered"
+                f"registration is one-shot: {[_trial_id(c) for c in existing]} already registered"
             )
         for cell in ALL_CELLS:
             hyper = _hyperparameters(inputs, cell)
@@ -1167,7 +1185,9 @@ def phase_execute() -> int:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise Refused("another term-gate execution holds the lock -- one run at a time") from None
+            raise Refused(
+                "another term-gate execution holds the lock -- one run at a time"
+            ) from None
         registry = _open_registry()
         try:
             t2_stats: tuple[dict[str, Any], dict[str, Any]] | None = None
@@ -1287,7 +1307,9 @@ def phase_rank() -> int:
             **_stamp(inputs, {"id": "RANK", "arm": "T1"}),
             "trial_id": None,
             "config_id": None,
-            "artifact_trial_ids": [_trial_id(c["id"]) for c in T1_CELLS if c["rule"] == "xsmom_top3"],
+            "artifact_trial_ids": [
+                _trial_id(c["id"]) for c in T1_CELLS if c["rule"] == "xsmom_top3"
+            ],
             "menu_hypothesis": inputs.slot["hypothesis"],
         },
         "selection_rule": (
@@ -1314,6 +1336,7 @@ def phase_rank() -> int:
     }
     TERM_DIR.mkdir(parents=True, exist_ok=True)
     RANKING_PATH.write_text(json.dumps(ranking, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
     def _fmt(v: float | None) -> str:
         return f"{v:+.6f}" if v is not None else "n/a"
 
@@ -1334,8 +1357,12 @@ def phase_rank() -> int:
 def phase_plan() -> int:
     inputs = load_and_bind()
     print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified)")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
-    print(f"calibration-v3 sha256 {inputs.calibration_sha256[:16]}... verdict {inputs.calibration['verdict']['slot']}")
+    print(
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
+    )
+    print(
+        f"calibration-v3 sha256 {inputs.calibration_sha256[:16]}... verdict {inputs.calibration['verdict']['slot']}"
+    )
     for shape in ("xsmom", "event"):
         b = inputs.B[shape]
         print(
@@ -1343,11 +1370,15 @@ def phase_plan() -> int:
             f" se={b['per_trade_mean_sd_day_clustered']}"
             f" not_evaluable={b['window_not_evaluable_in_v3_stamp']}"
         )
-    print(f"tuning cards: {len(inputs.tuning_cards)} ({inputs.tuning_cards[0][0]}..{inputs.tuning_cards[-1][0]})")
+    print(
+        f"tuning cards: {len(inputs.tuning_cards)} ({inputs.tuning_cards[0][0]}..{inputs.tuning_cards[-1][0]})"
+    )
     print(f"purge-gap FOMs dropped: {list(inputs.purge_gap_foms)}")
     print(f"PEAD tuning-era events: {inputs.pead_tuning_events}")
     gaps_in_span = [s.isoformat() for s in inputs.gates.missing_index_sessions]
-    print(f"index sessions missing any of the four CSVs (whole calendar): {len(gaps_in_span)} {gaps_in_span[:8]}")
+    print(
+        f"index sessions missing any of the four CSVs (whole calendar): {len(gaps_in_span)} {gaps_in_span[:8]}"
+    )
     print(f"sealed window {SEALED_START}..{SEALED_END}: NEVER scored in round 1")
     print(f"registry db: {REGISTRY_PATH}")
     return 0

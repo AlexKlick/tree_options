@@ -29,6 +29,7 @@ from tree_options.execution.records import (
     StoredExecutionRecord,
     SubmitAttempt,
     TimeoutObserved,
+    UncertaintyObserved,
 )
 
 
@@ -127,7 +128,7 @@ def _primary_time(record: ExecutionRecord) -> datetime:
         return record.broker_acknowledged_at
     if isinstance(record, (PartialFill, CompleteFill)):
         return record.exchange_event_at
-    if isinstance(record, (TimeoutObserved, DisconnectObserved)):
+    if isinstance(record, (TimeoutObserved, DisconnectObserved, UncertaintyObserved)):
         return record.locally_received_at
     if isinstance(record, BrokerReadback):
         return record.broker_snapshot_at
@@ -222,7 +223,7 @@ def _has_retry_after_local_knowledge(
     knowledge_boundaries.extend(
         record.locally_received_at
         for record in records
-        if isinstance(record, (TimeoutObserved, DisconnectObserved))
+        if isinstance(record, (TimeoutObserved, DisconnectObserved, UncertaintyObserved))
     )
     return any(
         boundary <= retry.send_attempt_at
@@ -535,7 +536,7 @@ def _derive_uncertain_since(
     observed = [
         record.locally_received_at
         for record in records
-        if isinstance(record, (TimeoutObserved, DisconnectObserved))
+        if isinstance(record, (TimeoutObserved, DisconnectObserved, UncertaintyObserved))
     ]
     latest_uncertainty = max(observed, default=None)
     if latest_uncertainty is None:
@@ -783,7 +784,7 @@ class ExecutionLifecycle:
 
         if isinstance(record, SubmitAttempt):
             return self._apply_submit(record)
-        if isinstance(record, (TimeoutObserved, DisconnectObserved)):
+        if isinstance(record, (TimeoutObserved, DisconnectObserved, UncertaintyObserved)):
             return self._apply_uncertainty(record)
         if isinstance(record, BrokerAcknowledgement):
             return self._apply_ack(record)
@@ -929,7 +930,7 @@ class ExecutionLifecycle:
         return self._project_records(records)
 
     def _apply_uncertainty(
-        self, record: TimeoutObserved | DisconnectObserved
+        self, record: TimeoutObserved | DisconnectObserved | UncertaintyObserved
     ) -> ExecutionLifecycle:
         if isinstance(record, TimeoutObserved) and record.attempt_id not in self.submit_attempt_ids:
             raise TransitionRefusedError(

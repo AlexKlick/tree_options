@@ -29,6 +29,7 @@ The engine NEVER re-runs the parent. The parent's stored result is
 the source of truth; the child's job is to surface the diff the
 parent's stored inputs would produce under different assumptions.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -70,6 +71,7 @@ class ForkOutcome:
     thereafter). It is ``None`` for the earliest refusals (missing
     parent / malformed envelope) where no identity could be bound.
     """
+
     spec: ScenarioSpec
     parent_ref: ParentRef | None
     rewritten_spec: ComparisonSpec | None
@@ -106,24 +108,30 @@ def fork_parent_and_replay(
     parent_status = parent_missing(parent_result_envelope)
     if parent_status is not None:
         return ForkOutcome(
-            spec=scenario, parent_ref=None, rewritten_spec=None,
-            refusal=parent_status, result=None,
+            spec=scenario,
+            parent_ref=None,
+            rewritten_spec=None,
+            refusal=parent_status,
+            result=None,
         )
 
     parent_engine_sha = parent_result_envelope.get("engine_sha256")
     parent_input_sha = parent_result_envelope.get("input_snapshot_sha256")
     parent_calendar_sha = parent_result_envelope.get("calendar_sha256")
     parent_spec_hash = parent_result_envelope.get("spec_hash")
-    if not all(isinstance(x, str) and x for x in (
-            parent_engine_sha, parent_input_sha,
-            parent_calendar_sha, parent_spec_hash)):
+    if not all(
+        isinstance(x, str) and x
+        for x in (parent_engine_sha, parent_input_sha, parent_calendar_sha, parent_spec_hash)
+    ):
         return ForkOutcome(
-            spec=scenario, parent_ref=None, rewritten_spec=None,
+            spec=scenario,
+            parent_ref=None,
+            rewritten_spec=None,
             refusal=ScenarioRefusal(
                 code=SCENARIO_NOT_A_FORK,
                 message="parent result envelope is missing one of "
-                        "{engine_sha256, input_snapshot_sha256, "
-                        "calendar_sha256, spec_hash}; refuse to fork",
+                "{engine_sha256, input_snapshot_sha256, "
+                "calendar_sha256, spec_hash}; refuse to fork",
             ),
             result=None,
         )
@@ -142,20 +150,27 @@ def fork_parent_and_replay(
         changed = parent_changed(parent_result_envelope, attach_ref)
         if changed is not None:
             return ForkOutcome(
-                spec=scenario, parent_ref=attach_ref,
-                rewritten_spec=None, refusal=changed, result=None,
+                spec=scenario,
+                parent_ref=attach_ref,
+                rewritten_spec=None,
+                refusal=changed,
+                result=None,
             )
 
     # -- type B stress: explicit refusal until the shock surface ships --
     if scenario.kind is ScenarioKind.CONDITIONAL_STRESS:
         return ForkOutcome(
-            spec=scenario, parent_ref=parent_ref, rewritten_spec=None,
+            spec=scenario,
+            parent_ref=parent_ref,
+            rewritten_spec=None,
             refusal=ScenarioRefusal(
                 code=SCENARIO_STRESS_UNSUPPORTED,
-                message=("RL-2 ships no option-valuation shock engine; "
-                         "the type-B surface (underlying move, IV move in "
-                         "absolute percentage points, term/slip) is left "
-                         "as a documented gap"),
+                message=(
+                    "RL-2 ships no option-valuation shock engine; "
+                    "the type-B surface (underlying move, IV move in "
+                    "absolute percentage points, term/slip) is left "
+                    "as a documented gap"
+                ),
             ),
             result=None,
         )
@@ -164,11 +179,12 @@ def fork_parent_and_replay(
     parent_spec_payload = store.get("spec", scenario.parent_run_id)
     if parent_spec_payload is None:
         return ForkOutcome(
-            spec=scenario, parent_ref=parent_ref, rewritten_spec=None,
+            spec=scenario,
+            parent_ref=parent_ref,
+            rewritten_spec=None,
             refusal=ScenarioRefusal(
                 code=SCENARIO_NOT_A_FORK,
-                message=("parent run has no stored spec payload; the "
-                         "fork cannot be reconstructed"),
+                message=("parent run has no stored spec payload; the fork cannot be reconstructed"),
             ),
             result=None,
         )
@@ -176,12 +192,16 @@ def fork_parent_and_replay(
     rewritten = _apply_diff(parent_spec, scenario.diff)
     if not _diff_is_legal(rewritten):
         return ForkOutcome(
-            spec=scenario, parent_ref=parent_ref, rewritten_spec=None,
+            spec=scenario,
+            parent_ref=parent_ref,
+            rewritten_spec=None,
             refusal=ScenarioRefusal(
                 code=SCENARIO_MISSING_CAPABILITY,
-                message=("the requested diff would require unsupported "
-                         "controls (fractional sizing, monthly rebalancing); "
-                         "RL-2 implements NONE/INTEGER-only"),
+                message=(
+                    "the requested diff would require unsupported "
+                    "controls (fractional sizing, monthly rebalancing); "
+                    "RL-2 implements NONE/INTEGER-only"
+                ),
             ),
             result=None,
         )
@@ -189,16 +209,17 @@ def fork_parent_and_replay(
     # -- missing-capability gate: a funding scenario needs plottable
     # -- candidates, never retired-data ones
     catalog = {c.id: c for c in catalog_provider()}
-    missing = [cid for cid in rewritten.candidate_ids
-               if cid not in catalog]
+    missing = [cid for cid in rewritten.candidate_ids if cid not in catalog]
     if missing:
         return ForkOutcome(
-            spec=scenario, parent_ref=parent_ref,
-            rewritten_spec=rewritten, refusal=ScenarioRefusal(
+            spec=scenario,
+            parent_ref=parent_ref,
+            rewritten_spec=rewritten,
+            refusal=ScenarioRefusal(
                 code=SCENARIO_MISSING_CAPABILITY,
-                message=(f"candidates left the catalog since the parent "
-                         f"was run: {missing}"),
-            ), result=None,
+                message=(f"candidates left the catalog since the parent was run: {missing}"),
+            ),
+            result=None,
         )
     requested_funding = (
         scenario.kind is ScenarioKind.CONTRIBUTION_PLANNING
@@ -207,18 +228,22 @@ def fork_parent_and_replay(
     )
     if requested_funding:
         unplottable = [
-            cid for cid in rewritten.candidate_ids
-            if not catalog[cid].plot_funded_account
+            cid for cid in rewritten.candidate_ids if not catalog[cid].plot_funded_account
         ]
         if unplottable:
             return ForkOutcome(
-                spec=scenario, parent_ref=parent_ref,
-                rewritten_spec=rewritten, refusal=ScenarioRefusal(
+                spec=scenario,
+                parent_ref=parent_ref,
+                rewritten_spec=rewritten,
+                refusal=ScenarioRefusal(
                     code=SCENARIO_MISSING_CAPABILITY,
-                    message=(f"requested scenario diff affects funded "
-                             f"accounting but these candidates have no "
-                             f"plottable history: {unplottable}"),
-                ), result=None,
+                    message=(
+                        f"requested scenario diff affects funded "
+                        f"accounting but these candidates have no "
+                        f"plottable history: {unplottable}"
+                    ),
+                ),
+                result=None,
             )
 
     # A refused plan is a value too (RL1-02): the comparison surface
@@ -232,8 +257,11 @@ def fork_parent_and_replay(
         baseline = catalog[rewritten.benchmark_candidate_id]
     result = engine_fn(rewritten, cands, baseline=baseline)
     return ForkOutcome(
-        spec=scenario, parent_ref=parent_ref,
-        rewritten_spec=rewritten, refusal=None, result=result,
+        spec=scenario,
+        parent_ref=parent_ref,
+        rewritten_spec=rewritten,
+        refusal=None,
+        result=result,
     )
 
 
@@ -247,9 +275,7 @@ def _apply_diff(parent: ComparisonSpec, diff: ScenarioDiff) -> ComparisonSpec:
         "common_start": parent.common_start,
         "common_end": parent.common_end,
         "cashflow_timing": (
-            diff.cashflow_timing
-            if diff.cashflow_timing is not None
-            else parent.cashflow_timing
+            diff.cashflow_timing if diff.cashflow_timing is not None else parent.cashflow_timing
         ),
         "contribution_per_period": (
             diff.contribution_per_period
@@ -257,23 +283,15 @@ def _apply_diff(parent: ComparisonSpec, diff: ScenarioDiff) -> ComparisonSpec:
             else parent.contribution_per_period
         ),
         "cost_model_kind": (
-            diff.cost_model_kind
-            if diff.cost_model_kind is not None
-            else parent.cost_model_kind
+            diff.cost_model_kind if diff.cost_model_kind is not None else parent.cost_model_kind
         ),
         "benchmark_candidate_id": parent.benchmark_candidate_id,
         "currency": parent.currency,
         "price_basis": parent.price_basis,
         "idle_cash_policy": parent.idle_cash_policy,
-        "rebalancing": (
-            diff.rebalancing
-            if diff.rebalancing is not None
-            else parent.rebalancing
-        ),
+        "rebalancing": (diff.rebalancing if diff.rebalancing is not None else parent.rebalancing),
         "position_sizing": (
-            diff.position_sizing
-            if diff.position_sizing is not None
-            else parent.position_sizing
+            diff.position_sizing if diff.position_sizing is not None else parent.position_sizing
         ),
         "collateral": parent.collateral,
         "borrowing": parent.borrowing,
@@ -290,8 +308,7 @@ def _diff_is_legal(spec: ComparisonSpec) -> bool:
     is refused here before the engine runs — this is RL-2's analogue
     of the comparison plan's "implement the control or refuse it
     explicitly" rule."""
-    return (spec.position_sizing is PositionSizing.INTEGER
-            and spec.rebalancing is Rebalancing.NONE)
+    return spec.position_sizing is PositionSizing.INTEGER and spec.rebalancing is Rebalancing.NONE
 
 
 __all__ = ["ForkOutcome", "fork_parent_and_replay"]

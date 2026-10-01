@@ -22,7 +22,8 @@ from tree_options.desk.paths import state_root
 
 @contextmanager
 def open_read_only_evidence(
-    *, database: Path | None = None,
+    *,
+    database: Path | None = None,
 ) -> Iterator[EvidenceStore | None]:
     """Open the desk evidence store in read-only, non-transient mode.
 

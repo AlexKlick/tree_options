@@ -79,7 +79,8 @@ class SupervisedEffect(StrictModel):
     """The one order a supervised permit authorizes."""
 
     schema_version: Literal["supervised-effect/1"] = Field(
-        default="supervised-effect/1", alias="schema")
+        default="supervised-effect/1", alias="schema"
+    )
     intent_id: IdStr
     account_id: IdStr
     structure: LegStructure
@@ -141,8 +142,14 @@ def _reject_reason(trade: Any, status: str) -> str:
 class IbkrSupervisedBroker:
     """``SupervisedBroker`` over one connected ``IbkrTrex`` paper session."""
 
-    def __init__(self, ib: IbkrTrex, *, clock: Callable[[], datetime] | None = None,
-                 ack_timeout_s: float = ACK_TIMEOUT_S, poll_s: float = ACK_POLL_S) -> None:
+    def __init__(
+        self,
+        ib: IbkrTrex,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        ack_timeout_s: float = ACK_TIMEOUT_S,
+        poll_s: float = ACK_POLL_S,
+    ) -> None:
         self.ib = ib
         self.clock = clock or (lambda: datetime.now(UTC))
         self.ack_timeout_s = ack_timeout_s
@@ -215,7 +222,8 @@ class IbkrSupervisedBroker:
         try:
             self.ib.prepare([effect.structure])
             contract, order = self.ib._order(
-                effect.structure, effect.side, effect.quantity, effect.limit)
+                effect.structure, effect.side, effect.quantity, effect.limit
+            )
         except (ValueError, RuntimeError) as error:
             return Uncertain("not_sent:order_unbuildable", repr(error))
         order.orderRef = effect.order_ref
@@ -235,24 +243,38 @@ class IbkrSupervisedBroker:
                 broker_at = max(broker_at, attempt.send_attempt_at)
                 received = max(received, broker_at)
                 sequence = f"ib-ack-{order_id}-{attempt.record_id}"
-                return Acknowledged(BrokerAcknowledgement(
-                    record_id=sequence, intent_id=attempt.intent_id,
-                    broker_order_id=str(order_id), broker_acknowledged_at=broker_at,
-                    locally_received_at=received, source="ibkr-supervised",
-                    source_sequence_id=sequence, broker_sequence_id=sequence))
+                return Acknowledged(
+                    BrokerAcknowledgement(
+                        record_id=sequence,
+                        intent_id=attempt.intent_id,
+                        broker_order_id=str(order_id),
+                        broker_acknowledged_at=broker_at,
+                        locally_received_at=received,
+                        source="ibkr-supervised",
+                        source_sequence_id=sequence,
+                        broker_sequence_id=sequence,
+                    )
+                )
             if status in DEAD_STATES and filled == 0:
                 received = _utc(self.clock)
-                broker_at = max(min(_log_time(trade) or received, received),
-                                attempt.send_attempt_at)
+                broker_at = max(
+                    min(_log_time(trade) or received, received), attempt.send_attempt_at
+                )
                 received = max(received, broker_at)
                 sequence = f"ib-reject-{order_id}-{attempt.record_id}"
-                return Refused(OrderReject(
-                    record_id=sequence, intent_id=attempt.intent_id,
-                    broker_order_id=str(order_id) if order_id else None,
-                    reason_code=_reject_reason(trade, status),
-                    broker_acknowledged_at=broker_at, locally_received_at=received,
-                    source="ibkr-supervised", source_sequence_id=sequence,
-                    broker_sequence_id=sequence))
+                return Refused(
+                    OrderReject(
+                        record_id=sequence,
+                        intent_id=attempt.intent_id,
+                        broker_order_id=str(order_id) if order_id else None,
+                        reason_code=_reject_reason(trade, status),
+                        broker_acknowledged_at=broker_at,
+                        locally_received_at=received,
+                        source="ibkr-supervised",
+                        source_sequence_id=sequence,
+                        broker_sequence_id=sequence,
+                    )
+                )
             if status in DEAD_STATES:
                 return Uncertain("dead_with_fills", f"{status} filled={filled}")
             self.ib.sleep(self.poll_s)

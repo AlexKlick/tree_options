@@ -51,21 +51,30 @@ class PolicyStats:
         minimum = summary.get("minimum_closed_capital_proxy")
         if minimum is not None:
             value = Decimal(str(minimum))
-            self.worst_minimum_capital = (value if self.worst_minimum_capital is None
-                                          else min(self.worst_minimum_capital, value))
+            self.worst_minimum_capital = (
+                value
+                if self.worst_minimum_capital is None
+                else min(self.worst_minimum_capital, value)
+            )
         self.last_run = max(self.last_run, run_name)
-        self.kinds.add("model" if str(document.get("policy", "")).startswith("model:")
-                       else "rules")
+        self.kinds.add("model" if str(document.get("policy", "")).startswith("model:") else "rules")
 
     def as_dict(self) -> dict[str, Any]:
-        return {"runs": self.runs, "boards": self.boards,
-                "model_calls": self.model_calls, "model_failures": self.model_failures,
-                "entered": self.entered, "modeled_wins": self.wins,
-                "modeled_losses": self.losses,
-                "closed_pnl_sum": str(self.closed_pnl_sum),
-                "worst_minimum_capital": (None if self.worst_minimum_capital is None
-                                          else str(self.worst_minimum_capital)),
-                "last_run": self.last_run, "kinds": sorted(self.kinds)}
+        return {
+            "runs": self.runs,
+            "boards": self.boards,
+            "model_calls": self.model_calls,
+            "model_failures": self.model_failures,
+            "entered": self.entered,
+            "modeled_wins": self.wins,
+            "modeled_losses": self.losses,
+            "closed_pnl_sum": str(self.closed_pnl_sum),
+            "worst_minimum_capital": (
+                None if self.worst_minimum_capital is None else str(self.worst_minimum_capital)
+            ),
+            "last_run": self.last_run,
+            "kinds": sorted(self.kinds),
+        }
 
 
 def aggregate(lab_root: Path) -> dict[str, Any]:
@@ -82,8 +91,10 @@ def aggregate(lab_root: Path) -> dict[str, Any]:
         if not policy:
             continue
         stats.setdefault(policy, PolicyStats()).fold(document, summary_path.parent.name)
-    return {"schema": SCOREBOARD_SCHEMA,
-            "policies": {name: s.as_dict() for name, s in sorted(stats.items())}}
+    return {
+        "schema": SCOREBOARD_SCHEMA,
+        "policies": {name: s.as_dict() for name, s in sorted(stats.items())},
+    }
 
 
 def best_advisory(scoreboard: dict[str, Any]) -> dict[str, Any] | None:
@@ -101,5 +112,9 @@ def best_advisory(scoreboard: dict[str, Any]) -> dict[str, Any] | None:
             best = (pnl, name, stats)
     if best is None:
         return None
-    return {"policy": best[1], "stats": best[2], "promoted": False,
-            "basis": f"highest summed closed-pnl proxy over >= {ADVISORY_MIN_RUNS} runs"}
+    return {
+        "policy": best[1],
+        "stats": best[2],
+        "promoted": False,
+        "basis": f"highest summed closed-pnl proxy over >= {ADVISORY_MIN_RUNS} runs",
+    }

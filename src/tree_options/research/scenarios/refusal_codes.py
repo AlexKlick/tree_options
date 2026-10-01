@@ -2,6 +2,7 @@
 the honest blocker). Mirrors the ``research.plan.*`` namespace style:
 every refusal is machine-readable and rendered in the comparison
 workspace exactly like a plan refusal."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

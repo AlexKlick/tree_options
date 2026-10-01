@@ -1,0 +1,12 @@
+[Unit]
+Description=TREX QSL modeled shadow sampling after chain capture (inactive until operator installation)
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 19:15:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 10:30:00 America/New_York
+Persistent=true
+AccuracySec=10s
+Unit=desk-qsl.service
+
+[Install]
+WantedBy=timers.target

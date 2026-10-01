@@ -319,9 +319,7 @@ class TestIdeasFullContract:
             "conventions_agree": True,
         }
         # per-name filtering: OTHER's beat/evaluated never ride along
-        assert sig["pead"]["beats"] == [
-            {"report_date": "2026-09-22", "move": pytest.approx(0.021)}
-        ]
+        assert sig["pead"]["beats"] == [{"report_date": "2026-09-22", "move": pytest.approx(0.021)}]
         ev = sig["pead"]["evaluated"]
         assert len(ev) == 5  # 6 kept -> latest 5
         assert ev[0]["report_date"] == "2026-08-02"  # oldest dropped
@@ -486,8 +484,7 @@ class TestIdeasNextReport:
         _write_json(tmp_path / "desk-state" / "signals" / f"{SESSION}.json", _signals_doc())
         _write_json(tmp_path / "paper" / "earnings-calendar.json", {SYM: ["2026-12-15"]})
         assert (
-            _client(tmp_path).get("/api/market/ZZZ/ideas").json()["signals"]["next_report"]
-            is None
+            _client(tmp_path).get("/api/market/ZZZ/ideas").json()["signals"]["next_report"] is None
         )
 
 

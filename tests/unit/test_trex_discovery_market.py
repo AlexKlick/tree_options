@@ -360,8 +360,7 @@ class TestMarketCycle:
             market_refresh_seconds = 60
 
         later = datetime(2026, 9, 22, 19, 5, tzinfo=ET)
-        market_cycle(state, Cfg(), now=later, transport=t, force=True,
-                     bars_client=_EmptyBars())
+        market_cycle(state, Cfg(), now=later, transport=t, force=True, bars_client=_EmptyBars())
         env = cache.get_envelope("news", "SPY")
         assert env is not None and env["payload"]["items"][0]["title"] == "keep me"
         assert cache.get_envelope("bars", "SPY") is None  # empty bars not cached
@@ -375,8 +374,15 @@ class TestMarketCycle:
             underlyings: ClassVar[list[str]] = ["SPY"]
             market_refresh_seconds = 60
 
-        market_cycle(state, Cfg(), now=NOW, transport=t, symbols=["SPY"], force=True,
-                     bars_client=_EmptyBars())
+        market_cycle(
+            state,
+            Cfg(),
+            now=NOW,
+            transport=t,
+            symbols=["SPY"],
+            force=True,
+            bars_client=_EmptyBars(),
+        )
         view = cache.get("viewchain", "SPY", now=NOW)
         assert view is not None and view["spot"] == pytest.approx(100.0)
         env = cache.get_envelope("viewchain", "SPY")
@@ -386,8 +392,15 @@ class TestMarketCycle:
             return sum("/options/" in u for u in t.calls)
 
         assert chain_calls() == 1
-        market_cycle(state, Cfg(), now=NOW, transport=t, symbols=["SPY"], force=True,
-                     bars_client=_EmptyBars())
+        market_cycle(
+            state,
+            Cfg(),
+            now=NOW,
+            transport=t,
+            symbols=["SPY"],
+            force=True,
+            bars_client=_EmptyBars(),
+        )
         assert chain_calls() == 1  # 300s TTL absorbs the repeat force
 
     def test_force_viewchain_failure_isolated(self, tmp_path: Path) -> None:
@@ -399,8 +412,7 @@ class TestMarketCycle:
             underlyings: ClassVar[list[str]] = ["SPY", "QQQ"]
             market_refresh_seconds = 60
 
-        ran = market_cycle(state, Cfg(), now=NOW, transport=t, force=True,
-                           bars_client=_EmptyBars())
+        ran = market_cycle(state, Cfg(), now=NOW, transport=t, force=True, bars_client=_EmptyBars())
         assert ran is True
         assert cache.get_envelope("viewchain", "SPY") is not None  # sibling warmed
         assert cache.get_envelope("viewchain", "QQQ") is None
@@ -435,8 +447,15 @@ class TestCodexM456Market:
 
     def test_targeted_refresh_merges_into_snapshot(self, tmp_path: Path) -> None:
         market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t())
-        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t(),
-                     symbols=["SPY"], force=True, bars_client=_EmptyBars())
+        market_cycle(
+            tmp_path,
+            self.Cfg(),
+            now=NOW,
+            transport=self._quote_t(),
+            symbols=["SPY"],
+            force=True,
+            bars_client=_EmptyBars(),
+        )
         doc = json.loads((tmp_path / "market.json").read_text())
         assert set(doc["symbols"]) == {"SPY", "QQQ"}
 
@@ -448,8 +467,7 @@ class TestCodexM456Market:
     def test_total_failure_persists_errors_and_carries_last_good(self, tmp_path: Path) -> None:
         market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t())
         later = datetime(2026, 9, 22, 18, 40, tzinfo=ET)  # quote TTL expired
-        market_cycle(tmp_path, self.Cfg(), now=later,
-                     transport=self._quote_t(fail={"SPY", "QQQ"}))
+        market_cycle(tmp_path, self.Cfg(), now=later, transport=self._quote_t(fail={"SPY", "QQQ"}))
         doc = json.loads((tmp_path / "market.json").read_text())
         assert set(doc["errors"]) == {"SPY", "QQQ"}
         assert doc["symbols"]["SPY"]["bid"] == pytest.approx(773.25)  # carried
@@ -458,8 +476,15 @@ class TestCodexM456Market:
 
     def test_empty_quote_never_overwrites_cache(self, tmp_path: Path) -> None:
         market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t())
-        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t(empty={"SPY"}),
-                     force=True, symbols=["SPY"], bars_client=_EmptyBars())
+        market_cycle(
+            tmp_path,
+            self.Cfg(),
+            now=NOW,
+            transport=self._quote_t(empty={"SPY"}),
+            force=True,
+            symbols=["SPY"],
+            bars_client=_EmptyBars(),
+        )
         cached = MarketCache(tmp_path / "market" / "cache").get("quote", "SPY", now=NOW)
         assert cached is not None and cached["bid"] == pytest.approx(773.25)
         doc = json.loads((tmp_path / "market.json").read_text())
@@ -481,7 +506,8 @@ class TestCodexM456Market:
         t2 = self._quote_t()
         market_cycle(tmp_path, self.Cfg(), now=later, transport=t2, symbols=syms)
         assert news_calls(t2) == 2
-        assert all("AAA" not in u and "BBB" not in u
-                   for u in t2.calls if "news.google.com" in u)  # failed ones back off
+        assert all(
+            "AAA" not in u and "BBB" not in u for u in t2.calls if "news.google.com" in u
+        )  # failed ones back off
         env = cache.get_envelope("news", "AAA")
         assert env is not None and env["payload"]["items"][0]["title"] == "old"  # kept

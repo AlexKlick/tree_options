@@ -90,7 +90,12 @@ HEALTHY = frozenset({"ok", "idle"})
 TOUCH_INCIDENT = frozenset({"touch_blind", "touch_suspended"})  # neither bad nor healthy: held
 GATEWAY_ALARMS = gateway_watch.BAD  # states the gateway watchdog pushes for
 _SEVERITY = (
-    "idle", "ok", "waiting_for_gateway", "touch_blind", "monitor_failing", "monitor_down",
+    "idle",
+    "ok",
+    "waiting_for_gateway",
+    "touch_blind",
+    "monitor_failing",
+    "monitor_down",
 )
 
 
@@ -179,7 +184,8 @@ def _book_verdict(
         return "monitor_down", None, f"{b.plan}: book.json unreadable (exposure unknown)"
     gw = obs.gateway_status
     gateway_unsettled = gw is not None and not (
-        gw == "ok" and obs.gateway_since is not None
+        gw == "ok"
+        and obs.gateway_since is not None
         and obs.now - obs.gateway_since >= GATEWAY_SETTLE_S
     )
 
@@ -206,13 +212,17 @@ def _book_verdict(
     if h is None or at is None:
         since = missing_since if missing_since is not None else obs.now
         if obs.now - since > HEALTH_STALE_S:
-            return "monitor_failing", since, (
-                f"{b.plan}: tick health not reported for {span_label(obs.now - since)}"
+            return (
+                "monitor_failing",
+                since,
+                (f"{b.plan}: tick health not reported for {span_label(obs.now - since)}"),
             )
         return "ok", None, f"{b.plan}: heartbeat {int(age)}s ago; tick health not reported yet"
     if obs.now - at > HEALTH_STALE_S:
-        return "monitor_failing", at, (
-            f"{b.plan}: tick health last reported {span_label(obs.now - at)} ago"
+        return (
+            "monitor_failing",
+            at,
+            (f"{b.plan}: tick health last reported {span_label(obs.now - at)} ago"),
         )
     failures = int(h.get("tick_failures") or 0)
     ok_at = _num(h.get("last_tick_ok_at"))
@@ -222,15 +232,21 @@ def _book_verdict(
     if failing and obs.market:
         if blame_gateway(ok_at):
             return "waiting_for_gateway", ok_at, waiting
-        return "monitor_failing", ok_at, (
-            f"{b.plan}: {failures} checks failed in a row (last: {h.get('last_error')})"
+        return (
+            "monitor_failing",
+            ok_at,
+            (f"{b.plan}: {failures} checks failed in a row (last: {h.get('last_error')})"),
         )
     blind = _long_blind(h, obs)
     if blind:
         first = min(blind.values())
-        return "touch_blind", first, (
-            f"{b.plan}: no fresh {', '.join(sorted(blind))} price for "
-            f"{span_label(obs.now - first)}; the touch exit can't fire"
+        return (
+            "touch_blind",
+            first,
+            (
+                f"{b.plan}: no fresh {', '.join(sorted(blind))} price for "
+                f"{span_label(obs.now - first)}; the touch exit can't fire"
+            ),
         )
     return "ok", None, f"{b.plan}: heartbeat {int(age)}s ago"
 
@@ -265,8 +281,13 @@ def _assess(
             missing[b.plan] = health_missing_since.get(b.plan, obs.now)
         status, since, detail = _book_verdict(b, obs, missing.get(b.plan))
         age = round(obs.now - b.heartbeat) if b.heartbeat is not None else None
-        row: dict[str, Any] = {"plan": b.plan, "status": status, "since": since,
-                               "detail": detail, "heartbeat_age": age}
+        row: dict[str, Any] = {
+            "plan": b.plan,
+            "status": status,
+            "since": since,
+            "detail": detail,
+            "heartbeat_age": age,
+        }
         if status == "touch_blind":
             row["blind"] = sorted(_long_blind(b.health, obs))
         if b.health and b.health.get("calendar_horizon_warn") is True:
@@ -329,7 +350,9 @@ def decide(
     guarded, fresh = _touch_sets(obs)
     touch_symbols: list[str] = []
     if status == "touch_blind":
-        touch_symbols = sorted({s for r in rows if r["status"] == status for s in r.get("blind", [])})
+        touch_symbols = sorted(
+            {s for r in rows if r["status"] == status for s in r.get("blind", [])}
+        )
     elif status == "ok" and prev in TOUCH_INCIDENT:
         # "ok" only because the window closed (or blindness is not yet
         # re-confirmed) is not a recovery: that takes a price, or the
@@ -358,8 +381,14 @@ def decide(
 
     blind = touch_symbols if status == "touch_blind" else []
     push, notified = next_push(
-        status=status, now=obs.now, prior=prior, urgency=urgency, bad=BAD, healthy=HEALTHY,
-        alarm=lambda: _message(status, since, obs.now, blind), recovery=recovery,
+        status=status,
+        now=obs.now,
+        prior=prior,
+        urgency=urgency,
+        bad=BAD,
+        healthy=HEALTHY,
+        alarm=lambda: _message(status, since, obs.now, blind),
+        recovery=recovery,
     )
     actions = (
         [Action("notify", push.status, push.title, push.message, push.priority)] if push else []
@@ -410,8 +439,13 @@ def _gateway(path: Path, now: float) -> tuple[str | None, float | None]:
 
 def unit_state(unit: str = UNIT) -> str | None:
     try:
-        out = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True,
-                             text=True, timeout=10, check=False)
+        out = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return out.stdout.strip() or None
@@ -437,16 +471,24 @@ def watch_once(
 ) -> dict[str, Any]:
     prior = _read_json(state_path) or {}
     gw_status, gw_since = _gateway(gateway_state, now)
-    obs = ExitObs(now, scan_books(root), gw_status, gw_since, market_hours(now), unit_state,
-                  touch_window=in_touch_window(datetime.fromtimestamp(now, ET)))
+    obs = ExitObs(
+        now,
+        scan_books(root),
+        gw_status,
+        gw_since,
+        market_hours(now),
+        unit_state,
+        touch_window=in_touch_window(datetime.fromtimestamp(now, ET)),
+    )
     state, actions = decide(obs, prior, urgency=urgency)
     for action in actions:
         ok = True
         if not dry_run:
             ok = notify(action.title, action.message, action.priority)
             settle_push(state, prior, ok, now)
-        state["events"].append({"at": now, "kind": action.kind, "detail": action.detail,
-                                "ok": ok, "dry_run": dry_run})
+        state["events"].append(
+            {"at": now, "kind": action.kind, "detail": action.detail, "ok": ok, "dry_run": dry_run}
+        )
     state["events"] = state["events"][-MAX_EVENTS:]
     if not dry_run:
         _write_state(state_path, state)
@@ -458,25 +500,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--root", type=Path, default=STATE_ROOT)
     parser.add_argument("--gateway-state", type=Path, default=DEFAULT_GATEWAY_STATE)
-    parser.add_argument("--dry-run", action="store_true",
-                        help="observe and print the verdict; write nothing, send nothing")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="observe and print the verdict; write nothing, send nothing",
+    )
     args = parser.parse_args(argv)
 
     from tree_options.trex.notify import DEFAULT_CONFIG, load_config, read_env, send
 
     cfg = load_config()
     now = time.time()
-    urg = urgency(now, exposed=bool(scan_books(args.root)),
-                  quiet=load_quiet_hours(read_env(DEFAULT_CONFIG)))
-    state = watch_once(
-        args.state, root=args.root, gateway_state=args.gateway_state,
-        notify=lambda title, message, priority: send(cfg, title, message, priority),
-        now=now, urgency=urg, unit_state=unit_state(), dry_run=args.dry_run,
+    urg = urgency(
+        now, exposed=bool(scan_books(args.root)), quiet=load_quiet_hours(read_env(DEFAULT_CONFIG))
     )
-    summary = {k: state[k] for k in ("status", "detail", "gateway_status", "unit_state",
-                                     "notify_held")}
-    summary["actions"] = [e["kind"] for e in state["events"] if e["at"] == now
-                          and e["kind"] != "status"]
+    state = watch_once(
+        args.state,
+        root=args.root,
+        gateway_state=args.gateway_state,
+        notify=lambda title, message, priority: send(cfg, title, message, priority),
+        now=now,
+        urgency=urg,
+        unit_state=unit_state(),
+        dry_run=args.dry_run,
+    )
+    summary = {
+        k: state[k] for k in ("status", "detail", "gateway_status", "unit_state", "notify_held")
+    }
+    summary["actions"] = [
+        e["kind"] for e in state["events"] if e["at"] == now and e["kind"] != "status"
+    ]
     print(json.dumps(summary))
     return 0
 

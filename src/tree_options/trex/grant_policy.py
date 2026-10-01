@@ -74,8 +74,9 @@ class GrantPlan:
         return self.total_orders < self.base_orders + self.extra_orders
 
 
-def daily_grant(windows: tuple[QuotaWindow, ...] = (), *,
-                base: int = DEFAULT_BASE, cap: int = DEFAULT_CAP) -> GrantPlan:
+def daily_grant(
+    windows: tuple[QuotaWindow, ...] = (), *, base: int = DEFAULT_BASE, cap: int = DEFAULT_CAP
+) -> GrantPlan:
     """Base + one order per under-using window, never above ``cap``."""
     if base < 1:
         raise ValueError("base must be >= 1")
@@ -86,9 +87,11 @@ def daily_grant(windows: tuple[QuotaWindow, ...] = (), *,
     for window in windows:
         if window.under_using:
             extra += 1
-            reasons.append(f"extra: {window.name} under-using "
-                           f"({window.actual_left_pct}% left vs {window.planned_left_pct}%"
-                           f" planned, resets {window.resets_at or '?'})")
+            reasons.append(
+                f"extra: {window.name} under-using "
+                f"({window.actual_left_pct}% left vs {window.planned_left_pct}%"
+                f" planned, resets {window.resets_at or '?'})"
+            )
         elif window.dry:
             reasons.append(f"no extra: {window.name} dry")
         elif window.planned_left_pct is None:
@@ -96,8 +99,9 @@ def daily_grant(windows: tuple[QuotaWindow, ...] = (), *,
         else:
             reasons.append(f"no extra: {window.name} on plan or over-using")
     total = min(base + extra, cap)
-    plan = GrantPlan(base_orders=base, extra_orders=extra, total_orders=total,
-                     reasons=tuple(reasons))
+    plan = GrantPlan(
+        base_orders=base, extra_orders=extra, total_orders=total, reasons=tuple(reasons)
+    )
     return plan
 
 
@@ -108,13 +112,19 @@ def load_windows(path: Path) -> tuple[QuotaWindow, ...]:
         raise ValueError(f"{path.name}: schema must be {WINDOWS_SCHEMA}")
     out: list[QuotaWindow] = []
     for raw in document.get("windows", []):
-        out.append(QuotaWindow(
-            name=str(raw["name"]),
-            actual_left_pct=Decimal(str(raw["actual_left_pct"])),
-            planned_left_pct=(Decimal(str(raw["planned_left_pct"]))
-                              if raw.get("planned_left_pct") is not None else None),
-            resets_at=(str(raw["resets_at"]) if raw.get("resets_at") is not None else None),
-            dry=bool(raw.get("dry", False))))
+        out.append(
+            QuotaWindow(
+                name=str(raw["name"]),
+                actual_left_pct=Decimal(str(raw["actual_left_pct"])),
+                planned_left_pct=(
+                    Decimal(str(raw["planned_left_pct"]))
+                    if raw.get("planned_left_pct") is not None
+                    else None
+                ),
+                resets_at=(str(raw["resets_at"]) if raw.get("resets_at") is not None else None),
+                dry=bool(raw.get("dry", False)),
+            )
+        )
     return tuple(out)
 
 
@@ -122,34 +132,53 @@ def windows_path(paths: DeskPaths | None = None) -> Path:
     return (paths or DeskPaths.default()).root / "quota-windows.json"
 
 
-def grant_command(plan: GrantPlan, *, account: str, owner_epoch: str,
-                  strategy: str, profile_digest: str, ttl_seconds: int,
-                  granted_by: str) -> str:
+def grant_command(
+    plan: GrantPlan,
+    *,
+    account: str,
+    owner_epoch: str,
+    strategy: str,
+    profile_digest: str,
+    ttl_seconds: int,
+    granted_by: str,
+) -> str:
     """The exact command an operator (or authorized agent) runs."""
-    return (f"python -m tree_options.trex.supervised grant --account {account} "
-            f"--owner-epoch {owner_epoch} --strategy {strategy} "
-            f"--profile-digest {profile_digest} --max-orders {plan.total_orders} "
-            f"--ttl-seconds {ttl_seconds} --granted-by {granted_by}")
+    return (
+        f"python -m tree_options.trex.supervised grant --account {account} "
+        f"--owner-epoch {owner_epoch} --strategy {strategy} "
+        f"--profile-digest {profile_digest} --max-orders {plan.total_orders} "
+        f"--ttl-seconds {ttl_seconds} --granted-by {granted_by}"
+    )
 
 
 def _cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tree_options.trex.grant_policy",
-        description="Compute the desk's daily grant from sub-quota headroom.")
-    parser.add_argument("--windows", type=Path, default=None,
-                        help="quota snapshot (default: the desk run dir's quota-windows.json)")
+        description="Compute the desk's daily grant from sub-quota headroom.",
+    )
+    parser.add_argument(
+        "--windows",
+        type=Path,
+        default=None,
+        help="quota snapshot (default: the desk run dir's quota-windows.json)",
+    )
     parser.add_argument("--base", type=int, default=DEFAULT_BASE)
     parser.add_argument("--cap", type=int, default=DEFAULT_CAP)
     parser.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_S)
     parser.add_argument("--account", default="DUT143714")
     parser.add_argument("--strategy", default="operational-canary/1")
     parser.add_argument("--granted-by", default="operator-terminal")
-    parser.add_argument("--apply", action="store_true",
-                        help="run the grant (authorized agent sessions only)")
-    parser.add_argument("--owner-epoch", default=None,
-                        help="required with --apply (desk-paper/owner.json)")
-    parser.add_argument("--profile-digest", default=None,
-                        help="required with --apply (supervised_desk profile-digest)")
+    parser.add_argument(
+        "--apply", action="store_true", help="run the grant (authorized agent sessions only)"
+    )
+    parser.add_argument(
+        "--owner-epoch", default=None, help="required with --apply (desk-paper/owner.json)"
+    )
+    parser.add_argument(
+        "--profile-digest",
+        default=None,
+        help="required with --apply (supervised_desk profile-digest)",
+    )
     args = parser.parse_args(argv)
 
     snapshot = args.windows or windows_path()
@@ -159,36 +188,65 @@ def _cli(argv: list[str] | None = None) -> int:
         print(f"refused: bad_snapshot {error!r}", file=sys.stderr)
         return 2
     plan = daily_grant(windows, base=args.base, cap=args.cap)
-    digest = args.profile_digest or "<digest from: python -m tree_options.trex.supervised_desk profile-digest>"
+    digest = (
+        args.profile_digest
+        or "<digest from: python -m tree_options.trex.supervised_desk profile-digest>"
+    )
     epoch = args.owner_epoch or "<epoch from: desk-paper/owner.json>"
-    command = grant_command(plan, account=args.account, owner_epoch=epoch,
-                            strategy=args.strategy, profile_digest=digest,
-                            ttl_seconds=args.ttl_seconds, granted_by=args.granted_by)
-    print(json.dumps({"schema": "desk-grant-plan/1", "base": plan.base_orders,
-                      "extra": plan.extra_orders, "total": plan.total_orders,
-                      "capped": plan.capped, "reasons": list(plan.reasons),
-                      "command": command}, indent=2))
+    command = grant_command(
+        plan,
+        account=args.account,
+        owner_epoch=epoch,
+        strategy=args.strategy,
+        profile_digest=digest,
+        ttl_seconds=args.ttl_seconds,
+        granted_by=args.granted_by,
+    )
+    print(
+        json.dumps(
+            {
+                "schema": "desk-grant-plan/1",
+                "base": plan.base_orders,
+                "extra": plan.extra_orders,
+                "total": plan.total_orders,
+                "capped": plan.capped,
+                "reasons": list(plan.reasons),
+                "command": command,
+            },
+            indent=2,
+        )
+    )
     if not args.apply:
         return 0
-    if args.owner_epoch is None or args.profile_digest is None \
-            or "<" in args.profile_digest:
-        print("refused: --apply needs --owner-epoch and --profile-digest",
-              file=sys.stderr)
+    if args.owner_epoch is None or args.profile_digest is None or "<" in args.profile_digest:
+        print("refused: --apply needs --owner-epoch and --profile-digest", file=sys.stderr)
         return 2
     from datetime import UTC, datetime
 
     try:
         mandate = grant_mandate(
-            SupervisedPaths.default(), now=datetime.now(UTC), account_id=args.account,
-            owner_epoch=args.owner_epoch, strategy_version=args.strategy,
-            profile_digest=args.profile_digest, max_orders=plan.total_orders,
-            ttl_seconds=args.ttl_seconds, granted_by=args.granted_by)
+            SupervisedPaths.default(),
+            now=datetime.now(UTC),
+            account_id=args.account,
+            owner_epoch=args.owner_epoch,
+            strategy_version=args.strategy,
+            profile_digest=args.profile_digest,
+            max_orders=plan.total_orders,
+            ttl_seconds=args.ttl_seconds,
+            granted_by=args.granted_by,
+        )
     except (SupervisedRefused, ValueError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
-    print(json.dumps({"granted": mandate.mandate_id,
-                      "max_orders": mandate.max_orders,
-                      "expires_at": mandate.expires_at.isoformat()}))
+    print(
+        json.dumps(
+            {
+                "granted": mandate.mandate_id,
+                "max_orders": mandate.max_orders,
+                "expires_at": mandate.expires_at.isoformat(),
+            }
+        )
+    )
     return 0
 
 

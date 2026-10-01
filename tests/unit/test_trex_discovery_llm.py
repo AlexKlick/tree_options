@@ -91,7 +91,9 @@ class TestNormalize:
         }
         out, notes = normalize(raw, watched={"SPY", "QQQ"}, blocked={"XLE"}, max_n=5)
         assert [(p["symbol"], p["action"]) for p in out] == [
-            ("TSM", "add"), ("QQQ", "remove"), ("SMH", "add")
+            ("TSM", "add"),
+            ("QQQ", "remove"),
+            ("SMH", "add"),
         ]
         assert len(out[0]["rationale"]) == 140
         assert out[0]["confidence"] == 1.0
@@ -183,8 +185,9 @@ class TestLauncherKeys:
         assert model == m31 and body["model"] == m31
         assert url == "https://api.minimax.io/v1/chat/completions"
 
-    @pytest.mark.parametrize(("provider", "effort"), [("minimax", "high"),
-                                                      ("minimax-flash", "max")])
+    @pytest.mark.parametrize(
+        ("provider", "effort"), [("minimax", "high"), ("minimax-flash", "max")]
+    )
     def test_minimax_lanes_send_an_explicit_effort_and_never_disable_thinking(
         self, monkeypatch: pytest.MonkeyPatch, provider: str, effort: str
     ) -> None:
@@ -202,8 +205,9 @@ class TestLauncherKeys:
     ) -> None:
         # MiniMax serves an unknown id with HTTP 200 from another model
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
-        served = json.dumps({"model": "MiniMax-M3",
-                             "choices": [{"message": {"content": "{}"}}]}).encode()
+        served = json.dumps(
+            {"model": "MiniMax-M3", "choices": [{"message": {"content": "{}"}}]}
+        ).encode()
         t = FakeTransport([(200, served)])
         with pytest.raises(LlmError, match="served model 'MiniMax-M3' != requested"):
             chat_json(provider, [], transport=t)
@@ -213,24 +217,29 @@ class TestLauncherKeys:
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_ZAI", SECRET)
-        echo = json.dumps({"model": "MiniMax-M3.1-Flash-Preview",
-                           "choices": [{"message": {"content": '{"proposals": []}'}}]})
+        echo = json.dumps(
+            {
+                "model": "MiniMax-M3.1-Flash-Preview",
+                "choices": [{"message": {"content": '{"proposals": []}'}}],
+            }
+        )
         t = FakeTransport([(200, echo.encode())])
         obj, model = chat_json("minimax", [], transport=t)
         assert obj == {"proposals": []} and model == "MiniMax-M3.1-Flash-Preview"
-        swapped = json.dumps({"model": "MiniMax-M3",
-                              "choices": [{"message": {"content": '{"proposals": []}'}}]})
+        swapped = json.dumps(
+            {"model": "MiniMax-M3", "choices": [{"message": {"content": '{"proposals": []}'}}]}
+        )
         good = '{"proposals": [{"symbol": "XLF", "action": "add"}]}'
         t = FakeTransport([(200, swapped.encode()), (200, _completion(good))])
-        run = propose(["minimax", "zai"], {}, watched=set(), blocked=set(), max_n=3,
-                      transport=t)
+        run = propose(["minimax", "zai"], {}, watched=set(), blocked=set(), max_n=3, transport=t)
         assert run["provider"] == "zai"
         assert any(n.startswith("minimax: served model") for n in run["notes"])
 
     def test_non_minimax_lanes_do_not_check_the_echo(self) -> None:
         # llama.cpp may echo a gguf file name; only the minimax lanes verify
-        served = json.dumps({"model": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
-                             "choices": [{"message": {"content": "{}"}}]}).encode()
+        served = json.dumps(
+            {"model": "Qwen3.8-27B-UD-Q4_K_XL.gguf", "choices": [{"message": {"content": "{}"}}]}
+        ).encode()
         obj, _ = chat_json("local", [], transport=FakeTransport([(200, served)]))
         assert obj == {}
 
@@ -264,9 +273,7 @@ class TestLauncherKeys:
         ).encode()
         good = '{"proposals": [{"symbol": "XLF", "action": "add", "rationale": "banks"}]}'
         t = FakeTransport([(200, truncated), (200, _completion(good))])
-        run = propose(
-            ["minimax", "zai"], {}, watched=set(), blocked=set(), max_n=3, transport=t
-        )
+        run = propose(["minimax", "zai"], {}, watched=set(), blocked=set(), max_n=3, transport=t)
         assert run["status"] == "ok" and run["provider"] == "zai"
         assert [p["symbol"] for p in run["proposals"]] == ["XLF"]
         assert any(n.startswith("minimax:") and "truncated" in n for n in run["notes"])
@@ -314,9 +321,7 @@ class TestCodexM456Regressions:
             chat_json("zai", [], transport=FakeTransport([]))
         assert "sk-example" not in str(exc.value) and "malformed" in str(exc.value)
 
-    def test_transport_exception_text_never_surfaces(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_transport_exception_text_never_surfaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ZAI_CODING_API_KEY", SECRET)
         t = FakeTransport([ValueError(f"Invalid header value b'Bearer {SECRET}'")])
         with pytest.raises(LlmError) as exc:
@@ -326,7 +331,7 @@ class TestCodexM456Regressions:
 
     def test_rejected_draft_span_is_skipped_whole(self) -> None:
         text = (
-            "Draft: {'discarded': {\"proposals\":[{\"symbol\":\"TSM\",\"action\":\"add\"}]}} "
+            'Draft: {\'discarded\': {"proposals":[{"symbol":"TSM","action":"add"}]}} '
             'Final: {"proposals":[]}'
         )
         assert _extract_json_object(text) == {"proposals": []}

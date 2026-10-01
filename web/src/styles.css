@@ -389,6 +389,25 @@ footer {
    where the table already fits). TableScroll adds .has-more while columns
    are hidden: the cut edge fades so a clipped value reads as continuing. */
 .table-scroll { overflow-x: auto; }
+.table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.retain-row-identity tr > :first-child { position: sticky; left: 0; z-index: 1; background: var(--card); width: 120px; min-width: 120px; max-width: 180px; overflow-wrap: anywhere; }
+.retain-row-identity tr > :not(:first-child) { overflow-wrap: normal; word-break: normal; }
+.quant-lab { min-width: 0; overflow-wrap: anywhere; }
+.quant-lab pre { max-width: 100%; overflow-x: auto; }
+.research-workspace { min-width: 0; overflow-wrap: anywhere; }
+.research-workspace .card { margin-block: 16px; }
+.research-workspace form, .research-workspace label { display: grid; gap: 8px; }
+.research-workspace label { margin-block: 10px; }
+.research-workspace textarea, .research-workspace input:not([type="checkbox"]), .research-workspace select { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px; background: var(--inset); color: var(--ink); border: 1px solid var(--border); border-radius: 7px; font: inherit; }
+.research-workspace textarea { min-height: 90px; }
+.workspace-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 12px; }
+.research-workspace button { min-height: 40px; padding: 8px 12px; cursor: pointer; border: 1px solid var(--border); border-radius: 7px; background: var(--inset); color: var(--ink); }
+.research-workspace button:disabled { opacity: .5; cursor: default; }
+.research-workspace button:focus-visible, .research-workspace input:focus-visible, .research-workspace select:focus-visible, .research-workspace textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.research-workspace .workspace-check { display: flex; align-items: center; }
+.workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.workspace-item { border-top: 1px solid var(--border); padding-block: 10px; }
+.research-workspace pre { max-width: 100%; overflow-x: auto; }
 .table-scroll.has-more {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
@@ -680,3 +699,5 @@ footer {
 @media (max-width: 950px) { .trade-floor-seats { grid-template-columns: 1fr; } .trade-floor-seat { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; } .trade-floor-seat-top, .trade-floor-capital, .trade-floor-record { grid-column: 1; } .trade-floor-choice, .trade-floor-reason, .trade-floor-outcome { grid-column: 2; } }
 @media (max-width: 610px) { .trade-floor-hero { display: block; padding: 22px; } .trade-floor-live-mark { display: inline-block; margin-top: 18px; } .trade-floor-seat { display: block; } .trade-floor-tape-label { width: 100%; border-right: 0; } .trade-floor-window-tabs button { min-width: 0; } }
 @media (prefers-reduced-motion: reduce) { .trade-floor-controls *, .trade-floor-seats * { scroll-behavior: auto; animation: none; transition: none; } }
+
+.research-workspace pre { max-height: 24rem; overflow: auto; }

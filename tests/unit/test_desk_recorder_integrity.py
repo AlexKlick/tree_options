@@ -116,8 +116,13 @@ def _write_manifest(session: date, statuses: dict[str, str]) -> None:
             "schema": store.MANIFEST_SCHEMA,
             "session": session.isoformat(),
             "symbols": {
-                sym: {"status": st, "n": 1 if st in store.RECORDED else 0,
-                      "raw_sha256": None, "detail": "", "at": "2026-09-24T18:00:00-04:00"}
+                sym: {
+                    "status": st,
+                    "n": 1 if st in store.RECORDED else 0,
+                    "raw_sha256": None,
+                    "detail": "",
+                    "at": "2026-09-24T18:00:00-04:00",
+                }
                 for sym, st in statuses.items()
             },
             "updated_at": "2026-09-24T18:00:00-04:00",
@@ -154,9 +159,7 @@ class TestFeaturesWithoutTheMiner:
         # still no miner: the whole point is that the miner is not involved
         assert not (paths.state_root() / "queue" / f"{D.isoformat()}.json").exists()
 
-    def test_idempotent_is_a_no_op_the_second_time(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_idempotent_is_a_no_op_the_second_time(self, cal: StaticSessionCalendar) -> None:
         """Exit 0 with NOTHING done. The document is byte-identical after a
         rewrite (every input is hashed, not stamped), so the oracle is the
         write itself: atomic_write_json renames a fresh temp file over the
@@ -176,9 +179,7 @@ class TestFeaturesWithoutTheMiner:
             "the second run rewrote the document instead of skipping it"
         )
 
-    def test_waits_for_the_session_to_close_then_builds(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_waits_for_the_session_to_close_then_builds(self, cal: StaticSessionCalendar) -> None:
         """A half-recorded D must not be frozen into the document: exit 3
         while the manifest still has pending symbols, then build once the
         recorder closes it."""
@@ -188,16 +189,18 @@ class TestFeaturesWithoutTheMiner:
         _write_manifest(D, {"KO": "ok", "PEP": "stale"})
         now = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
         out = paths.store_root() / "features" / f"{D.isoformat()}.json"
-        assert run_cli(["features", "--idempotent", "--session", D.isoformat()], cal=cal, now=now) == 3
+        assert (
+            run_cli(["features", "--idempotent", "--session", D.isoformat()], cal=cal, now=now) == 3
+        )
         assert not out.exists()
 
         _write_manifest(D, {"KO": "ok", "PEP": "ok"})
-        assert run_cli(["features", "--idempotent", "--session", D.isoformat()], cal=cal, now=now) == 0
+        assert (
+            run_cli(["features", "--idempotent", "--session", D.isoformat()], cal=cal, now=now) == 0
+        )
         assert out.exists()
 
-    def test_session_defaults_to_the_latest_completed_one(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_session_defaults_to_the_latest_completed_one(self, cal: StaticSessionCalendar) -> None:
         _record(D, {"KO": encode(chain_payload())}, cal)
         # 2026-09-23 12:00 UTC is before D1's 16:15 ET cutoff, so D is still
         # the latest completed session and must be the default target.
@@ -220,9 +223,7 @@ class TestFeaturesWithoutTheMiner:
         now = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
         assert run_cli(["features", "--session", D.isoformat()], cal=cal, now=now) == 0
         assert run_cli(["features", "--session", D1.isoformat()], cal=cal, now=now) == 1
-        assert run_cli(
-            ["features", "--session", "2026-09-20"], cal=cal, now=now
-        ) == 2  # a Sunday
+        assert run_cli(["features", "--session", "2026-09-20"], cal=cal, now=now) == 2  # a Sunday
 
 
 # ------------------------------------------------------------------ C5 (c)
@@ -260,9 +261,7 @@ class TestClosedSessionsAreNeverRepaired:
             for line in chain.gaps_path.read_text().splitlines()
         )
 
-    def test_validate_never_returns_ok_for_a_past_session(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_validate_never_returns_ok_for_a_past_session(self, cal: StaticSessionCalendar) -> None:
         """The other half of the guarantee: even a perfect-looking payload
         cannot be admitted to a session the feed has already moved past, so
         there is nothing for a repair to key on."""
@@ -348,9 +347,7 @@ SAMPLE_SESSIONS = (
 
 
 class TestRecorderCaptureWindow:
-    def test_a_session_stays_reachable_until_it_rolls(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_a_session_stays_reachable_until_it_rolls(self, cal: StaticSessionCalendar) -> None:
         """The structural invariant behind the 2026-09-23 loss: there is at
         least one recorder firing strictly between the vendor publishing D's
         snapshot and D's 16:15 roll. Without one, D is unreachable by
@@ -375,18 +372,15 @@ class TestRecorderCaptureWindow:
                 f"be a second chance before the 16:15 roll"
             )
 
-    def test_the_1230_late_publication_catchup_is_pinned(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_the_1230_late_publication_catchup_is_pinned(self, cal: StaticSessionCalendar) -> None:
         """The 12:30 slot is pinned by name, not only by the two invariants
         above: it is the catch-up for a snapshot published later than usual,
         and desk-mine.timer schedules its 13:00 slot against it. Deleting it
         must fail loudly here rather than silently degrade the window."""
         slots = _calendar_slots(DEPLOY / "desk-chain.timer")
-        assert any(
-            at == time(12, 30) and WEEKDAYS.index("Mon") in days
-            for days, at in slots
-        ), "the 12:30 ET late-publication catch-up slot is gone from desk-chain.timer"
+        assert any(at == time(12, 30) and WEEKDAYS.index("Mon") in days for days, at in slots), (
+            "the 12:30 ET late-publication catch-up slot is gone from desk-chain.timer"
+        )
         mine = _calendar_slots(DEPLOY / "desk-mine.timer")
         assert any(at == time(13, 0) for _, at in mine), (
             "desk-mine.timer's 13:00 slot is scheduled against the chain recorder's "
@@ -398,9 +392,7 @@ class TestRecorderCaptureWindow:
                 f"{session}: no 12:30 ET firing reaches it"
             )
 
-    def test_the_1430_last_chance_is_before_the_roll(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_the_1430_last_chance_is_before_the_roll(self, cal: StaticSessionCalendar) -> None:
         """14:30 is the last firing of the day: it must be inside the
         window (or the session has no last chance at all) and it must be
         followed by the roll, which is what closes the books."""
@@ -423,7 +415,8 @@ def _default_quiet() -> QuietHours:
     builds it from notify.env (22:00-07:00 America/Denver)."""
     lo, hi = DEFAULT_QUIET.split("-")
     return QuietHours(
-        time(int(lo[:2]), int(lo[3:])), time(int(hi[:2]), int(hi[3:])),
+        time(int(lo[:2]), int(lo[3:])),
+        time(int(hi[:2]), int(hi[3:])),
         ZoneInfo("America/Denver"),
     )
 
@@ -436,13 +429,14 @@ def _gap_store(manifests: dict[date, dict[str, str] | None]) -> store.ChainStore
 
 
 class TestGapAlarm:
-    def test_clean_manifest_exits_zero_and_says_nothing(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_clean_manifest_exits_zero_and_says_nothing(self, cal: StaticSessionCalendar) -> None:
         chain = _gap_store({PREV: {"KO": "ok", "PEP": "exists", "XLF": "conflict"}})
         sent: list[tuple[str, str, str]] = []
         gap, rc = gap_check.check_once(
-            None, chain, cal=cal, now=ALARM_NOW,
+            None,
+            chain,
+            cal=cal,
+            now=ALARM_NOW,
             notify=lambda t, m, p: sent.append((t, m, p)) or True,
         )
         assert rc == 0 and gap.clean
@@ -455,7 +449,10 @@ class TestGapAlarm:
         chain = _gap_store({PREV: {"KO": "ok", "XLF": "missing"}})
         sent: list[tuple[str, str, str]] = []
         gap, rc = gap_check.check_once(
-            None, chain, cal=cal, now=ALARM_NOW,
+            None,
+            chain,
+            cal=cal,
+            now=ALARM_NOW,
             notify=lambda t, m, p: sent.append((t, m, p)) or True,
         )
         assert rc == 1 and not gap.clean
@@ -467,15 +464,20 @@ class TestGapAlarm:
         for leak in ("http", "://", "ntfy"):
             assert leak not in message.lower(), "push text must carry no URLs"
 
-    def test_every_out_of_recorded_status_is_reported(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_every_out_of_recorded_status_is_reported(self, cal: StaticSessionCalendar) -> None:
         chain = _gap_store(
-            {PREV: {"KO": "ok", "A": "missing", "B": "error", "C": "invalid", "D2": "stale",
-                    "E": "incomplete"}}
+            {
+                PREV: {
+                    "KO": "ok",
+                    "A": "missing",
+                    "B": "error",
+                    "C": "invalid",
+                    "D2": "stale",
+                    "E": "incomplete",
+                }
+            }
         )
-        gap, rc = gap_check.check_once(None, chain, cal=cal,
-                                       now=ALARM_NOW)
+        gap, rc = gap_check.check_once(None, chain, cal=cal, now=ALARM_NOW)
         assert rc == 1
         assert gap.symbols == ("A", "B", "C", "D2", "E")
         assert gap.status == gap_check.GAPS
@@ -500,16 +502,17 @@ class TestGapAlarm:
         assert gap.session == PREV
         assert rc == 0 and gap.clean
 
-    def test_a_closed_session_with_no_manifest_is_a_gap(
-        self, cal: StaticSessionCalendar
-    ) -> None:
+    def test_a_closed_session_with_no_manifest_is_a_gap(self, cal: StaticSessionCalendar) -> None:
         """finalize_prior stamps a manifest on every session it skips, so a
         closed session without one means the books were never closed at all.
         That is the whole session, not a symbol: it must still alarm."""
         chain = _gap_store({D1: {"KO": "ok"}})  # nothing for the closed session
         sent: list[tuple[str, str, str]] = []
         gap, rc = gap_check.check_once(
-            None, chain, cal=cal, now=ALARM_NOW,
+            None,
+            chain,
+            cal=cal,
+            now=ALARM_NOW,
             notify=lambda t, m, p: sent.append((t, m, p)) or True,
         )
         assert rc == 1 and gap.unreadable and gap.session == PREV
@@ -523,7 +526,9 @@ class TestGapAlarm:
         on its own arrival."""
         first = cal.sessions()[0]
         gap, rc = gap_check.check_once(
-            None, store.ChainStore(paths.store_root()), cal=cal,
+            None,
+            store.ChainStore(paths.store_root()),
+            cal=cal,
             now=datetime.combine(first, time(7, 5), tzinfo=ET),
         )
         assert rc == 0 and gap.clean and gap.session is None
@@ -533,8 +538,9 @@ class TestGapAlarm:
     ) -> None:
         """Once sessions have closed, a store with no manifest at all is the
         whole gap -- refusing to be quiet about it is the point."""
-        gap, rc = gap_check.check_once(None, store.ChainStore(paths.store_root()), cal=cal,
-                                       now=ALARM_NOW)
+        gap, rc = gap_check.check_once(
+            None, store.ChainStore(paths.store_root()), cal=cal, now=ALARM_NOW
+        )
         assert rc == 1 and gap.unreadable and gap.session == PREV
 
     def test_a_persisting_gap_is_pushed_once_then_held_to_the_cadence(
@@ -551,9 +557,12 @@ class TestGapAlarm:
         assert gap_check.check_once(state, chain, cal=cal, now=now, notify=push)[1] == 1
         assert len(sent) == 1
         # same gap, a minute later: the cadence has not elapsed
-        assert gap_check.check_once(
-            state, chain, cal=cal, now=now + timedelta(minutes=1), notify=push
-        )[1] == 1
+        assert (
+            gap_check.check_once(
+                state, chain, cal=cal, now=now + timedelta(minutes=1), notify=push
+            )[1]
+            == 1
+        )
         assert len(sent) == 1
 
     def test_a_failed_push_is_owed_not_swallowed(
@@ -572,12 +581,18 @@ class TestGapAlarm:
         assert json.loads(state.read_text())["notify_failed_at"] is not None
         # inside NOTIFY_RETRY_S the policy holds the retry, it does not drop it
         gap_check.check_once(
-            state, chain, cal=cal, now=now + timedelta(seconds=60),
+            state,
+            chain,
+            cal=cal,
+            now=now + timedelta(seconds=60),
             notify=lambda *_: calls.append(0) or True,
         )
         assert len(calls) == 1, "the retry window was ignored"
         gap_check.check_once(
-            state, chain, cal=cal, now=now + timedelta(seconds=NOTIFY_RETRY_S + 1),
+            state,
+            chain,
+            cal=cal,
+            now=now + timedelta(seconds=NOTIFY_RETRY_S + 1),
             notify=lambda *_: calls.append(0) or True,
         )
         assert len(calls) == 2, "the failed reminder was swallowed instead of retried"
@@ -589,8 +604,12 @@ class TestGapAlarm:
         chain = _gap_store({PREV: {"KO": "missing"}})
         sent: list[str] = []
         _, rc = gap_check.check_once(
-            state, chain, cal=cal, now=datetime(2026, 9, 23, 9, 5, tzinfo=ET),
-            notify=lambda t, *_: sent.append(t) or True, dry_run=True,
+            state,
+            chain,
+            cal=cal,
+            now=datetime(2026, 9, 23, 9, 5, tzinfo=ET),
+            notify=lambda t, *_: sent.append(t) or True,
+            dry_run=True,
         )
         assert rc == 1
         assert sent == []
@@ -609,17 +628,29 @@ class TestGapAlarm:
         push = lambda t, *_: sent.append(t) or True  # noqa: E731
         quiet_now = datetime(2026, 9, 23, 7, 5, tzinfo=ET)  # 05:05 MDT
         loud_now = datetime(2026, 9, 23, 9, 5, tzinfo=ET)  # 07:05 MDT
-        assert gap_check.check_once(
-            state, chain, cal=cal, now=quiet_now, notify=push, urg=gap_check.Urgency(
-                "high", 3600, quiet=quiet.contains(quiet_now.timestamp())
-            )
-        )[1] == 1
+        assert (
+            gap_check.check_once(
+                state,
+                chain,
+                cal=cal,
+                now=quiet_now,
+                notify=push,
+                urg=gap_check.Urgency("high", 3600, quiet=quiet.contains(quiet_now.timestamp())),
+            )[1]
+            == 1
+        )
         assert sent == [], "the push escaped quiet hours"
-        assert gap_check.check_once(
-            state, chain, cal=cal, now=loud_now, notify=push, urg=gap_check.Urgency(
-                "high", 3600, quiet=quiet.contains(loud_now.timestamp())
-            )
-        )[1] == 1
+        assert (
+            gap_check.check_once(
+                state,
+                chain,
+                cal=cal,
+                now=loud_now,
+                notify=push,
+                urg=gap_check.Urgency("high", 3600, quiet=quiet.contains(loud_now.timestamp())),
+            )[1]
+            == 1
+        )
         assert len(sent) == 1 and PREV.isoformat() in sent[0]
 
     def test_the_timer_has_a_slot_outside_the_default_quiet_window(self) -> None:
@@ -629,8 +660,10 @@ class TestGapAlarm:
         slots = _calendar_slots(DEPLOY / "desk-gap-check.timer")
         assert slots, "desk-gap-check.timer has no OnCalendar line"
         # 07:05 ET is 05:05 MDT; the 09:05 ET slot is what actually delivers
-        assert any(not quiet.contains(datetime(2026, 9, 23, h, m, tzinfo=ET).timestamp())
-                   for _, (h, m) in ((d, (t.hour, t.minute)) for d, t in slots))
+        assert any(
+            not quiet.contains(datetime(2026, 9, 23, h, m, tzinfo=ET).timestamp())
+            for _, (h, m) in ((d, (t.hour, t.minute)) for d, t in slots)
+        )
         assert any(at == time(9, 5) for _, at in slots)
 
 

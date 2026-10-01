@@ -31,9 +31,7 @@ def _f(raw: Any) -> float | None:
         return None
 
 
-def plan_unrealized(
-    view: Any, marks: dict[str, Any] | None
-) -> tuple[float | None, float | None]:
+def plan_unrealized(view: Any, marks: dict[str, Any] | None) -> tuple[float | None, float | None]:
     """(open-basis, filled-basis) unrealized for one plan.
 
     Both are None while any structure's entry price coverage is incomplete

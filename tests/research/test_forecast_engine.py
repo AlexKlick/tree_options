@@ -6,6 +6,7 @@ source): the wire-vs-ledger test recomputes skill and the DM statistic
 from ledger rows alone and demands the wire agree — exactly what any
 downstream reader must be able to do.
 """
+
 from __future__ import annotations
 
 import json
@@ -47,16 +48,14 @@ from tree_options.research.forecast.sources import (
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _spec(horizon: int = 5,
-          start: date = date(2019, 6, 3)) -> ForecastSpec:
-    return ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=horizon,
-                        evaluation_start=start)
+def _spec(horizon: int = 5, start: date = date(2019, 6, 3)) -> ForecastSpec:
+    return ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=horizon, evaluation_start=start)
 
 
-def _evaluate(spec: ForecastSpec, series: ForecastSeries,
-              models=None, **kw):
-    return evaluate_forecast(spec, series=series, calendar_sha256="c" * 64,
-                             engine_sha256="e" * 64, models=models, **kw)
+def _evaluate(spec: ForecastSpec, series: ForecastSeries, models=None, **kw):
+    return evaluate_forecast(
+        spec, series=series, calendar_sha256="c" * 64, engine_sha256="e" * 64, models=models, **kw
+    )
 
 
 def _hand_series(n: int = 420) -> ForecastSeries:
@@ -67,21 +66,26 @@ def _hand_series(n: int = 420) -> ForecastSeries:
     while len(sessions) < n:
         sessions.append(d)
         d += timedelta(days=1)
-    closes = tuple(100.0 + ((i * 37) % 23) * 0.5 + 0.01 * i
-                   for i in range(n))
+    closes = tuple(100.0 + ((i * 37) % 23) * 0.5 + 0.01 * i for i in range(n))
     descriptor = SOURCE_REGISTRY[ForecastSourceId.SYNTHETIC]
     return ForecastSeries(
         source_id=ForecastSourceId.SYNTHETIC,
-        sessions=tuple(sessions), closes=closes,
-        series_sha256="f" * 64, basis=descriptor.basis,
-        grid_basis=descriptor.grid_basis, provenance={"kind": "hand"},
-        excluded_rows={}, n_source_rows=n)
+        sessions=tuple(sessions),
+        closes=closes,
+        series_sha256="f" * 64,
+        basis=descriptor.basis,
+        grid_basis=descriptor.grid_basis,
+        provenance={"kind": "hand"},
+        excluded_rows={},
+        n_source_rows=n,
+    )
 
 
 def _stub(quantiles_log: tuple[float, ...]):
     def model(closes, *, h, taus):
         _ = closes, h
         return quantiles_log
+
     return model
 
 
@@ -100,8 +104,9 @@ class TestReceiptShape:
         assert wire["calibration_status"] == "not_claimed"
         assert wire["evaluation_status"] == "receipt_published"
         assert wire["origins"]["floor_met"] is True
-        assert wire["origins"]["total"] == wire["origins"]["evaluated"] \
-            + wire["origins"]["excluded"]
+        assert (
+            wire["origins"]["total"] == wire["origins"]["evaluated"] + wire["origins"]["excluded"]
+        )
         names = [m["model"] for m in wire["models"]]
         assert names == [m[0] for m in DEFAULT_MODELS]
         baseline = next(m for m in wire["models"] if m["is_baseline"])
@@ -142,19 +147,24 @@ class TestReceiptShape:
         assert isinstance(out, ForecastOutcome)
         baseline_rows = {
             r["origin_date"]: _loss(r)
-            for m in out.to_wire()["models"] if m["is_baseline"]
-            for r in m["ledger"] if r["status"] == "evaluated"}
-        model = next(m for m in out.to_wire()["models"]
-                     if m["model"] == "ar1_direct")
-        model_rows = {r["origin_date"]: _loss(r)
-                      for r in model["ledger"] if r["status"] == "evaluated"}
+            for m in out.to_wire()["models"]
+            if m["is_baseline"]
+            for r in m["ledger"]
+            if r["status"] == "evaluated"
+        }
+        model = next(m for m in out.to_wire()["models"] if m["model"] == "ar1_direct")
+        model_rows = {
+            r["origin_date"]: _loss(r) for r in model["ledger"] if r["status"] == "evaluated"
+        }
         matched = sorted(set(baseline_rows) & set(model_rows))
         skill = model["metrics"]["skill_vs_baseline"]
         assert skill["paired_n"] == len(matched)
         assert skill["loss_paired"] == pytest.approx(
-            sum(model_rows[d] for d in matched) / len(matched))
+            sum(model_rows[d] for d in matched) / len(matched)
+        )
         assert skill["bench_paired"] == pytest.approx(
-            sum(baseline_rows[d] for d in matched) / len(matched))
+            sum(baseline_rows[d] for d in matched) / len(matched)
+        )
         d = [baseline_rows[k] - model_rows[k] for k in matched]
         dm = dm_test(d, lag=1)
         assert dm is not None
@@ -173,12 +183,15 @@ class TestReceiptShape:
         wire = out.to_wire()
         baseline_rows = {
             r["origin_date"]: _loss(r)
-            for m in wire["models"] if m["is_baseline"]
-            for r in m["ledger"] if r["status"] == "evaluated"}
-        model = next(m for m in wire["models"]
-                     if m["model"] == "ar1_direct")
-        model_rows = {r["origin_date"]: _loss(r)
-                      for r in model["ledger"] if r["status"] == "evaluated"}
+            for m in wire["models"]
+            if m["is_baseline"]
+            for r in m["ledger"]
+            if r["status"] == "evaluated"
+        }
+        model = next(m for m in wire["models"] if m["model"] == "ar1_direct")
+        model_rows = {
+            r["origin_date"]: _loss(r) for r in model["ledger"] if r["status"] == "evaluated"
+        }
         matched = sorted(set(baseline_rows) & set(model_rows))
         d = [baseline_rows[k] - model_rows[k] for k in matched]
         skill = model["metrics"]["skill_vs_baseline"]
@@ -193,11 +206,9 @@ class TestReceiptShape:
             else:
                 assert entry is not None, lag
                 assert entry["stat"] == pytest.approx(alt.stat), lag
-                assert entry["p_one_sided"] == pytest.approx(
-                    alt.p_one_sided), lag
+                assert entry["p_one_sided"] == pytest.approx(alt.p_one_sided), lag
 
-    def test_coverage_bootstrap_declares_block_and_matches_helper(
-            self) -> None:
+    def test_coverage_bootstrap_declares_block_and_matches_helper(self) -> None:
         # The receipt DECLARES the block it used and its bounds ARE the
         # shared helper's at that block and seed (the engine-level
         # companion of the metrics block oracle).
@@ -208,8 +219,8 @@ class TestReceiptShape:
         cov = baseline["metrics"]["coverage_90"]
         rows = [r for r in baseline["ledger"] if r["status"] == "evaluated"]
         indicators = [
-            1.0 if r["quantiles"][0] <= r["actual"] <= r["quantiles"][-1]
-            else 0.0 for r in rows]
+            1.0 if r["quantiles"][0] <= r["actual"] <= r["quantiles"][-1] else 0.0 for r in rows
+        ]
         assert len(indicators) == cov["n"]
         assert cov["bootstrap_block"] == BOOTSTRAP_BLOCK
 
@@ -217,9 +228,13 @@ class TestReceiptShape:
             return sum(sample) / len(sample) if sample else None
 
         want = block_bootstrap_ci(
-            indicators, statistic=mean_stat,
-            block_size=cov["bootstrap_block"], iterations=N_BOOTSTRAP,
-            seed=cov["bootstrap_seed"], confidence=0.95)
+            indicators,
+            statistic=mean_stat,
+            block_size=cov["bootstrap_block"],
+            iterations=N_BOOTSTRAP,
+            seed=cov["bootstrap_seed"],
+            confidence=0.95,
+        )
         if want is None:
             assert cov["bootstrap_low"] is None
             assert cov["bootstrap_high"] is None
@@ -247,11 +262,13 @@ class TestReceiptShape:
             return tuple(math.log(95.0 + 2.5 * k) for k in range(len(taus)))
 
         out = _evaluate(
-            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
-                         evaluation_start=date(2020, 2, 1)),
-            series, models=[("b", ok, True),
-                            ("m", latest_only_failure, False)],
-            min_history=20)
+            ForecastSpec(
+                source=ForecastSourceId.SYNTHETIC, horizon=5, evaluation_start=date(2020, 2, 1)
+            ),
+            series,
+            models=[("b", ok, True), ("m", latest_only_failure, False)],
+            min_history=20,
+        )
         assert isinstance(out, ForecastOutcome)
         fan = out.to_wire()["forward"]["fan"]
         by_model = {f["model"]: f for f in fan}
@@ -289,8 +306,8 @@ class TestRefusals:
         series = load_synthetic()
         assert isinstance(series, ForecastSeries)
         wide = month_origin_grid(
-            series.sessions, first_eval=date(2019, 1, 1),
-            last_eval=None, horizon=5, min_history=260)
+            series.sessions, first_eval=date(2019, 1, 1), last_eval=None, horizon=5, min_history=260
+        )
         start = series.sessions[wide.origins[-ORIGIN_FLOOR]]
         out = _evaluate(_spec(start=start), series)
         assert isinstance(out, ForecastOutcome), out
@@ -306,29 +323,30 @@ class TestRefusals:
         # dates: enough month starts that n-1 still clears the floor.)
         series = _hand_series(700)
         grid = month_origin_grid(
-            series.sessions, first_eval=date(2020, 2, 1),
-            last_eval=None, horizon=5, min_history=20)
+            series.sessions, first_eval=date(2020, 2, 1), last_eval=None, horizon=5, min_history=20
+        )
         origins = grid.origins
-        cut = origins[0] + 1    # baseline fails exactly the FIRST origin
+        cut = origins[0] + 1  # baseline fails exactly the FIRST origin
 
         def baseline(closes, *, h, taus):
             if len(closes) <= cut:
                 return None
-            return tuple(math.log(90.0 + 5.0 * k)
-                         for k in range(len(taus)))
+            return tuple(math.log(90.0 + 5.0 * k) for k in range(len(taus)))
 
         def model(closes, *, h, taus):
             # tighter bands than the baseline: strictly better pinball,
             # with per-origin variation so the DM differential has
             # variance
-            return tuple(math.log(97.0 + 1.5 * k)
-                         for k in range(len(taus)))
+            return tuple(math.log(97.0 + 1.5 * k) for k in range(len(taus)))
 
         out = _evaluate(
-            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
-                         evaluation_start=date(2020, 2, 1)),
-            series, models=[("b", baseline, True), ("m", model, False)],
-            min_history=20)
+            ForecastSpec(
+                source=ForecastSourceId.SYNTHETIC, horizon=5, evaluation_start=date(2020, 2, 1)
+            ),
+            series,
+            models=[("b", baseline, True), ("m", model, False)],
+            min_history=20,
+        )
         assert isinstance(out, ForecastOutcome)
         wire = out.to_wire()
         b = next(m for m in wire["models"] if m["model"] == "b")
@@ -336,14 +354,13 @@ class TestRefusals:
         assert b["n_evaluated"] == len(origins) - 1
         assert m["n_evaluated"] == len(origins)
         skill = m["metrics"]["skill_vs_baseline"]
-        assert skill["paired_n"] == len(origins) - 1   # intersection
+        assert skill["paired_n"] == len(origins) - 1  # intersection
         # the skill NUMBER was emitted over the matched cohort (its
         # sign depends on the stubs; the cohort is the oracle)
         assert skill["pinball_skill"] is not None
         assert "dm" in skill or "dm_unavailable_reason" in skill
 
-    def test_nonbaseline_below_floor_refuses_while_baseline_passes(
-            self) -> None:
+    def test_nonbaseline_below_floor_refuses_while_baseline_passes(self) -> None:
         # The floor is per MODEL (checkpoint B, surviving mutation 5):
         # a non-baseline that evaluates only 11 of ~23 origins must
         # REFUSE the whole receipt even though the baseline clears the
@@ -352,11 +369,11 @@ class TestRefusals:
         # (the baseline) must fail here.
         series = _hand_series(700)
         grid = month_origin_grid(
-            series.sessions, first_eval=date(2020, 2, 1),
-            last_eval=None, horizon=5, min_history=20)
+            series.sessions, first_eval=date(2020, 2, 1), last_eval=None, horizon=5, min_history=20
+        )
         origins = grid.origins
         assert len(origins) >= 20
-        cut = origins[11]    # model fails origins[11:] -> 11 evaluated
+        cut = origins[11]  # model fails origins[11:] -> 11 evaluated
 
         def baseline(closes, *, h, taus):
             _ = h
@@ -369,10 +386,13 @@ class TestRefusals:
             return tuple(math.log(95.0 + 2.5 * k) for k in range(len(taus)))
 
         out = _evaluate(
-            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
-                         evaluation_start=date(2020, 2, 1)),
-            series, models=[("b", baseline, True), ("m", weak, False)],
-            min_history=20)
+            ForecastSpec(
+                source=ForecastSourceId.SYNTHETIC, horizon=5, evaluation_start=date(2020, 2, 1)
+            ),
+            series,
+            models=[("b", baseline, True), ("m", weak, False)],
+            min_history=20,
+        )
         assert not isinstance(out, ForecastOutcome)
         assert out.code == FORECAST_INSUFFICIENT_ORIGINS
         assert "m evaluated 11 origins" in out.message
@@ -388,18 +408,15 @@ class TestRefusals:
         series = load_synthetic()
         assert isinstance(series, ForecastSeries)
         # A window whose month starts cannot reach the floor.
-        out = _evaluate(
-            _spec(start=date(2020, 8, 1)), series)
+        out = _evaluate(_spec(start=date(2020, 8, 1)), series)
         assert not isinstance(out, ForecastOutcome)
         assert out.code == FORECAST_INSUFFICIENT_ORIGINS
         assert out.payload["origins"]["floor_met"] is False
         # the refusal IS the receipt of the attempt: ledgers retained
         for m in out.payload["models"]:
             assert m["ledger"]
-            assert m["tally"]["total"] == m["tally"]["evaluated"] \
-                + m["tally"]["excluded"]
-        assert out.payload["origins"]["total"] < ORIGIN_FLOOR \
-            or out.payload["grid_reasons"]
+            assert m["tally"]["total"] == m["tally"]["evaluated"] + m["tally"]["excluded"]
+        assert out.payload["origins"]["total"] < ORIGIN_FLOOR or out.payload["grid_reasons"]
 
 
 class TestPairedCohort:
@@ -407,33 +424,34 @@ class TestPairedCohort:
         # 700 daily dates -> ~23 month-start origins after warm-up.
         series = _hand_series(700)
         grid = month_origin_grid(
-            series.sessions, first_eval=date(2020, 2, 1),
-            last_eval=None, horizon=5, min_history=20)
+            series.sessions, first_eval=date(2020, 2, 1), last_eval=None, horizon=5, min_history=20
+        )
         origins = grid.origins
         assert len(origins) >= 20
         # baseline fails the first 8 origins; model fails the last 8:
         # each clears the floor (>= 12 evaluated) but the matched set
         # is small (7) — no skill number may be emitted.
-        cut_b = origins[7] + 1     # len(closes) <= this -> baseline None
-        cut_m = origins[-8] + 1    # len(closes) >= this -> model None
+        cut_b = origins[7] + 1  # len(closes) <= this -> baseline None
+        cut_m = origins[-8] + 1  # len(closes) >= this -> model None
 
         def baseline(closes, *, h, taus):
             if len(closes) <= cut_b:
                 return None
-            return tuple(math.log(90.0 + 5.0 * k)
-                         for k in range(len(taus)))
+            return tuple(math.log(90.0 + 5.0 * k) for k in range(len(taus)))
 
         def model(closes, *, h, taus):
             if len(closes) >= cut_m:
                 return None
-            return tuple(math.log(90.0 + 5.0 * k)
-                         for k in range(len(taus)))
+            return tuple(math.log(90.0 + 5.0 * k) for k in range(len(taus)))
 
         out = _evaluate(
-            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
-                         evaluation_start=date(2020, 2, 1)),
-            series, models=[("b", baseline, True), ("m", model, False)],
-            min_history=20)
+            ForecastSpec(
+                source=ForecastSourceId.SYNTHETIC, horizon=5, evaluation_start=date(2020, 2, 1)
+            ),
+            series,
+            models=[("b", baseline, True), ("m", model, False)],
+            min_history=20,
+        )
         assert isinstance(out, ForecastOutcome)
         wire = out.to_wire()
         m_rec = next(m for m in wire["models"] if m["model"] == "m")
@@ -441,16 +459,18 @@ class TestPairedCohort:
         assert skill["pinball_skill"] is None
         assert skill["reason"] == "paired_cohort_insufficient"
         assert skill["dm"] is None
-        assert skill["dm_unavailable_reason"] == \
-            "paired_cohort_insufficient"
+        assert skill["dm_unavailable_reason"] == "paired_cohort_insufficient"
         assert PAIRED_FLOOR == 8
 
     def test_exactly_one_baseline_required(self) -> None:
         stub = _stub(tuple(math.log(90.0 + 5.0 * k) for k in range(5)))
         with pytest.raises(ValueError, match="exactly one baseline"):
-            _evaluate(_spec(), _hand_series(420),
-                      models=[("a", stub, True), ("b", stub, True)],
-                      min_history=20)
+            _evaluate(
+                _spec(),
+                _hand_series(420),
+                models=[("a", stub, True), ("b", stub, True)],
+                min_history=20,
+            )
 
     def test_zero_baselines_also_refuse(self) -> None:
         # The guard is `!= 1`, not `> 1`: OMITTING the baseline must
@@ -459,9 +479,7 @@ class TestPairedCohort:
         # row (and the §6 comparison row) was dropped by omission.
         stub = _stub(tuple(math.log(90.0 + 5.0 * k) for k in range(5)))
         with pytest.raises(ValueError, match="exactly one baseline"):
-            _evaluate(_spec(), _hand_series(420),
-                      models=[("a", stub, False)],
-                      min_history=20)
+            _evaluate(_spec(), _hand_series(420), models=[("a", stub, False)], min_history=20)
 
 
 class TestBootstrapDegeneracy:
@@ -473,11 +491,13 @@ class TestBootstrapDegeneracy:
         wide = _stub(tuple(math.log(40.0 + 30.0 * k) for k in range(5)))
         narrow = _stub(tuple(math.log(99.0 + 1.0 * k) for k in range(5)))
         out = _evaluate(
-            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
-                         evaluation_start=date(2020, 2, 1)),
-            series, models=[("wide", wide, True),
-                            ("narrow", narrow, False)],
-            min_history=20)
+            ForecastSpec(
+                source=ForecastSourceId.SYNTHETIC, horizon=5, evaluation_start=date(2020, 2, 1)
+            ),
+            series,
+            models=[("wide", wide, True), ("narrow", narrow, False)],
+            min_history=20,
+        )
         assert isinstance(out, ForecastOutcome)
         wire = out.to_wire()
         b = next(m for m in wire["models"] if m["model"] == "wide")
@@ -485,8 +505,7 @@ class TestBootstrapDegeneracy:
         assert cov["hits"] == cov["n"]
         assert cov["bootstrap_low"] is None
         assert cov["bootstrap_high"] is None
-        assert cov["bootstrap_reason"] == "degenerate coverage " \
-                                          "(all hits or none)"
+        assert cov["bootstrap_reason"] == "degenerate coverage (all hits or none)"
         # Wilson is retained and honest at hits == n
         assert cov["wilson_high"] == pytest.approx(1.0, abs=1e-12)
         assert cov["bootstrap_seed"] > 0
@@ -499,37 +518,49 @@ class TestNoLeakage:
         # forecast quantiles stay frozen (they were fit at origin time).
         series = _hand_series(420)
         stub = _stub(tuple(math.log(95.0 + 2.5 * k) for k in range(5)))
-        spec = ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
-                            evaluation_start=date(2020, 2, 1))
-        out_a = _evaluate(spec, series, models=[("s", stub, True)],
-                          min_history=20)
+        spec = ForecastSpec(
+            source=ForecastSourceId.SYNTHETIC, horizon=5, evaluation_start=date(2020, 2, 1)
+        )
+        out_a = _evaluate(spec, series, models=[("s", stub, True)], min_history=20)
         assert isinstance(out_a, ForecastOutcome)
-        grid = month_origin_grid(series.sessions,
-                                 first_eval=spec.evaluation_start,
-                                 last_eval=None, horizon=5, min_history=20)
+        grid = month_origin_grid(
+            series.sessions,
+            first_eval=spec.evaluation_start,
+            last_eval=None,
+            horizon=5,
+            min_history=20,
+        )
         t0 = grid.origins[1]
-        mutated = ForecastSeries(**{**series.__dict__,
-                                    "closes": list(series.closes)})
+        mutated = ForecastSeries(**{**series.__dict__, "closes": list(series.closes)})
         object.__setattr__(
-            mutated, "closes",
-            (*series.closes[: t0 + 5],
-             series.closes[t0 + 5] * 1.5,
-             *series.closes[t0 + 6:]))
-        out_b = _evaluate(spec, mutated, models=[("s", stub, True)],
-                          min_history=20)
+            mutated,
+            "closes",
+            (*series.closes[: t0 + 5], series.closes[t0 + 5] * 1.5, *series.closes[t0 + 6 :]),
+        )
+        out_b = _evaluate(spec, mutated, models=[("s", stub, True)], min_history=20)
         assert isinstance(out_b, ForecastOutcome)
-        row_a = next(r for m in out_a.models for r in m.ledger
-                     if r.origin_date == series.sessions[t0])
-        row_b = next(r for m in out_b.models for r in m.ledger
-                     if r.origin_date == series.sessions[t0])
+        row_a = next(
+            r for m in out_a.models for r in m.ledger if r.origin_date == series.sessions[t0]
+        )
+        row_b = next(
+            r for m in out_b.models for r in m.ledger if r.origin_date == series.sessions[t0]
+        )
         assert row_b.actual == pytest.approx(row_a.actual * 1.5)
-        assert row_b.quantiles == row_a.quantiles      # frozen at fit
+        assert row_b.quantiles == row_a.quantiles  # frozen at fit
         assert row_b.losses_by_tau != row_a.losses_by_tau
         # an EARLIER origin (target before the mutation) is untouched
-        early_a = next(r for m in out_a.models for r in m.ledger
-                       if r.origin_date == series.sessions[grid.origins[0]])
-        early_b = next(r for m in out_b.models for r in m.ledger
-                       if r.origin_date == series.sessions[grid.origins[0]])
+        early_a = next(
+            r
+            for m in out_a.models
+            for r in m.ledger
+            if r.origin_date == series.sessions[grid.origins[0]]
+        )
+        early_b = next(
+            r
+            for m in out_b.models
+            for r in m.ledger
+            if r.origin_date == series.sessions[grid.origins[0]]
+        )
         assert early_b == early_a
 
 

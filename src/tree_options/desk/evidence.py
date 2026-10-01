@@ -6,6 +6,7 @@ accidental/casual tampering, not deletion of a whole suffix by an attacker who
 also replaces the database and backups. Anchor the audit head off-host for that.
 Use a local filesystem, not an NFS/SMB share, for the active SQLite database.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -54,7 +55,9 @@ class EvidenceStore:
                 finally:
                     source.close()
         elif readonly:
-            self.conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
+            self.conn = sqlite3.connect(
+                self.path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None
+            )
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             # Create restrictively before SQLite opens the file (and its WAL).
@@ -106,15 +109,21 @@ class EvidenceStore:
             raise
 
     def get(self, kind: str, key: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT payload FROM objects WHERE kind=? AND object_key=?", (kind, key)).fetchone()
+        row = self.conn.execute(
+            "SELECT payload FROM objects WHERE kind=? AND object_key=?", (kind, key)
+        ).fetchone()
         return read_json(row[0].encode()) if row else None
 
     def latest_key(self, kind: str) -> str | None:
-        row = self.conn.execute("SELECT MAX(object_key) FROM objects WHERE kind=?", (kind,)).fetchone()
+        row = self.conn.execute(
+            "SELECT MAX(object_key) FROM objects WHERE kind=?", (kind,)
+        ).fetchone()
         return row[0]
 
     def all(self, kind: str) -> list[dict[str, Any]]:
-        rows = self.conn.execute("SELECT payload FROM objects WHERE kind=? ORDER BY object_key", (kind,))
+        rows = self.conn.execute(
+            "SELECT payload FROM objects WHERE kind=? ORDER BY object_key", (kind,)
+        )
         return [read_json(r[0].encode()) for r in rows]
 
     def all_at(self, kind: str) -> list[tuple[dict[str, Any], str]]:
@@ -136,17 +145,28 @@ class EvidenceStore:
             raise EvidenceError("transaction_required")
         timestamp(at.isoformat())
         encoded, sha = canonical(payload).decode(), digest(payload)
-        old = self.conn.execute("SELECT payload_sha256 FROM objects WHERE kind=? AND object_key=?", (kind, key)).fetchone()
+        old = self.conn.execute(
+            "SELECT payload_sha256 FROM objects WHERE kind=? AND object_key=?", (kind, key)
+        ).fetchone()
         if old:
             if old[0] != sha:
                 raise EvidenceError("content_conflict")
             return False
-        previous = self.conn.execute("SELECT seq, event_sha256 FROM audit ORDER BY seq DESC LIMIT 1").fetchone()
-        event = {"seq": previous[0] + 1 if previous else 1, "occurred_at": at.isoformat(),
-                 "kind": kind, "object_key": key, "payload_sha256": sha,
-                 "previous_sha256": previous[1] if previous else GENESIS}
+        previous = self.conn.execute(
+            "SELECT seq, event_sha256 FROM audit ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        event = {
+            "seq": previous[0] + 1 if previous else 1,
+            "occurred_at": at.isoformat(),
+            "kind": kind,
+            "object_key": key,
+            "payload_sha256": sha,
+            "previous_sha256": previous[1] if previous else GENESIS,
+        }
         self.conn.execute("INSERT INTO objects VALUES (?,?,?,?)", (kind, key, encoded, sha))
-        self.conn.execute("INSERT INTO audit VALUES (?,?,?,?,?,?,?)", (*event.values(), digest(event)))
+        self.conn.execute(
+            "INSERT INTO audit VALUES (?,?,?,?,?,?,?)", (*event.values(), digest(event))
+        )
         return True
 
     def verify(self) -> dict[str, Any]:
@@ -163,14 +183,21 @@ class EvidenceStore:
                 obj = dict(row)
                 claimed = obj.pop("event_sha256")
                 count += 1
-                if obj["seq"] != count or obj["previous_sha256"] != previous or digest(obj) != claimed:
+                if (
+                    obj["seq"] != count
+                    or obj["previous_sha256"] != previous
+                    or digest(obj) != claimed
+                ):
                     raise EvidenceError("audit_chain")
                 seen[(obj["kind"], obj["object_key"])] = obj["payload_sha256"]
                 previous = claimed
             objects = 0
             for row in self.conn.execute("SELECT * FROM objects"):
                 sha = digest(read_json(row["payload"].encode()))
-                if sha != row["payload_sha256"] or seen.get((row["kind"], row["object_key"])) != sha:
+                if (
+                    sha != row["payload_sha256"]
+                    or seen.get((row["kind"], row["object_key"])) != sha
+                ):
                     raise EvidenceError("object_integrity")
                 objects += 1
             if objects != count:

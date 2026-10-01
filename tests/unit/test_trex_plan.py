@@ -131,7 +131,5 @@ class TestLoadPlan:
 
     def test_filename_stem_is_default_id(self, tmp_path: Path) -> None:
         path = tmp_path / "anon.toml"
-        path.write_text(
-            VALID_TOML.replace('id = "putspread-20260918"\n', "")
-        )
+        path.write_text(VALID_TOML.replace('id = "putspread-20260918"\n', ""))
         assert load_plan(path).id == "anon"

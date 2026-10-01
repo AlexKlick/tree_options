@@ -33,11 +33,13 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 ET = ZoneInfo("America/New_York")
-RULE = ("purged walk-forward (Lopez de Prado 2018, AFML ch. 7): a train decision counts in "
-        "finalist selection only if its exit is on/before the close of the cutoff session "
-        "(ET); purged decisions score 0 in selection and are counted per arm; the random "
-        "null's (row, horizon) options get the identical purge; the test split counts only "
-        "decisions entered >= embargo_sessions sessions after the cutoff session")
+RULE = (
+    "purged walk-forward (Lopez de Prado 2018, AFML ch. 7): a train decision counts in "
+    "finalist selection only if its exit is on/before the close of the cutoff session "
+    "(ET); purged decisions score 0 in selection and are counted per arm; the random "
+    "null's (row, horizon) options get the identical purge; the test split counts only "
+    "decisions entered >= embargo_sessions sessions after the cutoff session"
+)
 
 #: (snapshot, row id, horizon) -> the outcome's exit instant (ISO) or None
 ExitFn = Callable[[str, str, str | None], str | None]
@@ -56,8 +58,9 @@ def exit_date(exit_at: Any) -> date | None:
     return None if instant.tzinfo is None else instant.astimezone(ET).date()
 
 
-def crosses(exit_at: Any, horizon: str | None, session: str, cutoff: str,
-            sessions: Sequence[str]) -> tuple[bool, bool]:
+def crosses(
+    exit_at: Any, horizon: str | None, session: str, cutoff: str, sessions: Sequence[str]
+) -> tuple[bool, bool]:
     """(the exit falls after the cutoff session, the exit was estimated)."""
     when = exit_date(exit_at)
     if when is not None:
@@ -74,9 +77,15 @@ def crosses(exit_at: Any, horizon: str | None, session: str, cutoff: str,
     return (at >= len(sessions) or sessions[at] > cutoff), True
 
 
-def purge_decisions(boards: Sequence[Any], decisions: Sequence[tuple[str | None, str | None]],
-                    nets: Sequence[float], value: ValueFn, exit_of: ExitFn, cutoff: str,
-                    sessions: Sequence[str]) -> tuple[list[float], dict[str, int]]:
+def purge_decisions(
+    boards: Sequence[Any],
+    decisions: Sequence[tuple[str | None, str | None]],
+    nets: Sequence[float],
+    value: ValueFn,
+    exit_of: ExitFn,
+    cutoff: str,
+    sessions: Sequence[str],
+) -> tuple[list[float], dict[str, int]]:
     """Selection values (a purged train decision -> 0) and the per-arm counts."""
     values = list(nets)
     counts = {"train_entered": 0, "purged": 0, "estimated_exits": 0}
@@ -86,8 +95,9 @@ def purge_decisions(boards: Sequence[Any], decisions: Sequence[tuple[str | None,
         counts["train_entered"] += 1
         if value(board.snapshot, choice, horizon) is None:
             continue  # no fill: scores 0, nothing priced after the cutoff
-        cross, estimated = crosses(exit_of(board.snapshot, choice, horizon), horizon,
-                                   board.session, cutoff, sessions)
+        cross, estimated = crosses(
+            exit_of(board.snapshot, choice, horizon), horizon, board.session, cutoff, sessions
+        )
         counts["estimated_exits"] += estimated
         if cross:
             values[i] = 0.0
@@ -95,10 +105,16 @@ def purge_decisions(boards: Sequence[Any], decisions: Sequence[tuple[str | None,
     return values, counts
 
 
-def purged_null(boards: Sequence[Any], sessions: Sequence[str],
-                horizons: Sequence[str | None], value: ValueFn, exit_of: ExitFn,
-                cutoff: str, p_enter: float,
-                window: Sequence[str]) -> tuple[np.ndarray, dict[str, int]]:
+def purged_null(
+    boards: Sequence[Any],
+    sessions: Sequence[str],
+    horizons: Sequence[str | None],
+    value: ValueFn,
+    exit_of: ExitFn,
+    cutoff: str,
+    p_enter: float,
+    window: Sequence[str],
+) -> tuple[np.ndarray, dict[str, int]]:
     """The random null's per-session expectation for selection: a train
     board's (row, horizon) option whose exit crosses the cutoff scores 0."""
     index = {s: i for i, s in enumerate(sessions)}
@@ -112,8 +128,13 @@ def purged_null(boards: Sequence[Any], sessions: Sequence[str],
                 net = 0.0 if got is None else got[1]
                 if got is not None and board.session <= cutoff:
                     counts["train_options"] += 1
-                    if crosses(exit_of(board.snapshot, rid, horizon), horizon, board.session,
-                               cutoff, window)[0]:
+                    if crosses(
+                        exit_of(board.snapshot, rid, horizon),
+                        horizon,
+                        board.session,
+                        cutoff,
+                        window,
+                    )[0]:
                         net = 0.0
                         counts["purged_options"] += 1
                 vals.append(net)
@@ -122,12 +143,17 @@ def purged_null(boards: Sequence[Any], sessions: Sequence[str],
     return out, counts
 
 
-def own_coverage(boards: Sequence[Any], receipts: Mapping[str, Mapping[str, Any]],
-                 value: ValueFn, exit_of: ExitFn, cutoff: str,
-                 window: Sequence[str]) -> dict[str, int]:
+def own_coverage(
+    boards: Sequence[Any],
+    receipts: Mapping[str, Mapping[str, Any]],
+    value: ValueFn,
+    exit_of: ExitFn,
+    cutoff: str,
+    window: Sequence[str],
+) -> dict[str, int]:
     """Purge counts over an arm's own ok receipts (meaningful on partial runs)."""
     mine = [b for b in boards if receipts.get(b.snapshot, {}).get("ok")]
-    decisions = [(receipts[b.snapshot].get("choice"), receipts[b.snapshot].get("horizon"))
-                 for b in mine]
-    return purge_decisions(mine, decisions, [0.0] * len(mine), value, exit_of, cutoff,
-                           window)[1]
+    decisions = [
+        (receipts[b.snapshot].get("choice"), receipts[b.snapshot].get("horizon")) for b in mine
+    ]
+    return purge_decisions(mine, decisions, [0.0] * len(mine), value, exit_of, cutoff, window)[1]

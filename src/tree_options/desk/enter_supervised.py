@@ -63,20 +63,33 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def write_previews(*, now: datetime, cal: Calendar, session: date | None = None,
-                   queue_dir: Path | None = None, run_dir: Path | None = None,
-                   database: Path | None = None, account_id: str = DEFAULT_ACCOUNT,
-                   dry_run: bool = False) -> dict[str, Any]:
+def write_previews(
+    *,
+    now: datetime,
+    cal: Calendar,
+    session: date | None = None,
+    queue_dir: Path | None = None,
+    run_dir: Path | None = None,
+    database: Path | None = None,
+    account_id: str = DEFAULT_ACCOUNT,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """Write one preview per admissible deal. Never writes the live inbox."""
     timestamp(now.isoformat())
     latest = latest_completed_session(now, cal)
     if session is not None and session != latest:
         raise ValueError("session_not_current")
     local = now.astimezone(ET)
-    result: dict[str, Any] = {"schema": PREVIEW_SCHEMA, "mode": "shadow",
-                              "execution_enabled": False, "at": now.isoformat(),
-                              "session": latest.isoformat(),
-                              "written": [], "blocked": [], "decisions": []}
+    result: dict[str, Any] = {
+        "schema": PREVIEW_SCHEMA,
+        "mode": "shadow",
+        "execution_enabled": False,
+        "at": now.isoformat(),
+        "session": latest.isoformat(),
+        "written": [],
+        "blocked": [],
+        "decisions": [],
+    }
     if not cal.is_session(local.date()) or not time(9, 50) <= local.time() < time(11, 30):
         return {**result, "status": "outside_entry_window"}
     path = (queue_dir or paths.queue_dir()) / f"{latest.isoformat()}.json"
@@ -85,16 +98,16 @@ def write_previews(*, now: datetime, cal: Calendar, session: date | None = None,
     if path.is_symlink():
         raise ValueError("queue_symlink")
     with path.open("rb") as stream:
-        queue = parse_queue(read_json(stream.read(MAX_JSON_BYTES + 1)), cal,
-                            expected_session=latest)
+        queue = parse_queue(
+            read_json(stream.read(MAX_JSON_BYTES + 1)), cal, expected_session=latest
+        )
     if queue.entry_session != local.date() or not queue.cutoff <= now < queue.valid_until:
         raise ValueError("queue_not_current")
     deals = [parse_deal(d, queue, cal) for d in queue.admissible]
     from tree_options.desk.enter import execution_directory
 
     desk_dir = run_dir or execution_directory()
-    halted = [flag for flag in ("HALT", "AUTO_OFF")
-              if os.path.lexists(desk_dir / flag)]
+    halted = [flag for flag in ("HALT", "AUTO_OFF") if os.path.lexists(desk_dir / flag)]
     if halted:
         return {**result, "status": "halted", "halted_by": halted}
     if selection.load_config().status == "PROPOSED":
@@ -109,21 +122,27 @@ def write_previews(*, now: datetime, cal: Calendar, session: date | None = None,
         with store.atomic():
             store.verify()
             for deal in deals:
-                preview = _preview_doc(deal, queue.entry_session, queue.valid_until,
-                                       account_id)
+                preview = _preview_doc(deal, queue.entry_session, queue.valid_until, account_id)
                 blocked = deal.spec.kind in _BLOCKED_KINDS
-                outcome = {"deal_id": deal.deal_id, "row": deal.raw.get("row"),
-                           "kind": deal.spec.kind, "blocked": blocked,
-                           "queue_sha256": queue.sha256, "execution_enabled": False,
-                           "advice": advisory}
+                outcome = {
+                    "deal_id": deal.deal_id,
+                    "row": deal.raw.get("row"),
+                    "kind": deal.spec.kind,
+                    "blocked": blocked,
+                    "queue_sha256": queue.sha256,
+                    "execution_enabled": False,
+                    "advice": advisory,
+                }
                 if not dry_run:
-                    out = previews / (f"{deal.deal_id}.BLOCKED.json" if blocked
-                                      else f"{deal.deal_id}.json")
+                    out = previews / (
+                        f"{deal.deal_id}.BLOCKED.json" if blocked else f"{deal.deal_id}.json"
+                    )
                     _atomic_write(out, preview)
                 result["blocked" if blocked else "written"].append(deal.deal_id)
                 result["decisions"].append(outcome)
-                store.put("supervised_preview", digest(preview),
-                          {**preview, "advice": advisory}, now)
+                store.put(
+                    "supervised_preview", digest(preview), {**preview, "advice": advisory}, now
+                )
         result["audit"] = store.verify()
     result["status"] = "ok" if result["written"] or result["blocked"] else "empty_queue"
     return result
@@ -135,17 +154,22 @@ def _default_database() -> Path:
     return database_path()
 
 
-def _preview_doc(deal: Any, entry_session: date, valid_until: datetime,
-                 account_id: str) -> dict[str, Any]:
+def _preview_doc(
+    deal: Any, entry_session: date, valid_until: datetime, account_id: str
+) -> dict[str, Any]:
     """The complete request doc the desk would consume (or a BLOCKED reason)."""
     from tree_options.trex.supervised_ibkr import supervised_order_ref
 
     spec = deal.spec
     if spec.kind in _BLOCKED_KINDS:
-        return {"schema": "supervised-preview-blocked/1", "deal_id": deal.deal_id,
-                "row": deal.raw.get("row"), "kind": spec.kind,
-                "reason": "credit_open_not_supported_v1",
-                "execution_enabled": False}
+        return {
+            "schema": "supervised-preview-blocked/1",
+            "deal_id": deal.deal_id,
+            "row": deal.raw.get("row"),
+            "kind": spec.kind,
+            "reason": "credit_open_not_supported_v1",
+            "execution_enabled": False,
+        }
     limit = deal.fill
     return {
         "schema": "trex-desk-entry-request/1",

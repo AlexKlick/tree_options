@@ -21,8 +21,12 @@ from tree_options.desk.longrun import Board, OutcomeCache, PolicySpec, Protocol
 #   x@intraday 0 same day; y@hold:5 0 next day
 DAYS = ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04"]
 ROWS = [{"id": "x", "structure": "put_credit"}, {"id": "y", "structure": "call_credit"}]
-NEXT = {"2026-06-01": "2026-06-02", "2026-06-02": "2026-06-03", "2026-06-03": "2026-06-04",
-        "2026-06-04": "2026-06-05"}
+NEXT = {
+    "2026-06-01": "2026-06-02",
+    "2026-06-02": "2026-06-03",
+    "2026-06-03": "2026-06-04",
+    "2026-06-04": "2026-06-05",
+}
 
 
 def boards() -> list[Board]:
@@ -37,18 +41,24 @@ def outcome(snapshot: str, cid: str, horizon: str | None) -> dict[str, Any]:
 
 
 def score(protocol: Protocol) -> dict[str, Any]:
-    specs = [PolicySpec("a", "rule", rule=longrun.rule_fixed_structure("put_credit", "hold:5")),
-             PolicySpec("b", "rule", rule=longrun.rule_fixed_structure("call_credit",
-                                                                         "intraday"))]
+    specs = [
+        PolicySpec("a", "rule", rule=longrun.rule_fixed_structure("put_credit", "hold:5")),
+        PolicySpec("b", "rule", rule=longrun.rule_fixed_structure("call_credit", "intraday")),
+    ]
     arms = longrun.arms_of(specs)
     bs = boards()
-    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in bs}
-                for arm in arms}
+    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in bs} for arm in arms}
     return longrun.score_run(bs, arms, receipts, OutcomeCache(outcome), protocol)
 
 
-PROTO = dict(draws=1000, random_seeds=200, cutoff="2026-06-01", metric="total",
-             max_finalists=1, random_horizons=("intraday", "hold:5"))
+PROTO = dict(
+    draws=1000,
+    random_seeds=200,
+    cutoff="2026-06-01",
+    metric="total",
+    max_finalists=1,
+    random_horizons=("intraday", "hold:5"),
+)
 
 
 def test_a_train_decision_exiting_after_the_cutoff_is_purged_from_selection() -> None:
@@ -93,7 +103,9 @@ def test_missing_exits_are_estimated_from_the_horizon() -> None:
     assert purge.crosses(None, "expiry", days[0], days[3], days) == (True, True)
     # an exit reported in UTC is read as its ET session date (00:30Z = 20:30 ET the day before)
     assert purge.crosses("2026-06-02T00:30:00+00:00", "eod", days[0], days[0], days) == (
-        False, False)
+        False,
+        False,
+    )
 
 
 def test_protocol_stays_backward_compatible() -> None:
@@ -108,9 +120,20 @@ def test_protocol_stays_backward_compatible() -> None:
 
 def test_the_v2_table_plugin_carries_the_exit(tmp_path: Path) -> None:
     table = tmp_path / "t.jsonl"
-    table.write_text(json.dumps({"snapshot": "s:2026-06-01T10:00", "candidate_id": "x",
-                                 "exit_mode": "hold:5", "status": "closed", "gross": "3",
-                                 "net": "1", "exit_at": "2026-06-08T19:30:00+00:00"}) + "\n")
+    table.write_text(
+        json.dumps(
+            {
+                "snapshot": "s:2026-06-01T10:00",
+                "candidate_id": "x",
+                "exit_mode": "hold:5",
+                "status": "closed",
+                "gross": "3",
+                "net": "1",
+                "exit_at": "2026-06-08T19:30:00+00:00",
+            }
+        )
+        + "\n"
+    )
     ctx = longrun.PluginContext(config_dir=tmp_path)
     cache = OutcomeCache(longrun.plugin("outcome", "v2")({"table": str(table)}, ctx))
     assert cache.get("s:2026-06-01T10:00", "x", "hold:5") == (3.0, 1.0)
@@ -131,14 +154,15 @@ def test_a_pair_is_purged_when_its_later_leg_crosses_the_cutoff() -> None:
     specs = [PolicySpec("pair", "rule", rule=lambda b: ("x+y", "intraday"))]
     arms = longrun.arms_of(specs)
     bs = boards()
-    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in bs}
-                for arm in arms}
-    doc = longrun.score_run(bs, arms, receipts, OutcomeCache(split_exit),
-                            Protocol(**PROTO))
+    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in bs} for arm in arms}
+    doc = longrun.score_run(bs, arms, receipts, OutcomeCache(split_exit), Protocol(**PROTO))
     # the pair entered the cutoff-day train board: value 110 (100 + 10) but its
     # exit (y's next day) crosses the cutoff -> purged from selection
     assert doc["walk_forward"]["purge"]["by_arm"]["pair"] == {
-        "train_entered": 1, "purged": 1, "estimated_exits": 0}
+        "train_entered": 1,
+        "purged": 1,
+        "estimated_exits": 0,
+    }
     assert doc["walk_forward"]["ranking"][0]["tune_total"] == 0.0
     # the whole-window standings still carry the un-purged package P&L
     row = next(r for r in doc["standings"] if r["arm"] == "pair")
@@ -153,9 +177,7 @@ def test_a_pair_whose_legs_both_exit_by_the_cutoff_is_not_purged() -> None:
     specs = [PolicySpec("pair", "rule", rule=lambda b: ("x+y", "intraday"))]
     arms = longrun.arms_of(specs)
     bs = boards()
-    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in bs}
-                for arm in arms}
-    doc = longrun.score_run(bs, arms, receipts, OutcomeCache(same_day_exit),
-                            Protocol(**PROTO))
+    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in bs} for arm in arms}
+    doc = longrun.score_run(bs, arms, receipts, OutcomeCache(same_day_exit), Protocol(**PROTO))
     assert doc["walk_forward"]["purge"]["by_arm"]["pair"]["purged"] == 0
     assert doc["walk_forward"]["ranking"][0]["tune_total"] == 110.0

@@ -57,28 +57,49 @@ CON = {
     ("STK", "SPY", "", 0.0, ""): 1,
 }
 T0 = datetime(2026, 10, 1, 10, 0, tzinfo=ET)
-PROFILE = {"profile_id": "canary-5k", "revision": 1, "intended_capital": "5000",
-           "risk_style": "defined-risk", "goals": ["operational-canary"],
-           "allowed_strategy_versions": [STRATEGY], "max_loss_per_trade": "300",
-           "max_open_loss": "1500", "max_daily_loss": "600", "horizon_days": 30}
+PROFILE = {
+    "profile_id": "canary-5k",
+    "revision": 1,
+    "intended_capital": "5000",
+    "risk_style": "defined-risk",
+    "goals": ["operational-canary"],
+    "allowed_strategy_versions": [STRATEGY],
+    "max_loss_per_trade": "300",
+    "max_open_loss": "1500",
+    "max_daily_loss": "600",
+    "horizon_days": 30,
+}
 
 
 def _vertical(kind: str = "debit_vertical") -> LegStructure:
     first, second = ("BUY", "SELL") if kind == "debit_vertical" else ("SELL", "BUY")
     return LegStructure(
-        id="dv1", underlying="SPY", kind=kind,
-        legs=[{"right": "P", "action": first, "strike": "100", "expiry": date(2026, 10, 16)},
-              {"right": "P", "action": second, "strike": "95", "expiry": date(2026, 10, 16)}],
-        quantity=1, entry_date=date(2026, 10, 1), exit_deadline=date(2026, 10, 9),
-        limit="1.00", exits={"touch": False, "breach": False})
+        id="dv1",
+        underlying="SPY",
+        kind=kind,
+        legs=[
+            {"right": "P", "action": first, "strike": "100", "expiry": date(2026, 10, 16)},
+            {"right": "P", "action": second, "strike": "95", "expiry": date(2026, 10, 16)},
+        ],
+        quantity=1,
+        entry_date=date(2026, 10, 1),
+        exit_deadline=date(2026, 10, 9),
+        limit="1.00",
+        exits={"touch": False, "breach": False},
+    )
 
 
 def _effect(kind: str = "debit_vertical", intent_id: str = "sup-001") -> SupervisedEffect:
     s = _vertical(kind)
-    return SupervisedEffect(intent_id=intent_id, account_id=ACCOUNT, structure=s,
-                            side=s.open_side, quantity=1,
-                            limit=Decimal("0.90") if kind == "debit_vertical" else Decimal("1.10"),
-                            order_ref=supervised_order_ref(intent_id))
+    return SupervisedEffect(
+        intent_id=intent_id,
+        account_id=ACCOUNT,
+        structure=s,
+        side=s.open_side,
+        quantity=1,
+        limit=Decimal("0.90") if kind == "debit_vertical" else Decimal("1.10"),
+        order_ref=supervised_order_ref(intent_id),
+    )
 
 
 class Clock:
@@ -96,9 +117,14 @@ class ClockedIbkr(IbkrTrex):
     clock: Clock
 
     def account_snapshot(self) -> AccountSnapshot | None:
-        return AccountSnapshot(account_id=ACCOUNT, net_liquidation=Decimal("1000000"),
-                               cash=Decimal("1000000"), buying_power=Decimal("4000000"),
-                               currency="USD", ts=self.clock())
+        return AccountSnapshot(
+            account_id=ACCOUNT,
+            net_liquidation=Decimal("1000000"),
+            cash=Decimal("1000000"),
+            buying_power=Decimal("4000000"),
+            currency="USD",
+            ts=self.clock(),
+        )
 
 
 class Rig:
@@ -116,10 +142,15 @@ class Rig:
         self.runtime.acquire()
         self.notified: list[tuple[str, str, str]] = []
         self.runtime.notify = lambda t, m, p="default": self.notified.append((t, m, p))
-        self.desk = SupervisedDesk(self.ib, self.runtime,
-                                   IbkrSupervisedBroker(self.ib, clock=self.clock),
-                                   supervised=self.sup, owner_epoch=EPOCH,
-                                   legacy=legacy or (), clock=self.clock)
+        self.desk = SupervisedDesk(
+            self.ib,
+            self.runtime,
+            IbkrSupervisedBroker(self.ib, clock=self.clock),
+            supervised=self.sup,
+            owner_epoch=EPOCH,
+            legacy=legacy or (),
+            clock=self.clock,
+        )
 
     def tick_quotes(self) -> None:
         for con in (100, 95):
@@ -132,19 +163,35 @@ class Rig:
         return load_profile(path)[1]
 
     def grant(self, digest: str, epoch: str = EPOCH) -> None:
-        grant_mandate(self.sup, now=self.clock.now, account_id=ACCOUNT, owner_epoch=epoch,
-                      strategy_version=STRATEGY, profile_digest=digest, max_orders=1,
-                      ttl_seconds=3600, granted_by="operator-terminal")
+        grant_mandate(
+            self.sup,
+            now=self.clock.now,
+            account_id=ACCOUNT,
+            owner_epoch=epoch,
+            strategy_version=STRATEGY,
+            profile_digest=digest,
+            max_orders=1,
+            ttl_seconds=3600,
+            granted_by="operator-terminal",
+        )
 
-    def request(self, effect: SupervisedEffect | None = None, *, deadline_s: int = 300,
-                name: str = "sup-001") -> Path:
+    def request(
+        self,
+        effect: SupervisedEffect | None = None,
+        *,
+        deadline_s: int = 300,
+        name: str = "sup-001",
+    ) -> Path:
         effect = effect or _effect()
         inbox = self.desk.requests_dir()
         inbox.mkdir(parents=True, exist_ok=True)
-        doc = {"schema": "trex-desk-entry-request/1", "strategy_version": STRATEGY,
-               "send_deadline": shift_instant(self.clock.now, deadline_s).isoformat(),
-               "requested_by": "operator-terminal",
-               "effect": effect.model_dump(mode="json", by_alias=True)}
+        doc = {
+            "schema": "trex-desk-entry-request/1",
+            "strategy_version": STRATEGY,
+            "send_deadline": shift_instant(self.clock.now, deadline_s).isoformat(),
+            "requested_by": "operator-terminal",
+            "effect": effect.model_dump(mode="json", by_alias=True),
+        }
         path = inbox / f"{name}.json"
         path.write_text(json.dumps(doc))
         return path
@@ -193,11 +240,16 @@ def test_a_request_is_processed_exactly_once(rig):
     assert len(rig.gw.trades) == 1
 
 
-@pytest.mark.parametrize("setup, blocker", [
-    (lambda r: (r.tick_quotes(), r.runtime.tick()), "profile_absent"),
-    (lambda r: (r.grant("f" * 64), r.write_profile(), r.tick_quotes(), r.runtime.tick()),
-     "mandate_profile_mismatch"),
-])
+@pytest.mark.parametrize(
+    "setup, blocker",
+    [
+        (lambda r: (r.tick_quotes(), r.runtime.tick()), "profile_absent"),
+        (
+            lambda r: (r.grant("f" * 64), r.write_profile(), r.tick_quotes(), r.runtime.tick()),
+            "mandate_profile_mismatch",
+        ),
+    ],
+)
 def test_profile_binding_blocks(rig, setup, blocker):
     setup(rig)
     if blocker == "profile_absent":
@@ -250,13 +302,21 @@ def test_wrong_account_refuses_before_writing_a_spec(rig, tmp_path):
     pre_specs = list((rig.paths.root / "specs").glob("dv1*.json"))
     pre_consumed = list((rig.sup.root / "permits").glob("*.consumed.json"))
     s = rig.desk.runtime.specs()["dv1"].structure
-    wrong = SupervisedEffect(intent_id="canary-z", account_id="DU9999999",
-                            structure=s, side="BUY", quantity=1,
-                            limit=Decimal("0.90"),
-                            order_ref=supervised_order_ref("canary-z"))
-    req = EntryRequest(strategy_version=STRATEGY,
-                      send_deadline=shift_instant(rig.clock.now, 120),
-                      requested_by="test", effect=wrong)
+    wrong = SupervisedEffect(
+        intent_id="canary-z",
+        account_id="DU9999999",
+        structure=s,
+        side="BUY",
+        quantity=1,
+        limit=Decimal("0.90"),
+        order_ref=supervised_order_ref("canary-z"),
+    )
+    req = EntryRequest(
+        strategy_version=STRATEGY,
+        send_deadline=shift_instant(rig.clock.now, 120),
+        requested_by="test",
+        effect=wrong,
+    )
     out = previews_dir / "canary-z.json"
     # an old claim artifact from a prior run can trip the inbox's claim
     # mechanism — only the new request file matters for THIS process call.
@@ -301,8 +361,13 @@ def test_a_broker_transport_error_refuses_subsequent_send(rig, tmp_path):
     consumed = rig.sup.permit_consumed(permit_id)
     assert consumed.exists(), "the permit was consumed atomically"
     with pytest.raises(SupervisedRefused) as caught:
-        supervised_send(rig.sup, now=rig.clock.now, permit_id=permit_id,
-                        effect_payload=b"x", broker=rig.desk.broker)
+        supervised_send(
+            rig.sup,
+            now=rig.clock.now,
+            permit_id=permit_id,
+            effect_payload=b"x",
+            broker=rig.desk.broker,
+        )
     assert caught.value.reason == "permit_consumed"
 
 
@@ -314,10 +379,13 @@ def test_same_underlying_legacy_position_blocks_screening(rig):
     assert "legacy_book_not_flat" in result["blockers"]
 
 
-@pytest.mark.parametrize("effect, deadline_s, blocker", [
-    (_effect("credit_vertical"), 300, "credit_open_not_supported_v1"),
-    (_effect(), -1, "request_expired"),
-])
+@pytest.mark.parametrize(
+    "effect, deadline_s, blocker",
+    [
+        (_effect("credit_vertical"), 300, "credit_open_not_supported_v1"),
+        (_effect(), -1, "request_expired"),
+    ],
+)
 def test_unsupported_or_expired_requests_block(rig, effect, deadline_s, blocker):
     rig.ready()
     rig.request(effect, deadline_s=deadline_s)
@@ -337,11 +405,13 @@ def test_open_loss_includes_the_legacy_book(tmp_path):
     """Ruling 3b: other books' risk enters through the open-loss cap."""
     state = tmp_path / "trex-state"
     book = BookState(["nvda-oct", "qqq-nov", "nvda-nov"])
-    book.structures["nvda-oct"] = StructureState(Status.OPEN, filled_qty=5,
-                                                 entry_fill=Decimal("0.21"))
+    book.structures["nvda-oct"] = StructureState(
+        Status.OPEN, filled_qty=5, entry_fill=Decimal("0.21")
+    )
     book.structures["qqq-nov"] = StructureState(Status.CLOSED)
-    book.structures["nvda-nov"] = StructureState(Status.OPEN, filled_qty=3,
-                                                 entry_fill=Decimal("1.24"))
+    book.structures["nvda-nov"] = StructureState(
+        Status.OPEN, filled_qty=3, entry_fill=Decimal("1.24")
+    )
     book.save(state / "putspread-20260922" / "book.json")
     rig = Rig(tmp_path, legacy=[LegacyBook(REPO / "plans/2026-09-22.toml", state)])
     try:
@@ -365,18 +435,31 @@ def test_an_unreadable_legacy_book_makes_the_loss_unknown(tmp_path):
 # -------------------------------------------------------------- loss math
 
 
-RISK = RiskView(per_package=Decimal("1.00"), quantity=2, is_credit=False,
-                entry_date=date(2026, 10, 1))
+RISK = RiskView(
+    per_package=Decimal("1.00"), quantity=2, is_credit=False, entry_date=date(2026, 10, 1)
+)
 
 
-@pytest.mark.parametrize("state, today, expected", [
-    (StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80")), T0.date(), "160.00"),
-    (StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80"), entry_unpriced_qty=1),
-     T0.date(), "200.00"),
-    (StructureState(Status.ENTER_WORKING), T0.date(), "200.00"),
-    (StructureState(Status.PLANNED), date(2026, 10, 2), "0"),
-    (StructureState(Status.CLOSED, filled_qty=2), T0.date(), "0"),
-])
+@pytest.mark.parametrize(
+    "state, today, expected",
+    [
+        (
+            StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80")),
+            T0.date(),
+            "160.00",
+        ),
+        (
+            StructureState(
+                Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80"), entry_unpriced_qty=1
+            ),
+            T0.date(),
+            "200.00",
+        ),
+        (StructureState(Status.ENTER_WORKING), T0.date(), "200.00"),
+        (StructureState(Status.PLANNED), date(2026, 10, 2), "0"),
+        (StructureState(Status.CLOSED, filled_qty=2), T0.date(), "0"),
+    ],
+)
 def test_open_loss_reservation(state, today, expected):
     book = BookState(["s"])
     book.structures["s"] = state
@@ -385,23 +468,44 @@ def test_open_loss_reservation(state, today, expected):
 
 def test_realized_day_loss_counts_todays_losing_exits_only():
     book = BookState(["lost", "won", "yesterday"])
-    book.structures["lost"] = StructureState(Status.CLOSED, filled_qty=2, entry_fill=Decimal("0.90"),
-                                             exit_filled_qty=2, exit_fill=Decimal("0.40"),
-                                             updated_at=T0)
-    book.structures["won"] = StructureState(Status.CLOSED, filled_qty=1, entry_fill=Decimal("0.90"),
-                                            exit_filled_qty=1, exit_fill=Decimal("1.50"),
-                                            updated_at=T0)
+    book.structures["lost"] = StructureState(
+        Status.CLOSED,
+        filled_qty=2,
+        entry_fill=Decimal("0.90"),
+        exit_filled_qty=2,
+        exit_fill=Decimal("0.40"),
+        updated_at=T0,
+    )
+    book.structures["won"] = StructureState(
+        Status.CLOSED,
+        filled_qty=1,
+        entry_fill=Decimal("0.90"),
+        exit_filled_qty=1,
+        exit_fill=Decimal("1.50"),
+        updated_at=T0,
+    )
     book.structures["yesterday"] = StructureState(
-        Status.CLOSED, filled_qty=1, entry_fill=Decimal("0.90"), exit_filled_qty=1,
-        exit_fill=Decimal("0.10"), updated_at=shift_instant(T0, -86400))
+        Status.CLOSED,
+        filled_qty=1,
+        entry_fill=Decimal("0.90"),
+        exit_filled_qty=1,
+        exit_fill=Decimal("0.10"),
+        updated_at=shift_instant(T0, -86400),
+    )
     risks = {sid: RISK for sid in book.structures}
     assert realized_day_loss(book, risks, T0.date()) == Decimal("100.00")  # (0.90-0.40)x100x2
 
 
 def test_an_unpriced_exit_today_makes_the_day_loss_unknown():
     book = BookState(["s"])
-    book.structures["s"] = StructureState(Status.CLOSED, filled_qty=1, entry_fill=Decimal("0.90"),
-                                          exit_filled_qty=1, exit_unpriced_qty=1, updated_at=T0)
+    book.structures["s"] = StructureState(
+        Status.CLOSED,
+        filled_qty=1,
+        entry_fill=Decimal("0.90"),
+        exit_filled_qty=1,
+        exit_unpriced_qty=1,
+        updated_at=T0,
+    )
     assert realized_day_loss(book, {"s": RISK}, T0.date()) is None
 
 
@@ -415,20 +519,36 @@ def test_an_unpriced_exit_today_makes_the_day_loss_unknown():
 # asserted, so a future edit to either side that changes the totals fails.
 
 
-def _struct(sid: str, *, kind: str = "debit_vertical", quantity: int = 2,
-            limit: Decimal = Decimal("1.00"), entry: date = date(2026, 10, 1)) -> LegStructure:
-    hi, lo = ((Decimal("744"), Decimal("742")) if kind == "debit_vertical"
-              else (Decimal("155"), Decimal("150")))
+def _struct(
+    sid: str,
+    *,
+    kind: str = "debit_vertical",
+    quantity: int = 2,
+    limit: Decimal = Decimal("1.00"),
+    entry: date = date(2026, 10, 1),
+) -> LegStructure:
+    hi, lo = (
+        (Decimal("744"), Decimal("742"))
+        if kind == "debit_vertical"
+        else (Decimal("155"), Decimal("150"))
+    )
     # a debit vertical BUYs the strike nearer the view (the higher put);
     # a credit vertical SELLs it
     buy, sell = (hi, lo) if kind == "debit_vertical" else (lo, hi)
     return LegStructure(
-        id=sid, underlying="SPY" if kind == "debit_vertical" else "NVDA", kind=kind,
-        legs=(Leg(right="P", action="BUY", strike=buy, expiry=date(2026, 11, 20)),
-              Leg(right="P", action="SELL", strike=sell, expiry=date(2026, 11, 20))),
-        quantity=quantity, entry_date=entry, exit_deadline=date(2026, 11, 1),
+        id=sid,
+        underlying="SPY" if kind == "debit_vertical" else "NVDA",
+        kind=kind,
+        legs=(
+            Leg(right="P", action="BUY", strike=buy, expiry=date(2026, 11, 20)),
+            Leg(right="P", action="SELL", strike=sell, expiry=date(2026, 11, 20)),
+        ),
+        quantity=quantity,
+        entry_date=entry,
+        exit_deadline=date(2026, 11, 1),
         limit=limit,
-        exits=ExitRules(touch=kind == "debit_vertical", breach=kind != "debit_vertical"))
+        exits=ExitRules(touch=kind == "debit_vertical", breach=kind != "debit_vertical"),
+    )
 
 
 PARITY_TODAY = date(2026, 9, 24)
@@ -438,49 +558,103 @@ PARITY_TODAY = date(2026, 9, 24)
 # test_planned_past_date_divergence_between_screen_and_desk_book below).
 PARITY_CASES = [
     # -- the common subset: exact agreement -------------------------------
-    ("debit-open-priced", _struct("d1"),
-     StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80")),
-     PARITY_TODAY, "160.00", "160.00", True),
-    ("debit-open-no-fill", _struct("d2"),
-     StructureState(Status.OPEN, filled_qty=2),
-     PARITY_TODAY, "200.00", "200.00", True),
-    ("debit-exit-working-partial", _struct("d3", quantity=3),
-     StructureState(Status.EXIT_WORKING, filled_qty=3, exit_filled_qty=1,
-                    entry_fill=Decimal("0.80")),
-     PARITY_TODAY, "160.00", "160.00", True),
-    ("debit-enter-working-full-quantity", _struct("d4", quantity=3),
-     StructureState(Status.ENTER_WORKING),
-     PARITY_TODAY, "300.00", "300.00", True),
-    ("debit-planned-before-entry", _struct("d5"),
-     StructureState(Status.PLANNED),
-     PARITY_TODAY, "200.00", "200.00", True),
-    ("debit-planned-past-entry", _struct("d6"),
-     StructureState(Status.PLANNED),
-     date(2026, 10, 2), "0", "0", True),
-    ("credit-planned-working", _struct("c1", kind="credit_vertical", quantity=2,
-                                       limit=Decimal("1.00")),
-     StructureState(Status.PLANNED),
-     PARITY_TODAY, "800.00", "800.00", True),  # (width 5 - floor 1) x 100 x 2
+    (
+        "debit-open-priced",
+        _struct("d1"),
+        StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80")),
+        PARITY_TODAY,
+        "160.00",
+        "160.00",
+        True,
+    ),
+    (
+        "debit-open-no-fill",
+        _struct("d2"),
+        StructureState(Status.OPEN, filled_qty=2),
+        PARITY_TODAY,
+        "200.00",
+        "200.00",
+        True,
+    ),
+    (
+        "debit-exit-working-partial",
+        _struct("d3", quantity=3),
+        StructureState(
+            Status.EXIT_WORKING, filled_qty=3, exit_filled_qty=1, entry_fill=Decimal("0.80")
+        ),
+        PARITY_TODAY,
+        "160.00",
+        "160.00",
+        True,
+    ),
+    (
+        "debit-enter-working-full-quantity",
+        _struct("d4", quantity=3),
+        StructureState(Status.ENTER_WORKING),
+        PARITY_TODAY,
+        "300.00",
+        "300.00",
+        True,
+    ),
+    (
+        "debit-planned-before-entry",
+        _struct("d5"),
+        StructureState(Status.PLANNED),
+        PARITY_TODAY,
+        "200.00",
+        "200.00",
+        True,
+    ),
+    (
+        "debit-planned-past-entry",
+        _struct("d6"),
+        StructureState(Status.PLANNED),
+        date(2026, 10, 2),
+        "0",
+        "0",
+        True,
+    ),
+    (
+        "credit-planned-working",
+        _struct("c1", kind="credit_vertical", quantity=2, limit=Decimal("1.00")),
+        StructureState(Status.PLANNED),
+        PARITY_TODAY,
+        "800.00",
+        "800.00",
+        True,
+    ),  # (width 5 - floor 1) x 100 x 2
     # -- the intentional differences: A is the more conservative screen ----
-    ("credit-open-priced", _struct("c2", kind="credit_vertical", quantity=1,
-                                   limit=Decimal("1.00")),
-     StructureState(Status.OPEN, filled_qty=1, entry_fill=Decimal("2.50")),
-     PARITY_TODAY, "400.00", "250.00", False),  # A: floor-based max loss; B: width - fill
-    ("debit-open-unpriced-partial", _struct("d7"),
-     StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80"),
-                    entry_unpriced_qty=1),
-     PARITY_TODAY, "200.00", "160.00", False),  # A: no refine on an unpriced average
+    (
+        "credit-open-priced",
+        _struct("c2", kind="credit_vertical", quantity=1, limit=Decimal("1.00")),
+        StructureState(Status.OPEN, filled_qty=1, entry_fill=Decimal("2.50")),
+        PARITY_TODAY,
+        "400.00",
+        "250.00",
+        False,
+    ),  # A: floor-based max loss; B: width - fill
+    (
+        "debit-open-unpriced-partial",
+        _struct("d7"),
+        StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80"), entry_unpriced_qty=1),
+        PARITY_TODAY,
+        "200.00",
+        "160.00",
+        False,
+    ),  # A: no refine on an unpriced average
 ]
 
 
 @pytest.mark.parametrize("sid,struct,state,today,a,b,common", PARITY_CASES)
 def test_open_loss_reservation_parities_with_the_desk_book_view(
-        sid, struct, state, today, a, b, common):
+    sid, struct, state, today, a, b, common
+):
     book = BookState([sid])
     book.structures[sid] = state
     screen = open_loss_reservation(book, {sid: RiskView.of(struct)}, today)
-    view = desk_book._position(f"fixture:{sid}", "fixture", struct, state,
-                               as_of=today, planned_dormant_after_entry=True)
+    view = desk_book._position(
+        f"fixture:{sid}", "fixture", struct, state, as_of=today, planned_dormant_after_entry=True
+    )
     held = Decimal(0) if view is None else view.max_loss_usd
     assert screen == Decimal(a), f"{sid}: the screen moved"
     assert held == Decimal(b), f"{sid}: the book view moved"
@@ -502,8 +676,9 @@ def test_planned_past_date_divergence_between_screen_and_desk_book():
     book = BookState(["d8"])
     book.structures["d8"] = state
     screen = open_loss_reservation(book, {"d8": RiskView.of(struct)}, today)
-    view = desk_book._position("fixture:d8", "fixture", struct, state,
-                               as_of=today, planned_dormant_after_entry=False)
+    view = desk_book._position(
+        "fixture:d8", "fixture", struct, state, as_of=today, planned_dormant_after_entry=False
+    )
     assert screen == Decimal(0)
     assert view is not None and view.max_loss_usd == Decimal("200.00")
 
@@ -515,12 +690,19 @@ def test_an_impossible_credit_fill_fails_closed_in_the_book_view_only():
     struct = _struct("c3", kind="credit_vertical", quantity=1, limit=Decimal("1.00"))
     state = StructureState(Status.OPEN, filled_qty=1, entry_fill=Decimal("5.00"))
     with pytest.raises(desk_book._Inconsistent):
-        desk_book._position("fixture:c3", "fixture", struct, state,
-                            as_of=PARITY_TODAY, planned_dormant_after_entry=True)
+        desk_book._position(
+            "fixture:c3",
+            "fixture",
+            struct,
+            state,
+            as_of=PARITY_TODAY,
+            planned_dormant_after_entry=True,
+        )
     book = BookState(["c3"])
     book.structures["c3"] = state
-    assert open_loss_reservation(book, {"c3": RiskView.of(struct)},
-                                 PARITY_TODAY) == Decimal("400.00")
+    assert open_loss_reservation(book, {"c3": RiskView.of(struct)}, PARITY_TODAY) == Decimal(
+        "400.00"
+    )
 
 
 # ---------------------------------------------------------------- the loop
@@ -552,8 +734,7 @@ def test_outside_the_session_the_loop_only_beats(rig):
 def test_a_lost_gateway_exits_for_a_restart(rig):
     rig.gw.is_connected = False
     # bounded: a loop that ignored the lost connection must FAIL, not hang
-    assert run_loop(rig.desk, interval_s=0, stop=lambda: False,
-                    max_ticks=3) == EXIT_DISCONNECTED
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=3) == EXIT_DISCONNECTED
 
 
 def test_owner_file_names_the_epoch_to_grant(rig):

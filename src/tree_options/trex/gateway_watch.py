@@ -265,10 +265,7 @@ def classify(obs: Observation, api_fail_for: float = 0.0) -> tuple[str, float | 
         return "ok", None, obs.api_detail
     phase, since = obs.ibc.phase, obs.ibc.since
     age = obs.now - since if since is not None else None
-    young = (
-        obs.container_started is not None
-        and obs.now - obs.container_started < STARTUP_GRACE_S
-    )
+    young = obs.container_started is not None and obs.now - obs.container_started < STARTUP_GRACE_S
     if phase == "twofa":
         return "needs_2fa", since, "waiting for 2FA approval in IBKR Mobile"
     if phase == "logged_in":
@@ -287,24 +284,16 @@ def classify(obs: Observation, api_fail_for: float = 0.0) -> tuple[str, float | 
 
 def _message(status: str, since: float, now: float, restarts_left: int) -> tuple[str, str]:
     lasting = f"since {_et(since)} ({_span(now - since)})"
-    retry = (
-        f" Auto-retry: {restarts_left} left today."
-        if status in RESTARTABLE
-        else ""
-    )
+    retry = f" Auto-retry: {restarts_left} left today." if status in RESTARTABLE else ""
     if status == "needs_login":
         return "trex: IB Gateway needs login", (
             f"Logged out {lasting}. Open positions have no exit machine. "
             f"Open the trex cockpit banner to log in.{retry}"
         )
     if status == "needs_2fa":
-        return "trex: approve IB Gateway 2FA", (
-            f"Waiting for IBKR Mobile approval {lasting}."
-        )
+        return "trex: approve IB Gateway 2FA", (f"Waiting for IBKR Mobile approval {lasting}.")
     if status == "api_down":
-        return "trex: IB Gateway API down", (
-            f"Gateway API not answering {lasting}.{retry}"
-        )
+        return "trex: IB Gateway API down", (f"Gateway API not answering {lasting}.{retry}")
     return "trex: IB Gateway container down", (
         f"The gateway container is not running {lasting}. Start it with "
         f"docker compose (deploy/trex)."
@@ -414,8 +403,10 @@ def decide(
     vnc_restarts = [t for t in prior.get("vnc_restarts", []) if obs.now - t < DAY_S]
     actions: list[Action] = []
 
-    if obs.container_running and obs.vnc_running is False and (
-        not vnc_restarts or obs.now - vnc_restarts[-1] >= VNC_RETRY_S
+    if (
+        obs.container_running
+        and obs.vnc_running is False
+        and (not vnc_restarts or obs.now - vnc_restarts[-1] >= VNC_RETRY_S)
     ):
         actions.append(Action("restart_vnc", "x11vnc not running (login screen unreachable)"))
         vnc_restarts.append(obs.now)
@@ -439,9 +430,14 @@ def decide(
         return "trex: IB Gateway back", f"API answering again{outage}."
 
     push, notified = next_push(
-        status=status, now=obs.now, prior=prior, urgency=urgency, bad=BAD,
+        status=status,
+        now=obs.now,
+        prior=prior,
+        urgency=urgency,
+        bad=BAD,
         healthy=frozenset({"ok"}),
-        alarm=lambda: _message(status, since, obs.now, restarts_left), recovery=recovery,
+        alarm=lambda: _message(status, since, obs.now, restarts_left),
+        recovery=recovery,
     )
     if push is not None:
         actions.append(Action("notify", push.status, push.title, push.message, push.priority))
@@ -508,7 +504,9 @@ class Docker:
 
     def inspect(self) -> tuple[bool, float | None]:
         try:
-            out = self._run("inspect", "-f", "{{.State.Running}}|{{.State.StartedAt}}", self.container)
+            out = self._run(
+                "inspect", "-f", "{{.State.Running}}|{{.State.StartedAt}}", self.container
+            )
         except (OSError, subprocess.TimeoutExpired):
             return False, None
         if out.returncode != 0:
@@ -520,8 +518,9 @@ class Docker:
         """IBC lines since ``since``; None when the read failed (an
         uncertain phase must not look like "no phase")."""
         try:
-            out = self._run("logs", "-t", "--since", str(int(since)), self.container,
-                            timeout=LOGS_TIMEOUT_S)
+            out = self._run(
+                "logs", "-t", "--since", str(int(since)), self.container, timeout=LOGS_TIMEOUT_S
+            )
         except (OSError, subprocess.TimeoutExpired):
             return None
         if out.returncode != 0:
@@ -590,8 +589,14 @@ def watch_once(
     if not readable:
         prior = {
             "restart_hold_until": now + RESTART_COOLDOWN_S,
-            "events": [{"at": now, "kind": "ledger", "ok": False,
-                        "detail": "state unreadable; container restarts held for a cooldown"}],
+            "events": [
+                {
+                    "at": now,
+                    "kind": "ledger",
+                    "ok": False,
+                    "detail": "state unreadable; container restarts held for a cooldown",
+                }
+            ],
         }
     running, started = docker.inspect()
     observed = True
@@ -613,8 +618,15 @@ def watch_once(
         except OSError:
             actions = [a for a in actions if a.kind != "restart_gateway"]
             _release_restart(state)
-            state["events"].append({"at": now, "kind": "restart_refused", "ok": False,
-                                    "detail": "ledger not writable", "dry_run": False})
+            state["events"].append(
+                {
+                    "at": now,
+                    "kind": "restart_refused",
+                    "ok": False,
+                    "detail": "ledger not writable",
+                    "dry_run": False,
+                }
+            )
 
     api_back = False
     for action in actions:
@@ -650,10 +662,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--container", default=CONTAINER)
     parser.add_argument("--login-url", default=LOGIN_URL)
-    parser.add_argument("--dry-run", action="store_true",
-                        help="observe and print decisions; change nothing, send nothing")
-    parser.add_argument("--wait-api", type=float, metavar="SECONDS",
-                        help="only wait until the API answers (exit 0) or time out (exit 1)")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="observe and print decisions; change nothing, send nothing",
+    )
+    parser.add_argument(
+        "--wait-api",
+        type=float,
+        metavar="SECONDS",
+        help="only wait until the API answers (exit 0) or time out (exit 1)",
+    )
     args = parser.parse_args(argv)
 
     if args.wait_api is not None:
@@ -669,8 +688,11 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config()
     now = time.time()
-    urgency = urgency_at(now, exposed=bool(scan_books(args.state.parent)),
-                         quiet=load_quiet_hours(read_env(DEFAULT_CONFIG)))
+    urgency = urgency_at(
+        now,
+        exposed=bool(scan_books(args.state.parent)),
+        quiet=load_quiet_hours(read_env(DEFAULT_CONFIG)),
+    )
     state = watch_once(
         args.state,
         Docker(args.container),
@@ -681,11 +703,16 @@ def main(argv: list[str] | None = None) -> int:
         urgency=urgency,
         dry_run=args.dry_run,
     )
-    summary = {k: state[k] for k in ("status", "detail", "ibc_phase", "vnc_running",
-                                     "restarts_left", "notify_held")}
+    summary = {
+        k: state[k]
+        for k in ("status", "detail", "ibc_phase", "vnc_running", "restarts_left", "notify_held")
+    }
     summary["since"] = _et(state["since"])
-    summary["actions"] = [e["kind"] for e in state["events"] if e["at"] == state["checked_at"]
-                          and e["kind"] != "status"]
+    summary["actions"] = [
+        e["kind"]
+        for e in state["events"]
+        if e["at"] == state["checked_at"] and e["kind"] != "status"
+    ]
     print(json.dumps(summary))
     return 0
 

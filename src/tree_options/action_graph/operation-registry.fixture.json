@@ -249,6 +249,21 @@
         "review": "OutcomeReview",
         "baseline": "StrategyVersion"
       }
+    },
+    {
+      "operation": "broker.snaptrade.submit",
+      "operation_version": "0.1",
+      "owner_role": "broker_gateway",
+      "effect_class": "paper_effect",
+      "target_environment": "paper",
+      "outputs": {
+        "submission": "SubmissionReceipt"
+      },
+      "input_types": {
+        "permit": "EffectPermit",
+        "reservation": "RiskReservation",
+        "intent": "OrderIntent"
+      }
     }
   ]
 }

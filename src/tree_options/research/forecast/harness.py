@@ -24,6 +24,7 @@ number in it is re-derivable. Models are pure functions: each is
 ``f(closes, *, h, taus) -> log-quantiles | None`` and is bound into a
 ``closes -> ...`` callable per evaluation — no module-global state.
 """
+
 from __future__ import annotations
 
 import itertools
@@ -97,8 +98,7 @@ def month_origin_grid(
     origins: list[int] = []
     excluded: list[tuple[int, str]] = []
     for i, d in enumerate(sessions):
-        if i > 0 and (d.year, d.month) == (
-                sessions[i - 1].year, sessions[i - 1].month):
+        if i > 0 and (d.year, d.month) == (sessions[i - 1].year, sessions[i - 1].month):
             continue  # not a month start
         if d < first_eval:
             continue
@@ -139,12 +139,12 @@ class ModelRun:
         """Per-model tally over the grid; ``total`` is the grid's origin
         count so the enforced identity
         ``total == evaluated + excluded + failed`` is checked HERE."""
-        excluded_n = sum(
-            1 for row in self.ledger if row.status == "excluded")
+        excluded_n = sum(1 for row in self.ledger if row.status == "excluded")
         assert total == self.n_evaluated + excluded_n + self.n_failed, (
             f"tally identity violated for {self.model}: "
             f"{total} != {self.n_evaluated} + {excluded_n} "
-            f"+ {self.n_failed}")
+            f"+ {self.n_failed}"
+        )
         reasons: dict[str, int] = {}
         for row in self.ledger:
             if row.status == "excluded" and row.reason:
@@ -202,16 +202,20 @@ def evaluate_model(
     failures: dict[str, int] = {}
 
     for idx, reason in grid.excluded:
-        target = (sessions[idx + horizon]
-                  if idx + horizon < len(sessions) else None)
-        rows.append((idx, LedgerRow(
-            origin_date=sessions[idx],
-            target_date=target,
-            training_count=max(0, idx - horizon + 1),
-            status="excluded",
-            reason=reason,
-            actual=None,
-        )))
+        target = sessions[idx + horizon] if idx + horizon < len(sessions) else None
+        rows.append(
+            (
+                idx,
+                LedgerRow(
+                    origin_date=sessions[idx],
+                    target_date=target,
+                    training_count=max(0, idx - horizon + 1),
+                    status="excluded",
+                    reason=reason,
+                    actual=None,
+                ),
+            )
+        )
 
     for t in grid.origins:
         log_q = model(tuple(closes[: t + 1]))
@@ -237,10 +241,19 @@ def evaluate_model(
                     failed = FAIL_NON_FINITE
         if failed is not None:
             failures[failed] = failures.get(failed, 0) + 1
-            rows.append((t, LedgerRow(
-                origin_date=sessions[t], target_date=target,
-                training_count=training_count, status="failed",
-                reason=failed, actual=actual)))
+            rows.append(
+                (
+                    t,
+                    LedgerRow(
+                        origin_date=sessions[t],
+                        target_date=target,
+                        training_count=training_count,
+                        status="failed",
+                        reason=failed,
+                        actual=actual,
+                    ),
+                )
+            )
             continue
         assert levels is not None
         losses = tuple(
@@ -251,11 +264,21 @@ def evaluate_model(
         level_qs.append(levels)
         per_tau.append(losses)
         inside.append(levels[0] <= actual <= levels[-1])
-        rows.append((t, LedgerRow(
-            origin_date=sessions[t], target_date=target,
-            training_count=training_count, status="evaluated",
-            reason=None, actual=actual, quantiles=levels,
-            losses_by_tau=losses)))
+        rows.append(
+            (
+                t,
+                LedgerRow(
+                    origin_date=sessions[t],
+                    target_date=target,
+                    training_count=training_count,
+                    status="evaluated",
+                    reason=None,
+                    actual=actual,
+                    quantiles=levels,
+                    losses_by_tau=losses,
+                ),
+            )
+        )
 
     rows.sort(key=lambda pair: pair[0])
     return ModelRun(
@@ -293,7 +316,9 @@ def forward_fan(
 
 
 def _eligible_h_step_changes(
-    closes: Sequence[float], h: int, window: int | None,
+    closes: Sequence[float],
+    h: int,
+    window: int | None,
 ) -> np.ndarray[tuple[int], np.dtype[np.float64]]:
     """log(c[u+h]) - log(c[u]) over eligible u (u + h <= last index) —
     COMPLETED targets only — optionally truncated to the trailing
@@ -311,13 +336,13 @@ def _log_quantiles_from_changes(
     changes: np.ndarray[tuple[int], np.dtype[np.float64]],
     taus: tuple[float, ...],
 ) -> tuple[float, ...]:
-    qs = [float(np.quantile(changes, float(t), method=QUANTILE_METHOD))
-          for t in taus]
+    qs = [float(np.quantile(changes, float(t), method=QUANTILE_METHOD)) for t in taus]
     return tuple(math.log(last_close) + q for q in qs)
 
 
-def rw_full(closes: tuple[float, ...], *, h: int,
-            taus: tuple[float, ...]) -> tuple[float, ...] | None:
+def rw_full(
+    closes: tuple[float, ...], *, h: int, taus: tuple[float, ...]
+) -> tuple[float, ...] | None:
     """Empirical-change benchmark, EXPANDING window: quantiles of ALL
     historical h-step log changes placed around the last close. The
     median is the EMPIRICAL median — NOT recentered to the last close
@@ -329,19 +354,20 @@ def rw_full(closes: tuple[float, ...], *, h: int,
     return _log_quantiles_from_changes(closes[-1], changes, taus)
 
 
-def rw_window(closes: tuple[float, ...], *, h: int,
-              taus: tuple[float, ...]) -> tuple[float, ...] | None:
+def rw_window(
+    closes: tuple[float, ...], *, h: int, taus: tuple[float, ...]
+) -> tuple[float, ...] | None:
     """Empirical-change benchmark, trailing EMPIRICAL_WINDOW_SESSIONS
     changes (the declared rolling estimation window)."""
-    changes = _eligible_h_step_changes(
-        closes, h, window=EMPIRICAL_WINDOW_SESSIONS)
+    changes = _eligible_h_step_changes(closes, h, window=EMPIRICAL_WINDOW_SESSIONS)
     if changes.shape[0] < 2:
         return None
     return _log_quantiles_from_changes(closes[-1], changes, taus)
 
 
-def ar1_direct(closes: tuple[float, ...], *, h: int,
-               taus: tuple[float, ...]) -> tuple[float, ...] | None:
+def ar1_direct(
+    closes: tuple[float, ...], *, h: int, taus: tuple[float, ...]
+) -> tuple[float, ...] | None:
     """AR(1) on the log level with DIRECT h-step error bands.
 
     Point: x_{t+h} = beta0 * (1 + phi + ... + phi^(h-1)) + phi^h * x_t.
@@ -366,28 +392,30 @@ def ar1_direct(closes: tuple[float, ...], *, h: int,
     beta0, phi = float(beta[0]), float(beta[1])
     if abs(phi) >= 1.0:
         return None
-    geom = (1.0 - phi ** h) / (1.0 - phi)  # 1 + phi + ... + phi^(h-1)
+    geom = (1.0 - phi**h) / (1.0 - phi)  # 1 + phi + ... + phi^(h-1)
 
     def point_h(idx: int) -> float:
-        return beta0 * geom + (phi ** h) * float(logs[idx])
+        return beta0 * geom + (phi**h) * float(logs[idx])
 
     last = logs.shape[0] - 1
     errors = np.asarray(
-        [float(logs[u + h]) - point_h(u)
-         for u in range(last - h + 1)], dtype=np.float64)
+        [float(logs[u + h]) - point_h(u) for u in range(last - h + 1)], dtype=np.float64
+    )
     if errors.shape[0] < 2:
         return None
-    qs = [float(np.quantile(errors, float(t), method=QUANTILE_METHOD))
-          for t in taus]
+    qs = [float(np.quantile(errors, float(t), method=QUANTILE_METHOD)) for t in taus]
     return tuple(point_h(last) + q for q in qs)
 
 
-def bind(model: Callable[..., tuple[float, ...] | None], *, h: int,
-         taus: tuple[float, ...]) -> BoundModel:
+def bind(
+    model: Callable[..., tuple[float, ...] | None], *, h: int, taus: tuple[float, ...]
+) -> BoundModel:
     """Bind (h, taus) into a closes-only callable (per-run closure, no
     module-global state)."""
+
     def bound(closes: tuple[float, ...]) -> tuple[float, ...] | None:
         return model(closes, h=h, taus=taus)
+
     return bound
 
 

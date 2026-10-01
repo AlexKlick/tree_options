@@ -91,9 +91,7 @@ class TestEntryDecisions:
 
     def test_mid_above_cap_pays_only_cap(self) -> None:
         quote = ComboQuote(Decimal("0.55"), Decimal("0.60"))
-        act = decide(
-            _spread(), StructureState(), _snap(_at(ENTRY_DAY, time(10, 0)), quote=quote)
-        )
+        act = decide(_spread(), StructureState(), _snap(_at(ENTRY_DAY, time(10, 0)), quote=quote))
         assert isinstance(act, PlaceEntry) and act.limit == Decimal("0.50")
 
     def test_escalated_cycle_crosses_to_ask_capped(self) -> None:
@@ -146,9 +144,7 @@ class TestHoldAndTouch:
 
     def test_touch_without_quote_stays_pending(self) -> None:
         st = StructureState(status=Status.OPEN)
-        act = decide(
-            _spread(), st, _snap(_at(ENTRY_DAY, time(13, 0)), spot="180", quote=None)
-        )
+        act = decide(_spread(), st, _snap(_at(ENTRY_DAY, time(13, 0)), spot="180", quote=None))
         assert isinstance(act, ExitOrder) and act.reason is ExitReason.TOUCH and act.limit is None
 
     def test_take_profit_fraction(self) -> None:
@@ -183,23 +179,17 @@ class TestTimeStops:
 
 class TestExitPricing:
     def test_exit_working_prices_mid_first(self) -> None:
-        st = StructureState(
-            status=Status.EXIT_WORKING, exit_reason="touch", exit_cycles=0
-        )
+        st = StructureState(status=Status.EXIT_WORKING, exit_reason="touch", exit_cycles=0)
         act = decide(_spread(), st, _snap(_at(ENTRY_DAY, time(13, 0))))
         assert isinstance(act, ExitOrder) and act.limit == Decimal("0.44")
 
     def test_exit_escalates_to_bid(self) -> None:
-        st = StructureState(
-            status=Status.EXIT_WORKING, exit_reason="touch", exit_cycles=3
-        )
+        st = StructureState(status=Status.EXIT_WORKING, exit_reason="touch", exit_cycles=3)
         act = decide(_spread(), st, _snap(_at(ENTRY_DAY, time(13, 0))))
         assert isinstance(act, ExitOrder) and act.limit == Decimal("0.40")
 
     def test_force_time_after_deadline_goes_marketable(self) -> None:
-        st = StructureState(
-            status=Status.EXIT_WORKING, exit_reason="time_stop", exit_cycles=0
-        )
+        st = StructureState(status=Status.EXIT_WORKING, exit_reason="time_stop", exit_cycles=0)
         act = decide(_spread(), st, _snap(_at(DEADLINE, time(15, 46))))
         assert isinstance(act, ExitOrder) and act.limit == Decimal("0.40")
 

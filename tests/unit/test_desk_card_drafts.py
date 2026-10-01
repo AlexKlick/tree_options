@@ -55,9 +55,7 @@ def test_next_reports_line_carries_the_after_next_date() -> None:
         exit_session=EXIT,
         generated_at=GENERATED,
     )
-    line = next(
-        ln for ln in draft.splitlines() if ln.startswith("- next report dates")
-    )
+    line = next(ln for ln in draft.splitlines() if ln.startswith("- next report dates"))
     assert line == (
         "- next report dates (earnings-calendar.json): "
         "AAA 2026-10-20 then 2027-01-28, BBB 2026-11-05, DDD none listed"

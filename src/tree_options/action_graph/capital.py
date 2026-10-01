@@ -135,15 +135,21 @@ def review_candidate(profile: CapitalProfile, candidate: CandidateRisk) -> tuple
     if candidate.objective == "steady":
         if profile.steady_win_floor is None:
             blockers.append("steady_win_floor_missing")
-        if (candidate.win_probability_estimate is None
-                or not candidate.win_probability_evidence_verified):
+        if (
+            candidate.win_probability_estimate is None
+            or not candidate.win_probability_evidence_verified
+        ):
             blockers.append("win_probability_evidence_missing")
-        elif (not isinstance(candidate.win_probability_estimate, Decimal)
-              or not candidate.win_probability_estimate.is_finite()
-              or not Decimal(0) <= candidate.win_probability_estimate <= Decimal(1)):
+        elif (
+            not isinstance(candidate.win_probability_estimate, Decimal)
+            or not candidate.win_probability_estimate.is_finite()
+            or not Decimal(0) <= candidate.win_probability_estimate <= Decimal(1)
+        ):
             raise ValueError("win probability must be a finite Decimal in [0, 1]")
-        elif (profile.steady_win_floor is not None
-              and candidate.win_probability_estimate < profile.steady_win_floor):
+        elif (
+            profile.steady_win_floor is not None
+            and candidate.win_probability_estimate < profile.steady_win_floor
+        ):
             blockers.append("win_probability_below_floor")
     if loss > profile.intended_capital:
         blockers.append("trade_exceeds_intended_capital")
@@ -151,7 +157,10 @@ def review_candidate(profile: CapitalProfile, candidate: CandidateRisk) -> tuple
         blockers.append("trade_loss_cap_exceeded")
     if candidate.broker_margin_change is None:
         blockers.append("broker_margin_unknown")
-    elif _money(candidate.broker_margin_change, "broker_margin_change", allow_zero=True) > profile.intended_capital:
+    elif (
+        _money(candidate.broker_margin_change, "broker_margin_change", allow_zero=True)
+        > profile.intended_capital
+    ):
         blockers.append("broker_margin_exceeds_intended_capital")
     if candidate.current_open_loss is None:
         blockers.append("open_exposure_unknown")

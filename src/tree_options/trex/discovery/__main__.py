@@ -43,9 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--client-id", type=int, default=DISCOVERY_CLIENT_ID)
     args = ap.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     if args.probe:
         from tree_options.trex.discovery.probe import probe_json

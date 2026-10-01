@@ -65,34 +65,35 @@ def build_synthetic_candidates() -> list[ResearchCandidate]:
     out: list[ResearchCandidate] = []
     for cid, spec in sorted(doc.get("candidates", {}).items()):
         label = str(spec.get("label", cid))
-        out.append(ResearchCandidate(
-            id=cid,
-            family=cid,
-            version="v1",
-            evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
-            # A fixture is not a registered study; the synthetic warning
-            # keeps that from being misread as study provenance.
-            registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
-            disposition=ResearchDisposition.PASS,
-            plot_funded_account=True,
-            supported_start=sessions[0] if sessions else None,
-            supported_end=sessions[-1] if sessions else None,
-            funded_history=FundedHistorySupport.RECONSTRUCTED,
-            funded_history_reason=None,
-            artifact_hashes={"synthetic-slice-fixture.json": sha},
-            capabilities=(
-                "view_published_study",
-                "plot_trade_outcomes",
-                "plot_funded_account",
-            ),
-            ineligibility_reason=None,
-            data_completeness={"sessions": len(sessions)},
-            warnings=(_SYNTHETIC_WARNING,),
-            source_url=f"synthetic/{cid}",
-        ))
+        out.append(
+            ResearchCandidate(
+                id=cid,
+                family=cid,
+                version="v1",
+                evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
+                # A fixture is not a registered study; the synthetic warning
+                # keeps that from being misread as study provenance.
+                registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
+                disposition=ResearchDisposition.PASS,
+                plot_funded_account=True,
+                supported_start=sessions[0] if sessions else None,
+                supported_end=sessions[-1] if sessions else None,
+                funded_history=FundedHistorySupport.RECONSTRUCTED,
+                funded_history_reason=None,
+                artifact_hashes={"synthetic-slice-fixture.json": sha},
+                capabilities=(
+                    "view_published_study",
+                    "plot_trade_outcomes",
+                    "plot_funded_account",
+                ),
+                ineligibility_reason=None,
+                data_completeness={"sessions": len(sessions)},
+                warnings=(_SYNTHETIC_WARNING,),
+                source_url=f"synthetic/{cid}",
+            )
+        )
         assert label  # label is informational; ids are the join key
     return out
 
 
-__all__ = ["build_synthetic_candidates", "fixture_path", "fixture_sha256",
-           "load_fixture"]
+__all__ = ["build_synthetic_candidates", "fixture_path", "fixture_sha256", "load_fixture"]

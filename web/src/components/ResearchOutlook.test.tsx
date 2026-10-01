@@ -396,10 +396,16 @@ describe('ResearchOutlook (RL-3)', () => {
   it('renders the registry: disabled horizons show their exact copy and are not selectable', async () => {
     render(<ResearchOutlook />)
     await waitFor(() => {
-      expect(screen.getByTestId('outlook-source-select')).toBeTruthy()
+      const source = screen.getByTestId('outlook-source-select') as HTMLSelectElement
+      expect([...source.options].some(option => option.value === 'index:VIX')).toBe(true)
+      expect(source.value).toBe('synthetic-forecast-v1')
     })
     fireEvent.change(screen.getByTestId('outlook-source-select'), {
       target: { value: 'index:VIX' },
+    })
+    await waitFor(() => {
+      const loaded = screen.getByTestId('outlook-horizon-select') as HTMLSelectElement
+      expect([...loaded.options].some(option => option.value === '126')).toBe(true)
     })
     const select = screen.getByTestId('outlook-horizon-select') as HTMLSelectElement
     const opt63 = [...select.options].find((o) => o.value === '63')

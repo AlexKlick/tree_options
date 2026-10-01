@@ -45,8 +45,13 @@ def test_non_https_url_is_refused(tmp_path: Path) -> None:
 
 def test_send_posts_title_priority_and_utf8_body() -> None:
     rec = Recorder()
-    ok = send({"url": TOPIC_URL, "token": "tk_abc"}, "trex: IB Gateway needs login",
-               "Logged out since Tue 19:45 ET — 14h 33m.", "high", transport=rec)
+    ok = send(
+        {"url": TOPIC_URL, "token": "tk_abc"},
+        "trex: IB Gateway needs login",
+        "Logged out since Tue 19:45 ET — 14h 33m.",
+        "high",
+        transport=rec,
+    )
     assert ok
     url, body, headers = rec.calls[0]
     assert url == TOPIC_URL
@@ -57,8 +62,15 @@ def test_send_posts_title_priority_and_utf8_body() -> None:
 
 
 def test_failures_return_false_and_never_echo_the_topic(capsys) -> None:  # type: ignore[no-untyped-def]
-    assert send({"url": TOPIC_URL, "token": ""}, "t", "m",
-                transport=Recorder(exc=OSError(f"connect to {TOPIC_URL} failed"))) is False
+    assert (
+        send(
+            {"url": TOPIC_URL, "token": ""},
+            "t",
+            "m",
+            transport=Recorder(exc=OSError(f"connect to {TOPIC_URL} failed")),
+        )
+        is False
+    )
     assert send({"url": TOPIC_URL, "token": ""}, "t", "m", transport=Recorder(status=500)) is False
     captured = capsys.readouterr()
     assert "SECRET" not in captured.out + captured.err

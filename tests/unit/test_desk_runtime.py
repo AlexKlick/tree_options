@@ -63,28 +63,49 @@ EXIT_DAY = datetime(2026, 10, 9, 10, 0, tzinfo=ET)
 
 def _put_vertical(sid: str = "dv1") -> LegStructure:
     return LegStructure(
-        id=sid, underlying="SPY", kind="debit_vertical",
-        legs=[{"right": "P", "action": "BUY", "strike": "100", "expiry": date(2026, 10, 16)},
-              {"right": "P", "action": "SELL", "strike": "95", "expiry": date(2026, 10, 16)}],
-        quantity=1, entry_date=date(2026, 10, 1), exit_deadline=date(2026, 10, 9),
-        limit="1.00", exits={"touch": False, "breach": False})
+        id=sid,
+        underlying="SPY",
+        kind="debit_vertical",
+        legs=[
+            {"right": "P", "action": "BUY", "strike": "100", "expiry": date(2026, 10, 16)},
+            {"right": "P", "action": "SELL", "strike": "95", "expiry": date(2026, 10, 16)},
+        ],
+        quantity=1,
+        entry_date=date(2026, 10, 1),
+        exit_deadline=date(2026, 10, 9),
+        limit="1.00",
+        exits={"touch": False, "breach": False},
+    )
 
 
 def _call_vertical() -> LegStructure:
     return LegStructure(
-        id="cv1", underlying="SPY", kind="debit_vertical",
-        legs=[{"right": "C", "action": "BUY", "strike": "100", "expiry": date(2026, 10, 16)},
-              {"right": "C", "action": "SELL", "strike": "105", "expiry": date(2026, 10, 16)}],
-        quantity=1, entry_date=date(2026, 10, 1), exit_deadline=date(2026, 10, 9),
-        limit="3.00", exits={"touch": False, "breach": False})
+        id="cv1",
+        underlying="SPY",
+        kind="debit_vertical",
+        legs=[
+            {"right": "C", "action": "BUY", "strike": "100", "expiry": date(2026, 10, 16)},
+            {"right": "C", "action": "SELL", "strike": "105", "expiry": date(2026, 10, 16)},
+        ],
+        quantity=1,
+        entry_date=date(2026, 10, 1),
+        exit_deadline=date(2026, 10, 9),
+        limit="3.00",
+        exits={"touch": False, "breach": False},
+    )
 
 
-def _effect(structure: LegStructure | None = None, intent_id: str = "sup-001"
-            ) -> SupervisedEffect:
+def _effect(structure: LegStructure | None = None, intent_id: str = "sup-001") -> SupervisedEffect:
     structure = structure or _put_vertical()
-    return SupervisedEffect(intent_id=intent_id, account_id=ACCOUNT, structure=structure,
-                            side=structure.open_side, quantity=1, limit=Decimal("0.90"),
-                            order_ref=supervised_order_ref(intent_id))
+    return SupervisedEffect(
+        intent_id=intent_id,
+        account_id=ACCOUNT,
+        structure=structure,
+        side=structure.open_side,
+        quantity=1,
+        limit=Decimal("0.90"),
+        order_ref=supervised_order_ref(intent_id),
+    )
 
 
 class DeskGateway(SupervisedGateway):
@@ -127,13 +148,18 @@ class Desk:
         self.rt.acquire()
         self.notified: list[tuple[str, str, str]] = []
         self.rt.notify = lambda title, message, priority="default": self.notified.append(
-            (title, message, priority))
+            (title, message, priority)
+        )
         self.broker = IbkrSupervisedBroker(self.ib, clock=self.clock)
 
     def send_entry(self, effect: SupervisedEffect) -> Any:
-        attempt = SubmitAttempt(record_id=f"sup-send-{effect.intent_id}",
-                                intent_id=effect.intent_id, send_attempt_at=self.clock.now,
-                                source="supervised", source_sequence_id=effect.intent_id)
+        attempt = SubmitAttempt(
+            record_id=f"sup-send-{effect.intent_id}",
+            intent_id=effect.intent_id,
+            send_attempt_at=self.clock.now,
+            source="supervised",
+            source_sequence_id=effect.intent_id,
+        )
         self.broker.submit(attempt, effect_bytes(effect))
         return self.gw.trades[-1]
 
@@ -146,8 +172,10 @@ class Desk:
         return [json.loads(line)["event"] for line in self.paths.events().read_text().splitlines()]
 
     def hold_legs(self, qty: int = 1) -> None:
-        self.gw.position_rows[:] = [position_row(100, qty, account=ACCOUNT, symbol="SPY"),
-                                    position_row(95, -qty, account=ACCOUNT, symbol="SPY")]
+        self.gw.position_rows[:] = [
+            position_row(100, qty, account=ACCOUNT, symbol="SPY"),
+            position_row(95, -qty, account=ACCOUNT, symbol="SPY"),
+        ]
 
     def fill(self, trade: Any, qty: int, price: float) -> None:
         trade.orderStatus.status = "Filled"
@@ -160,7 +188,8 @@ class Desk:
         self.rt = DeskRuntime(self.ib, self.paths, supervised=self.sup, clock=self.clock)
         self.rt.acquire()
         self.rt.notify = lambda title, message, priority="default": self.notified.append(
-            (title, message, priority))
+            (title, message, priority)
+        )
 
     def exit_while_down(self, *, status: str, executed: int = 0, qty: int = 1) -> Any:
         """Open ``qty``, place the time-stop exit, then the exit order leaves
@@ -183,8 +212,10 @@ class Desk:
         oid = exit_trade.order.orderId
         exit_trade.orderStatus.status = status
         if executed:
-            self.gw.fill_rows[:] = [fill_row(100, executed, 2.10, oid, SUPERVISED_CLIENT_ID),
-                                    fill_row(95, executed, 1.20, oid, SUPERVISED_CLIENT_ID)]
+            self.gw.fill_rows[:] = [
+                fill_row(100, executed, 2.10, oid, SUPERVISED_CLIENT_ID),
+                fill_row(95, executed, 1.20, oid, SUPERVISED_CLIENT_ID),
+            ]
         self.restart()
         return exit_trade
 
@@ -221,8 +252,9 @@ def test_one_runtime_per_run_dir(desk, tmp_path):
 
 
 def test_register_requires_the_lock_and_is_idempotent(desk, tmp_path):
-    unlocked = DeskRuntime(desk.ib, DeskPaths(tmp_path / "other"), supervised=desk.sup,
-                           clock=desk.clock)
+    unlocked = DeskRuntime(
+        desk.ib, DeskPaths(tmp_path / "other"), supervised=desk.sup, clock=desk.clock
+    )
     with pytest.raises(RuntimeLocked):
         unlocked.register(_effect())
     first = desk.rt.register(_effect())
@@ -272,14 +304,20 @@ def test_entry_window_close_cancels_then_closes_unfilled(desk):
     assert desk.book()["dv1"]["close_reason"] == "entry_unfilled"
 
 
-@pytest.mark.parametrize("outbox, status, reason", [
-    ({"terminal": {"outcome": "rejected"}}, "closed", "entry_rejected"),
-    ({"reconciled": {"verdict": "confirmed_not_submitted"}}, "closed", "not_submitted"),
-    ({"terminal": {"outcome": "uncertain", "reason": "ack_timeout"}}, "planned", None),
-    ({"pending": {"send_deadline": "2026-10-01T09:59:00-04:00"}}, "closed",
-     "not_sent_by_deadline"),
-    ({"pending": {"send_deadline": "2026-10-01T10:05:00-04:00"}}, "planned", None),
-])
+@pytest.mark.parametrize(
+    "outbox, status, reason",
+    [
+        ({"terminal": {"outcome": "rejected"}}, "closed", "entry_rejected"),
+        ({"reconciled": {"verdict": "confirmed_not_submitted"}}, "closed", "not_submitted"),
+        ({"terminal": {"outcome": "uncertain", "reason": "ack_timeout"}}, "planned", None),
+        (
+            {"pending": {"send_deadline": "2026-10-01T09:59:00-04:00"}},
+            "closed",
+            "not_sent_by_deadline",
+        ),
+        ({"pending": {"send_deadline": "2026-10-01T10:05:00-04:00"}}, "planned", None),
+    ],
+)
 def test_planned_structures_resolve_from_the_supervised_outbox(desk, outbox, status, reason):
     desk.rt.register(_effect())
     for kind, doc in outbox.items():
@@ -293,10 +331,13 @@ def test_planned_structures_resolve_from_the_supervised_outbox(desk, outbox, sta
 def test_acknowledged_receipt_with_fill_evidence_after_restart(desk, tmp_path):
     """The entry filled while the runtime was down: only broker evidence opens it."""
     desk.rt.register(_effect())
-    desk.sup.terminal("sup-001").write_text(json.dumps(
-        {"outcome": "acknowledged", "broker_order_id": "777"}))
-    desk.gw.fill_rows[:] = [fill_row(100, 1, 2.00, 777, SUPERVISED_CLIENT_ID),
-                            fill_row(95, 1, 1.10, 777, SUPERVISED_CLIENT_ID)]
+    desk.sup.terminal("sup-001").write_text(
+        json.dumps({"outcome": "acknowledged", "broker_order_id": "777"})
+    )
+    desk.gw.fill_rows[:] = [
+        fill_row(100, 1, 2.00, 777, SUPERVISED_CLIENT_ID),
+        fill_row(95, 1, 1.10, 777, SUPERVISED_CLIENT_ID),
+    ]
     desk.rt.tick()
     book = desk.book()["dv1"]
     assert (book["status"], book["filled_qty"]) == ("open", 1)
@@ -305,8 +346,9 @@ def test_acknowledged_receipt_with_fill_evidence_after_restart(desk, tmp_path):
 
 def test_inconclusive_evidence_holds_and_alerts(desk):
     desk.rt.register(_effect())
-    desk.sup.terminal("sup-001").write_text(json.dumps(
-        {"outcome": "acknowledged", "broker_order_id": "777"}))
+    desk.sup.terminal("sup-001").write_text(
+        json.dumps({"outcome": "acknowledged", "broker_order_id": "777"})
+    )
     desk.hold_legs()  # legs held, but no execution of 777 today: never guessed
     desk.rt.tick()
     assert desk.book()["dv1"]["status"] == Status.ENTER_WORKING.value
@@ -325,14 +367,20 @@ def test_time_stop_exit_is_placed_tagged_with_the_account_then_closes(desk):
     exit_trade = desk.gw.trades[-1]
     assert exit_trade.order.orderRef == desk_order_ref("dv1") == "trex:desk:dv1"
     assert exit_trade.order.account == ACCOUNT
-    assert (exit_trade.order.action, exit_trade.order.totalQuantity,
-            exit_trade.order.lmtPrice) == ("SELL", 1, 0.90)
+    assert (exit_trade.order.action, exit_trade.order.totalQuantity, exit_trade.order.lmtPrice) == (
+        "SELL",
+        1,
+        0.90,
+    )
     desk.fill(exit_trade, 1, 0.85)
     desk.gw.position_rows.clear()
     desk.rt.tick()
     book = desk.book()["dv1"]
     assert (book["status"], book["close_reason"], book["exit_fill"]) == (
-        "closed", "time_stop", "0.85")
+        "closed",
+        "time_stop",
+        "0.85",
+    )
 
 
 def test_no_close_without_the_legs_held(desk):
@@ -575,22 +623,35 @@ def test_short_call_without_a_feed_fails_closed():
 
 
 def test_short_call_with_a_projected_ex_date_in_the_hold_fails_closed():
-    last = DividendRecord(ex_date=date(2026, 7, 6), declared=date(2026, 6, 20),
-                          cash_amount=Decimal("1.80"), frequency=4, dividend_type="CD")
+    last = DividendRecord(
+        ex_date=date(2026, 7, 6),
+        declared=date(2026, 6, 20),
+        cash_amount=Decimal("1.80"),
+        frequency=4,
+        dividend_type="CD",
+    )
     ok, why = assignment_plan(_call_vertical(), _snapshot(last), date(2026, 10, 1))
     assert not ok and "projected" in why
 
 
 def test_short_call_with_a_declared_ex_date_is_fed_to_the_engine():
-    declared = DividendRecord(ex_date=date(2026, 10, 5), declared=date(2026, 9, 20),
-                              cash_amount=Decimal("1.85"), frequency=4, dividend_type="CD")
+    declared = DividendRecord(
+        ex_date=date(2026, 10, 5),
+        declared=date(2026, 9, 20),
+        cash_amount=Decimal("1.85"),
+        frequency=4,
+        dividend_type="CD",
+    )
     snap = _snapshot(declared)
     ok, _ = assignment_plan(_call_vertical(), snap, date(2026, 10, 1))
     assert ok
     div = declared_dividend(snap, date(2026, 10, 1), date(2026, 10, 15))
     assert div is not None
     assert (div.ex_date, div.prev_session, div.amount) == (
-        date(2026, 10, 5), date(2026, 10, 2), Decimal("1.85"))
+        date(2026, 10, 5),
+        date(2026, 10, 2),
+        Decimal("1.85"),
+    )
 
 
 def test_short_call_mids_reach_the_engine_snapshot(desk):
@@ -615,8 +676,7 @@ def test_register_same_intent_different_structure_raises(desk, tmp_path):
     actual change to the structure (strikes, quantity, kind) refuses to
     overwrite a registered spec."""
     desk.open_position()  # registers sup-001 at the default _effect()
-    new_structure = _effect().structure.model_copy(update={"quantity": 2,
-                                                           "limit": Decimal("1.50")})
+    new_structure = _effect().structure.model_copy(update={"quantity": 2, "limit": Decimal("1.50")})
     new_effect = _effect(new_structure, intent_id="sup-001")
     with pytest.raises(ValueError, match="already registered for sup-001"):
         desk.rt.register(new_effect)
@@ -630,8 +690,11 @@ def test_cancel_confirm_legs_hold_at_place_time(desk):
     desk.open_position()  # OPEN with the entry filled + legs held
     desk.clock.now = EXIT_DAY
     desk.rt.tick()
-    sells_before = [t for t in desk.gw.trades
-                    if t.order.action == "SELL" and t.order.orderRef == "trex:desk:dv1"]
+    sells_before = [
+        t
+        for t in desk.gw.trades
+        if t.order.action == "SELL" and t.order.orderRef == "trex:desk:dv1"
+    ]
     assert len(sells_before) == 1, "the original exit was placed"
     exit_trade = sells_before[0]
     # The broker accepts the cancel, but the live book drifted: legs gone.
@@ -639,8 +702,11 @@ def test_cancel_confirm_legs_hold_at_place_time(desk):
     exit_trade.orderStatus.status = "Cancelled"
     desk.notified.clear()
     desk.rt.tick()
-    sells_after = [t for t in desk.gw.trades
-                   if t.order.action == "SELL" and t.order.orderRef == "trex:desk:dv1"]
+    sells_after = [
+        t
+        for t in desk.gw.trades
+        if t.order.action == "SELL" and t.order.orderRef == "trex:desk:dv1"
+    ]
     assert len(sells_after) == 1, "no second sell after legs mismatch"
     assert any("legs_mismatch" in evt[0] for evt in desk.notified)
 
@@ -704,8 +770,9 @@ def test_exit_refused_when_the_duplicate_check_cannot_read_the_broker(desk):
 
 def test_exit_refused_when_the_desk_tag_is_already_working(desk):
     desk.open_position()
-    foreign = SimpleNamespace(order=SimpleNamespace(orderId=888, permId=88001,
-                                                    orderRef=desk_order_ref("dv1")))
+    foreign = SimpleNamespace(
+        order=SimpleNamespace(orderId=888, permId=88001, orderRef=desk_order_ref("dv1"))
+    )
     desk.gw.foreign_open.append(foreign)  # an open order carrying OUR exit tag
     desk.clock.now = EXIT_DAY
     desk.rt.tick()
@@ -728,9 +795,16 @@ def test_a_filled_desk_order_same_day_does_not_block_the_reprice(desk):
 
 
 def test_exit_authority_event_and_exit_order_carry_the_owner_epoch(desk):
-    (desk.paths.root / "owner.json").write_text(json.dumps(
-        {"owner_epoch": "desk83-ab", "client_id": SUPERVISED_CLIENT_ID, "pid": 4242,
-         "started_at": "2026-10-01T09:00:00-04:00"}))
+    (desk.paths.root / "owner.json").write_text(
+        json.dumps(
+            {
+                "owner_epoch": "desk83-ab",
+                "client_id": SUPERVISED_CLIENT_ID,
+                "pid": 4242,
+                "started_at": "2026-10-01T09:00:00-04:00",
+            }
+        )
+    )
     desk.open_position()
     desk.clock.now = EXIT_DAY
     desk.rt.tick()
@@ -738,9 +812,14 @@ def test_exit_authority_event_and_exit_order_carry_the_owner_epoch(desk):
     authority = [r for r in records if r["event"] == "exit_authority"]
     assert len(authority) == 1
     a = authority[0]
-    assert (a["structure"], a["owner_epoch"], a["client_id"], a["port"], a["account"],
-            a["halt"]) == ("dv1", "desk83-ab", SUPERVISED_CLIENT_ID, GATEWAY_PAPER_PORT,
-                           ACCOUNT, False)
+    assert (
+        a["structure"],
+        a["owner_epoch"],
+        a["client_id"],
+        a["port"],
+        a["account"],
+        a["halt"],
+    ) == ("dv1", "desk83-ab", SUPERVISED_CLIENT_ID, GATEWAY_PAPER_PORT, ACCOUNT, False)
     assert isinstance(a["pid"], int) and a["pid"] == os.getpid()
     order = [r for r in records if r["event"] == "exit_order"][-1]
     assert order["owner_epoch"] == "desk83-ab"
@@ -765,8 +844,17 @@ def test_exit_authority_without_an_owner_file_still_exits(desk):
 # touch=False: no spot_blind/touch_guarded/calendar_* — exit_watch reads this
 # file through the same code path as trex-monitor's).
 
-HEALTH_KEYS = {"at", "started_at", "pid", "connected", "tick_failures",
-               "last_tick_ok_at", "last_error", "halt", "flatten"}
+HEALTH_KEYS = {
+    "at",
+    "started_at",
+    "pid",
+    "connected",
+    "tick_failures",
+    "last_tick_ok_at",
+    "last_error",
+    "halt",
+    "flatten",
+}
 
 
 def _health(desk) -> dict[str, Any]:
@@ -804,8 +892,9 @@ def test_beat_refreshes_health_without_claiming_a_good_tick(desk):
     desk.clock.now = ENTRY_DAY.replace(hour=15)
     desk.rt.beat()
     after = _health(desk)
-    assert after["at"] == ENTRY_DAY.replace(hour=15).timestamp() > before["at"], \
+    assert after["at"] == ENTRY_DAY.replace(hour=15).timestamp() > before["at"], (
         "the beat touches at: stale-at alarms fire at any hour"
+    )
     assert after["last_tick_ok_at"] == before["last_tick_ok_at"], "no tick claimed"
     assert after["tick_failures"] == before["tick_failures"]
 
@@ -817,8 +906,9 @@ def test_a_failing_tick_records_the_error_class_and_reraises(desk):
     with pytest.raises(Exception) as caught:  # propagate-and-restart is unchanged
         desk.rt.tick()
     doc = _health(desk)
-    assert doc["last_error"] == type(caught.value).__name__, \
+    assert doc["last_error"] == type(caught.value).__name__, (
         "the error class only, never the message"
+    )
     assert doc["tick_failures"] == 1
     assert doc["last_tick_ok_at"] == good["last_tick_ok_at"], "the good tick survives"
     with pytest.raises(type(caught.value)):  # the same failure, counted again
@@ -861,8 +951,14 @@ def test_monitor_json_feeds_exit_watch_through_the_real_file(desk):
     plan = desk.paths.root.name
 
     def obs(now: float, books: list[Any], *, market: bool = True) -> exit_watch.ExitObs:
-        return exit_watch.ExitObs(now=now, books=books, gateway_status=None,
-                                  gateway_since=None, market=market, unit_state=None)
+        return exit_watch.ExitObs(
+            now=now,
+            books=books,
+            gateway_status=None,
+            gateway_since=None,
+            market=market,
+            unit_state=None,
+        )
 
     books = exit_watch.scan_books(desk.paths.root.parent)
     assert [b.plan for b in books] == [plan]
@@ -882,5 +978,7 @@ def test_monitor_json_feeds_exit_watch_through_the_real_file(desk):
     books = exit_watch.scan_books(desk.paths.root.parent)
     assert exit_watch.classify(obs(fresh + 5, books))[0] == "ok"  # not-reported grace
     aged = obs(fresh + 5, books)
-    assert exit_watch.classify(
-        aged, {plan: fresh - exit_watch.HEALTH_STALE_S - 60})[0] == "monitor_failing"
+    assert (
+        exit_watch.classify(aged, {plan: fresh - exit_watch.HEALTH_STALE_S - 60})[0]
+        == "monitor_failing"
+    )

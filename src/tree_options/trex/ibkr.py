@@ -102,9 +102,7 @@ def select_account(rows: list[BrokerPosition], account: str | None) -> list[Brok
     if account is not None:
         return [r for r in rows if r.account == account]
     if len({r.account for r in rows}) > 1:
-        raise ValueError(
-            f"positions span {len({r.account for r in rows})} accounts; select one"
-        )
+        raise ValueError(f"positions span {len({r.account for r in rows})} accounts; select one")
     return rows
 
 
@@ -443,7 +441,9 @@ class IbkrTrex:
             ]
             per_leg = [[f for f in mine if f.contract.conId == o.conId] for o in options]
             if any(per_leg):
-                qtys = [sum((_d(f.execution.shares) for f in fills), Decimal(0)) for fills in per_leg]
+                qtys = [
+                    sum((_d(f.execution.shares) for f in fills), Decimal(0)) for fills in per_leg
+                ]
                 if any(q != qtys[0] for q in qtys) or qtys[0] != qtys[0].to_integral_value():
                     return None
                 qty = int(qtys[0])
@@ -461,9 +461,7 @@ class IbkrTrex:
 
     # -- orders ------------------------------------------------------------
 
-    def place_combo(
-        self, spread: PutSpread, side: str, qty: int, limit: Decimal
-    ) -> OrderRef:
+    def place_combo(self, spread: PutSpread, side: str, qty: int, limit: Decimal) -> OrderRef:
         """The legacy put-spread order (untagged), unchanged."""
         from ib_async import LimitOrder
 
@@ -535,9 +533,7 @@ class IbkrTrex:
     def working_trades(self) -> list[Any]:
         """Working BAG and OPT orders at the broker (ours or anyone's session)."""
         return [
-            t
-            for t in self._ib.openTrades()
-            if getattr(t.contract, "secType", "") in ("BAG", "OPT")
+            t for t in self._ib.openTrades() if getattr(t.contract, "secType", "") in ("BAG", "OPT")
         ]
 
     def structure_for_bag(self, contract: Any) -> str | None:

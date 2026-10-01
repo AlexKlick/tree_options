@@ -147,9 +147,7 @@ class FakeIbkr:
         avg = Decimal(str(os.avgFillPrice)) if os.filled else Decimal(0)
         from tree_options.trex.ibkr import OrderStatusInfo
 
-        return OrderStatusInfo(
-            status=os.status, filled=os.filled, avg_fill_price=avg
-        )
+        return OrderStatusInfo(status=os.status, filled=os.filled, avg_fill_price=avg)
 
     def cancel(self, ref: Any) -> None:
         self.cancelled.append(ref.trade.order.orderId)
@@ -233,9 +231,7 @@ class TestFillDrain:
         assert st.exit_fill == Decimal("2.10")
         assert st.close_reason == "touch"
 
-    def test_partial_exit_fill_keeps_working_the_remainder(
-        self, tmp_path: Path
-    ) -> None:
+    def test_partial_exit_fill_keeps_working_the_remainder(self, tmp_path: Path) -> None:
         fake = FakeIbkr(spot="184.50")
         mon = _monitor(tmp_path, fake, _at(13, 0))
         st = mon.book.structures["nvda-oct"]
@@ -292,9 +288,7 @@ class TestKillFiles:
         assert st.status is Status.ENTER_WORKING  # not closed on paper
         assert foreign.orderStatus.status == "Submitted"
 
-    def test_an_entry_runner_write_mid_tick_survives_the_monitor_save(
-        self, tmp_path: Path
-    ) -> None:
+    def test_an_entry_runner_write_mid_tick_survives_the_monitor_save(self, tmp_path: Path) -> None:
         """Both processes save the whole book.json. enter.py settling a
         FLATTEN (ENTER_WORKING -> OPEN with 2 filled) while the monitor is
         mid-tick (the spot fetch can take seconds) must not be reverted by
@@ -352,6 +346,7 @@ class TestExitReprice:
         # fresh quote moves the mid; the fake's cancel does NOT confirm
         fake.quote = ComboQuote(Decimal("0.30"), Decimal("0.34"))
         ref = mon.orders["nvda-oct"]
+
         def slow_cancel(r: Any) -> None:
             fake.cancelled.append(r.trade.order.orderId)
             # leave status Submitted: cancel not confirmed
@@ -381,9 +376,7 @@ class TestCumulativeExitAccounting:
     quantity + blended average price across replacements.
     """
 
-    def test_replacement_fill_blends_into_cumulative_and_closes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_replacement_fill_blends_into_cumulative_and_closes(self, tmp_path: Path) -> None:
         fake = FakeIbkr(spot="184.50")
         mon = _monitor(tmp_path, fake, _at(13, 0))
         st = mon.book.structures["nvda-oct"]
@@ -417,9 +410,7 @@ class TestCumulativeExitAccounting:
         assert [e["order_filled"] for e in fills] == [2, 3]  # order-local
         assert fills[-1]["avg"] == str(st.exit_fill)
 
-    def test_replacement_smaller_local_count_still_completes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_replacement_smaller_local_count_still_completes(self, tmp_path: Path) -> None:
         fake = FakeIbkr(spot="184.50")
         mon = _monitor(tmp_path, fake, _at(13, 0))
         st = mon.book.structures["nvda-oct"]
@@ -513,9 +504,7 @@ class TestAdoption:
         st.exit_reason = "touch"
 
         # a SELL already working at the broker from a previous process
-        orphan = fake.place_combo(
-            mon.plan.structures[0], "SELL", 5, Decimal("0.44")
-        )
+        orphan = fake.place_combo(mon.plan.structures[0], "SELL", 5, Decimal("0.44"))
         mon.adopt_open_exits()
 
         assert mon.orders["nvda-oct"].trade is orphan.trade
@@ -977,7 +966,9 @@ class TestHealthAcrossRestarts:
         with pytest.raises(_StopLoop):
             mon.run()
         started, after_tick = seen
-        assert started["last_tick_ok_at"] == old_ok and started["started_at"] == _at(13, 0).timestamp()
+        assert (
+            started["last_tick_ok_at"] == old_ok and started["started_at"] == _at(13, 0).timestamp()
+        )
         assert started["tick_failures"] == 0
         assert after_tick["last_tick_ok_at"] == old_ok and after_tick["tick_failures"] == 1
 
@@ -993,9 +984,11 @@ class SourcedFakeIbkr(FakeIbkr):
         from tree_options.trex.engine import Snapshot
         from tree_options.trex.spot import SpotReading
 
-        sources = {} if self.blind else {
-            s.underlying: SpotReading(self.spot_price, "polygon", ts, 900.0) for s in spreads
-        }
+        sources = (
+            {}
+            if self.blind
+            else {s.underlying: SpotReading(self.spot_price, "polygon", ts, 900.0) for s in spreads}
+        )
         return Snapshot(
             ts=ts,
             spots={sym: r.px for sym, r in sources.items()},
@@ -1029,8 +1022,12 @@ class TestSpotProvenance:
         marks = json.loads((mon.run_dir / "marks.json").read_text())
         assert marks["spots"] == {"NVDA": "200.00"}
         assert marks["spot_sources"] == {
-            "NVDA": {"px": "200.00", "source": "polygon", "as_of": _at(13, 0).isoformat(),
-                     "age_s": 900.0}
+            "NVDA": {
+                "px": "200.00",
+                "source": "polygon",
+                "as_of": _at(13, 0).isoformat(),
+                "age_s": 900.0,
+            }
         }
 
     def test_no_spot_means_no_touch_decision(self, tmp_path: Path) -> None:
@@ -1078,18 +1075,31 @@ class TestSpotProvenance:
         monday = date(2026, 9, 21)
         run = tmp_path / "run"
         run.mkdir()
-        (run / "monitor.json").write_text(json.dumps({"spot_blind": {
-            "NVDA": _at(15, 0).isoformat(),  # Friday
-        }}))
+        (run / "monitor.json").write_text(
+            json.dumps(
+                {
+                    "spot_blind": {
+                        "NVDA": _at(15, 0).isoformat(),  # Friday
+                    }
+                }
+            )
+        )
         mon = _monitor(tmp_path, SourcedFakeIbkr(None), _at(10, 0, monday))
         _open_book(mon)
         mon._start_health()
         mon._tick()
         assert _health_now(mon)["spot_blind"] == {"NVDA": _at(9, 46, monday).isoformat()}
 
-        (run / "monitor.json").write_text(json.dumps({"spot_blind": {
-            "NVDA": _at(9, 50, monday).isoformat(), "junk": 5,
-        }}))
+        (run / "monitor.json").write_text(
+            json.dumps(
+                {
+                    "spot_blind": {
+                        "NVDA": _at(9, 50, monday).isoformat(),
+                        "junk": 5,
+                    }
+                }
+            )
+        )
         mon2 = _monitor(tmp_path, SourcedFakeIbkr(None), _at(10, 0, monday))
         _open_book(mon2)
         mon2._start_health()
@@ -1153,8 +1163,14 @@ class TestSpotFeedWiring:
     def _monitor(self, tmp_path: Path, feed: FakeFeed) -> Monitor:
         run = tmp_path / "run"
         run.mkdir(exist_ok=True)
-        return Monitor(_plan(), FakeIbkr(spot="200.00"), BookState(["nvda-oct"]), run,
-                       clock=lambda: _at(13, 0), spots=feed)
+        return Monitor(
+            _plan(),
+            FakeIbkr(spot="200.00"),
+            BookState(["nvda-oct"]),
+            run,
+            clock=lambda: _at(13, 0),
+            spots=feed,
+        )
 
     def test_the_feed_decides_the_touch(self, tmp_path: Path) -> None:
         feed = FakeFeed("184.50")  # the broker snapshot's 200.00 is not a touch source

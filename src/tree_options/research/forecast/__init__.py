@@ -18,6 +18,7 @@ and the counterexample. Calibration is never claimed in v1
 with its Wilson interval and a block-bootstrap sensitivity is displayed
 instead.
 """
+
 from __future__ import annotations
 
 from tree_options.research.forecast.contracts import (
@@ -114,14 +115,21 @@ def __getattr__(name: str):
     scenarios package: importing the contracts or spec_io must never pull
     the engine in."""
     if name in {
-        "evaluate_forecast", "ForecastOutcome",
-        "SOURCE_REGISTRY", "SourceDescriptor", "ForecastSeries",
-        "load_synthetic", "load_index", "INTERVAL_SEMANTICS",
-        "DEFAULT_MODELS", "BASELINE_MODEL",
+        "evaluate_forecast",
+        "ForecastOutcome",
+        "SOURCE_REGISTRY",
+        "SourceDescriptor",
+        "ForecastSeries",
+        "load_synthetic",
+        "load_index",
+        "INTERVAL_SEMANTICS",
+        "DEFAULT_MODELS",
+        "BASELINE_MODEL",
         "session_authority_sha256",
     }:
         from tree_options.research.forecast import engine as _engine_mod
         from tree_options.research.forecast import sources as _sources_mod
+
         g = {**_engine_mod.__dict__, **_sources_mod.__dict__}
         value = g.get(name)
         if value is not None:

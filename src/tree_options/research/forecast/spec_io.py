@@ -11,6 +11,7 @@ This module is intentionally FREE of imports from
 ``metrics`` so either side can be loaded before the other — the import
 graph stays acyclic (the scenarios-package lesson).
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -78,11 +79,9 @@ def forecast_from_dict(payload: dict[str, Any]) -> ForecastSpec:
 
     raw_horizon = payload["horizon"]
     if isinstance(raw_horizon, bool) or not isinstance(raw_horizon, int):
-        raise ValueError(
-            f"'horizon' must be an integer session count, got {raw_horizon!r}")
+        raise ValueError(f"'horizon' must be an integer session count, got {raw_horizon!r}")
     if raw_horizon <= 0:
-        raise ValueError(
-            f"'horizon' must be positive, got {raw_horizon}")
+        raise ValueError(f"'horizon' must be positive, got {raw_horizon}")
 
     start = _parse_iso(payload["evaluation_start"], "evaluation_start")
     end: date | None = None
@@ -91,12 +90,12 @@ def forecast_from_dict(payload: dict[str, Any]) -> ForecastSpec:
     if end is not None and end < start:
         raise ValueError(
             f"'evaluation_end' ({end.isoformat()}) precedes "
-            f"'evaluation_start' ({start.isoformat()})")
+            f"'evaluation_start' ({start.isoformat()})"
+        )
 
     proposed_by = payload.get("proposed_by", "operator")
     if not isinstance(proposed_by, str):
-        raise ValueError(
-            f"'proposed_by' must be a string, got {proposed_by!r}")
+        raise ValueError(f"'proposed_by' must be a string, got {proposed_by!r}")
     notes = payload.get("notes", "")
     if not isinstance(notes, str):
         raise ValueError(f"'notes' must be a string, got {notes!r}")
@@ -113,13 +112,11 @@ def forecast_from_dict(payload: dict[str, Any]) -> ForecastSpec:
 
 def _parse_iso(value: Any, field_name: str) -> date:
     if not isinstance(value, str):
-        raise ValueError(
-            f"'{field_name}' must be an ISO date string, got {value!r}")
+        raise ValueError(f"'{field_name}' must be an ISO date string, got {value!r}")
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError(
-            f"'{field_name}' is not an ISO date: {value!r}") from exc
+        raise ValueError(f"'{field_name}' is not an ISO date: {value!r}") from exc
 
 
 __all__ = ["FORECAST_SPEC_FIELDS", "forecast_from_dict"]

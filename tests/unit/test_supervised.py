@@ -72,8 +72,9 @@ def _order_intent(intent_id: str = "sup-001", *, source: str = STRATEGY) -> Orde
     )
 
 
-def _sup_intent(intent_id: str = "sup-001", *, sha: str = PACKAGE_SHA,
-                source: str = STRATEGY) -> SupervisedIntent:
+def _sup_intent(
+    intent_id: str = "sup-001", *, sha: str = PACKAGE_SHA, source: str = STRATEGY
+) -> SupervisedIntent:
     return SupervisedIntent(
         intent=_order_intent(intent_id, source=source),
         package_intent_sha256=sha,
@@ -92,9 +93,16 @@ def paths(tmp_path):
 @pytest.fixture()
 def mandate(paths):
     return grant_mandate(
-        paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-        strategy_version=STRATEGY, profile_digest="c" * 64,
-        max_orders=2, ttl_seconds=3600, granted_by="operator-terminal")
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=2,
+        ttl_seconds=3600,
+        granted_by="operator-terminal",
+    )
 
 
 class PaperPortBroker:
@@ -107,8 +115,7 @@ class PaperPortBroker:
 
     def submit(self, attempt, effect_payload=b""):
         self.submitted.append(attempt)
-        self._paper = PaperBroker(intent=_order_intent(attempt.intent_id),
-                                  quote=self._quote)
+        self._paper = PaperBroker(intent=_order_intent(attempt.intent_id), quote=self._quote)
         ack = self._paper.acknowledge(attempt)
         return Acknowledged(ack, self._paper.fills() + self._paper.readbacks())
 
@@ -131,33 +138,68 @@ class ExplodingBroker:
 
 def test_mandate_grant_and_active_roundtrip(paths):
     granted = grant_mandate(
-        paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-        strategy_version=STRATEGY, profile_digest="c" * 64,
-        max_orders=1, ttl_seconds=3600, granted_by="operator-terminal")
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=1,
+        ttl_seconds=3600,
+        granted_by="operator-terminal",
+    )
     assert (paths.root / "mandate.json").exists()
-    loaded = active_mandate(paths, now=shift_instant(T0, 60), account_id=ACCOUNT,
-                            owner_epoch=OWNER, strategy_version=STRATEGY)
+    loaded = active_mandate(
+        paths,
+        now=shift_instant(T0, 60),
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+    )
     assert loaded.mandate_id == granted.mandate_id
     assert loaded.expires_at == shift_instant(T0, 3600)
 
 
 def test_second_grant_while_active_refused(paths, mandate):
     with pytest.raises(SupervisedRefused) as caught:
-        grant_mandate(paths, now=shift_instant(T0, 60), account_id=ACCOUNT,
-                      owner_epoch=OWNER, strategy_version=STRATEGY,
-                      profile_digest="c" * 64, max_orders=1,
-                      ttl_seconds=3600, granted_by="operator-terminal")
+        grant_mandate(
+            paths,
+            now=shift_instant(T0, 60),
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            strategy_version=STRATEGY,
+            profile_digest="c" * 64,
+            max_orders=1,
+            ttl_seconds=3600,
+            granted_by="operator-terminal",
+        )
     assert caught.value.reason == "mandate_already_active"
 
 
 def test_expired_mandate_is_replaceable(paths):
-    grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                  strategy_version=STRATEGY, profile_digest="c" * 64,
-                  max_orders=1, ttl_seconds=60, granted_by="operator-terminal")
+    grant_mandate(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=1,
+        ttl_seconds=60,
+        granted_by="operator-terminal",
+    )
     later = shift_instant(T0, 61)
-    fresh = grant_mandate(paths, now=later, account_id=ACCOUNT, owner_epoch=OWNER,
-                          strategy_version=STRATEGY, profile_digest="d" * 64,
-                          max_orders=1, ttl_seconds=3600, granted_by="operator-terminal")
+    fresh = grant_mandate(
+        paths,
+        now=later,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="d" * 64,
+        max_orders=1,
+        ttl_seconds=3600,
+        granted_by="operator-terminal",
+    )
     assert fresh.granted_at == later
     assert list(paths.root.glob("mandate.expired-*.json")), "archive must remain"
 
@@ -165,32 +207,54 @@ def test_expired_mandate_is_replaceable(paths):
 @pytest.mark.parametrize("ttl", [59, 7 * 24 * 60 * 60 + 1])
 def test_mandate_ttl_bounds(paths, ttl):
     with pytest.raises(SupervisedRefused) as caught:
-        grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                      strategy_version=STRATEGY, profile_digest="c" * 64,
-                      max_orders=1, ttl_seconds=ttl, granted_by="operator-terminal")
+        grant_mandate(
+            paths,
+            now=T0,
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            strategy_version=STRATEGY,
+            profile_digest="c" * 64,
+            max_orders=1,
+            ttl_seconds=ttl,
+            granted_by="operator-terminal",
+        )
     assert caught.value.reason == "mandate_ttl_out_of_bounds"
 
 
-@pytest.mark.parametrize("ttl, long_running", [
-    (3600, False),                                   # a session grant
-    (3 * 24 * 60 * 60, True),                        # ruling 09-28: multi-day
-    (7 * 24 * 60 * 60, True),                        # the new ceiling
-])
+@pytest.mark.parametrize(
+    "ttl, long_running",
+    [
+        (3600, False),  # a session grant
+        (3 * 24 * 60 * 60, True),  # ruling 09-28: multi-day
+        (7 * 24 * 60 * 60, True),  # the new ceiling
+    ],
+)
 def test_long_grants_are_flagged(paths, ttl, long_running):
-    mandate = grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                            strategy_version=STRATEGY, profile_digest="c" * 64,
-                            max_orders=1, ttl_seconds=ttl, granted_by="operator-terminal")
+    mandate = grant_mandate(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=1,
+        ttl_seconds=ttl,
+        granted_by="operator-terminal",
+    )
     assert mandate.long_running is long_running
     assert mandate.days_left(shift_instant(T0, 60)) >= (2 if long_running else 0)
     report = status(paths, now=shift_instant(T0, 60))
     assert report["mandate"]["days_left"] == mandate.days_left(shift_instant(T0, 60))
 
 
-@pytest.mark.parametrize("kwargs, reason", [
-    ({"account_id": "OTHER"}, "mandate_account_mismatch"),
-    ({"owner_epoch": "gateway-epoch-2"}, "mandate_owner_mismatch"),
-    ({"strategy_version": "other-strategy/1"}, "mandate_scope_mismatch"),
-])
+@pytest.mark.parametrize(
+    "kwargs, reason",
+    [
+        ({"account_id": "OTHER"}, "mandate_account_mismatch"),
+        ({"owner_epoch": "gateway-epoch-2"}, "mandate_owner_mismatch"),
+        ({"strategy_version": "other-strategy/1"}, "mandate_scope_mismatch"),
+    ],
+)
 def test_active_mandate_mismatches(paths, mandate, kwargs, reason):
     base = {"account_id": ACCOUNT, "owner_epoch": OWNER, "strategy_version": STRATEGY}
     base.update(kwargs)
@@ -201,18 +265,32 @@ def test_active_mandate_mismatches(paths, mandate, kwargs, reason):
 
 def test_active_mandate_absent(paths):
     with pytest.raises(SupervisedRefused) as caught:
-        active_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                       strategy_version=STRATEGY)
+        active_mandate(
+            paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER, strategy_version=STRATEGY
+        )
     assert caught.value.reason == "mandate_absent"
 
 
 def test_active_mandate_expired(paths):
-    grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                  strategy_version=STRATEGY, profile_digest="c" * 64,
-                  max_orders=1, ttl_seconds=60, granted_by="operator-terminal")
+    grant_mandate(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=1,
+        ttl_seconds=60,
+        granted_by="operator-terminal",
+    )
     with pytest.raises(SupervisedRefused) as caught:
-        active_mandate(paths, now=shift_instant(T0, 61), account_id=ACCOUNT,
-                       owner_epoch=OWNER, strategy_version=STRATEGY)
+        active_mandate(
+            paths,
+            now=shift_instant(T0, 61),
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            strategy_version=STRATEGY,
+        )
     assert caught.value.reason == "mandate_expired"
 
 
@@ -221,13 +299,22 @@ def test_revoke_tombstone_blocks_forever(paths, mandate):
     assert not paths.mandate().exists()
     assert paths.mandate_revoked().exists()
     with pytest.raises(SupervisedRefused) as caught:
-        active_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                       strategy_version=STRATEGY)
+        active_mandate(
+            paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER, strategy_version=STRATEGY
+        )
     assert caught.value.reason == "mandate_revoked"
     with pytest.raises(SupervisedRefused) as caught:
-        grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                      strategy_version=STRATEGY, profile_digest="c" * 64,
-                      max_orders=1, ttl_seconds=3600, granted_by="operator-terminal")
+        grant_mandate(
+            paths,
+            now=T0,
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            strategy_version=STRATEGY,
+            profile_digest="c" * 64,
+            max_orders=1,
+            ttl_seconds=3600,
+            granted_by="operator-terminal",
+        )
     assert caught.value.reason == "mandate_revoked_permanent"
 
 
@@ -242,8 +329,12 @@ def test_intent_record_is_idempotent_for_identical_bytes(paths):
 
 def test_intent_id_collision_refused(paths):
     record_intent(paths, _sup_intent())
-    other = SupervisedIntent(intent=_order_intent(), package_intent_sha256=PACKAGE_SHA,
-                             created_at=T0, send_deadline=shift_instant(T0, 999))
+    other = SupervisedIntent(
+        intent=_order_intent(),
+        package_intent_sha256=PACKAGE_SHA,
+        created_at=T0,
+        send_deadline=shift_instant(T0, 999),
+    )
     with pytest.raises(SupervisedRefused) as caught:
         record_intent(paths, other)
     assert caught.value.reason == "intent_id_collision"
@@ -251,16 +342,23 @@ def test_intent_id_collision_refused(paths):
 
 def test_intent_deadline_must_follow_creation():
     with pytest.raises(ValueError):
-        SupervisedIntent(intent=_order_intent(), package_intent_sha256=PACKAGE_SHA,
-                         created_at=T0, send_deadline=T0)
+        SupervisedIntent(
+            intent=_order_intent(),
+            package_intent_sha256=PACKAGE_SHA,
+            created_at=T0,
+            send_deadline=T0,
+        )
 
 
 def test_expired_pending_intent_does_not_hold_the_package(paths):
     """send() refuses a passed deadline, so that intent can never go out."""
     record_intent(paths, _sup_intent("sup-001"))  # deadline T0+120
-    later = SupervisedIntent(intent=_order_intent("sup-002"), package_intent_sha256=PACKAGE_SHA,
-                             created_at=shift_instant(T0, 121),
-                             send_deadline=shift_instant(T0, 300))
+    later = SupervisedIntent(
+        intent=_order_intent("sup-002"),
+        package_intent_sha256=PACKAGE_SHA,
+        created_at=shift_instant(T0, 121),
+        send_deadline=shift_instant(T0, 300),
+    )
     record_intent(paths, later)
     assert paths.pending("sup-002").exists()
 
@@ -276,62 +374,119 @@ def test_second_intent_same_package_refused_while_in_flight(paths):
 
 
 def test_permit_issue_spends_mandate_budget(paths, mandate):
-    permit = issue_permit(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                          intent=_sup_intent(), canary_blockers=(),
-                          effect_payload=EFFECT, screening_sha256=SCREENING_SHA)
+    permit = issue_permit(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        intent=_sup_intent(),
+        canary_blockers=(),
+        effect_payload=EFFECT,
+        screening_sha256=SCREENING_SHA,
+    )
     assert paths.permit(permit.permit_id).exists()
-    spent = active_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                           strategy_version=STRATEGY)
+    spent = active_mandate(
+        paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER, strategy_version=STRATEGY
+    )
     assert spent.orders_used == mandate.orders_used + 1
 
 
 def test_permit_refused_on_canary_blockers(paths, mandate):
     with pytest.raises(SupervisedRefused) as caught:
-        issue_permit(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                     intent=_sup_intent(), canary_blockers=("paper_account_mismatch_or_unverified",
-                                                            "legacy_book_not_flat"),
-                     effect_payload=EFFECT, screening_sha256=SCREENING_SHA)
+        issue_permit(
+            paths,
+            now=T0,
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            intent=_sup_intent(),
+            canary_blockers=("paper_account_mismatch_or_unverified", "legacy_book_not_flat"),
+            effect_payload=EFFECT,
+            screening_sha256=SCREENING_SHA,
+        )
     assert caught.value.reason == "canary_blockers"
     assert "legacy_book_not_flat" in caught.value.detail
-    spent = active_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                           strategy_version=STRATEGY)
+    spent = active_mandate(
+        paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER, strategy_version=STRATEGY
+    )
     assert spent.orders_used == mandate.orders_used
 
 
 def test_permit_refused_past_send_deadline(paths, mandate):
     with pytest.raises(SupervisedRefused) as caught:
-        issue_permit(paths, now=shift_instant(T0, 121), account_id=ACCOUNT,
-                     owner_epoch=OWNER, intent=_sup_intent(),
-                     canary_blockers=(), effect_payload=EFFECT,
-                     screening_sha256=SCREENING_SHA)
+        issue_permit(
+            paths,
+            now=shift_instant(T0, 121),
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            intent=_sup_intent(),
+            canary_blockers=(),
+            effect_payload=EFFECT,
+            screening_sha256=SCREENING_SHA,
+        )
     assert caught.value.reason == "intent_deadline_passed"
 
 
 def test_permit_double_issue_refused(paths, mandate):
     record_intent(paths, _sup_intent())
-    issue_permit(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                 intent=_sup_intent(), canary_blockers=(), effect_payload=EFFECT,
-                 screening_sha256=SCREENING_SHA)
+    issue_permit(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        intent=_sup_intent(),
+        canary_blockers=(),
+        effect_payload=EFFECT,
+        screening_sha256=SCREENING_SHA,
+    )
     with pytest.raises(SupervisedRefused) as caught:
-        issue_permit(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                     intent=_sup_intent(), canary_blockers=(), effect_payload=EFFECT,
-                     screening_sha256=SCREENING_SHA)
+        issue_permit(
+            paths,
+            now=T0,
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            intent=_sup_intent(),
+            canary_blockers=(),
+            effect_payload=EFFECT,
+            screening_sha256=SCREENING_SHA,
+        )
     assert caught.value.reason == "permit_already_issued"
 
 
 def test_permit_budget_exhausted(paths):
-    grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                  strategy_version=STRATEGY, profile_digest="c" * 64,
-                  max_orders=1, ttl_seconds=3600, granted_by="operator-terminal")
+    grant_mandate(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=1,
+        ttl_seconds=3600,
+        granted_by="operator-terminal",
+    )
     record_intent(paths, _sup_intent())
-    issue_permit(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                 intent=_sup_intent(), canary_blockers=(), effect_payload=EFFECT,
-                 screening_sha256=SCREENING_SHA)
+    issue_permit(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        intent=_sup_intent(),
+        canary_blockers=(),
+        effect_payload=EFFECT,
+        screening_sha256=SCREENING_SHA,
+    )
     record_intent(paths, _sup_intent("sup-002", sha="e" * 64))
     with pytest.raises(SupervisedRefused) as caught:
-        issue_permit(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                     intent=_sup_intent("sup-002", sha="e" * 64), canary_blockers=(),
-                     effect_payload=EFFECT, screening_sha256=SCREENING_SHA)
+        issue_permit(
+            paths,
+            now=T0,
+            account_id=ACCOUNT,
+            owner_epoch=OWNER,
+            intent=_sup_intent("sup-002", sha="e" * 64),
+            canary_blockers=(),
+            effect_payload=EFFECT,
+            screening_sha256=SCREENING_SHA,
+        )
     assert caught.value.reason == "mandate_budget_exhausted"
 
 
@@ -340,16 +495,28 @@ def test_permit_budget_exhausted(paths):
 
 def _armed(paths, intent_id: str = "sup-001", sha: str = PACKAGE_SHA):
     record_intent(paths, _sup_intent(intent_id, sha=sha))
-    permit = issue_permit(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                          intent=_sup_intent(intent_id, sha=sha), canary_blockers=(),
-                          effect_payload=EFFECT, screening_sha256=SCREENING_SHA)
+    permit = issue_permit(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        intent=_sup_intent(intent_id, sha=sha),
+        canary_blockers=(),
+        effect_payload=EFFECT,
+        screening_sha256=SCREENING_SHA,
+    )
     return permit
 
 
 def test_send_happy_path_projects_to_filled(paths, mandate):
     permit = _armed(paths)
-    receipt = send(paths, now=shift_instant(T0, 5), permit_id=permit.permit_id,
-                   effect_payload=EFFECT, broker=PaperPortBroker())
+    receipt = send(
+        paths,
+        now=shift_instant(T0, 5),
+        permit_id=permit.permit_id,
+        effect_payload=EFFECT,
+        broker=PaperPortBroker(),
+    )
     assert receipt["outcome"] == "acknowledged"
     assert receipt["broker_order_id"] == "paper-order-sup-001"
     assert not paths.pending("sup-001").exists()
@@ -369,33 +536,55 @@ def test_send_happy_path_projects_to_filled(paths, mandate):
 def test_send_refuses_wrong_effect_bytes(paths, mandate):
     permit = _armed(paths)
     with pytest.raises(SupervisedRefused) as caught:
-        send(paths, now=T0, permit_id=permit.permit_id,
-             effect_payload=b'{"order":"tampered"}', broker=PaperPortBroker())
+        send(
+            paths,
+            now=T0,
+            permit_id=permit.permit_id,
+            effect_payload=b'{"order":"tampered"}',
+            broker=PaperPortBroker(),
+        )
     assert caught.value.reason == "effect_hash_mismatch"
     assert paths.pending("sup-001").exists()
 
 
 def test_send_refuses_consumed_permit(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=PaperPortBroker())
     with pytest.raises(SupervisedRefused) as caught:
-        send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-             broker=PaperPortBroker())
+        send(
+            paths,
+            now=T0,
+            permit_id=permit.permit_id,
+            effect_payload=EFFECT,
+            broker=PaperPortBroker(),
+        )
     assert caught.value.reason == "permit_consumed"
 
 
 def test_send_refused_when_mandate_expired(paths):
-    grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                  strategy_version=STRATEGY, profile_digest="c" * 64,
-                  max_orders=1, ttl_seconds=60, granted_by="operator-terminal")
+    grant_mandate(
+        paths,
+        now=T0,
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=1,
+        ttl_seconds=60,
+        granted_by="operator-terminal",
+    )
     permit = _armed(paths)
     # +90s: the 60s mandate is expired while the permit (clamped to the
     # intent's +120s deadline) is not; the send boundary must re-check the
     # mandate, not trust the permit.
     with pytest.raises(SupervisedRefused) as caught:
-        send(paths, now=shift_instant(T0, 90), permit_id=permit.permit_id,
-             effect_payload=EFFECT, broker=PaperPortBroker())
+        send(
+            paths,
+            now=shift_instant(T0, 90),
+            permit_id=permit.permit_id,
+            effect_payload=EFFECT,
+            broker=PaperPortBroker(),
+        )
     assert caught.value.reason == "mandate_expired"
     # Nothing was claimed: the intent is still pending, untouched.
     assert paths.pending("sup-001").exists()
@@ -406,20 +595,25 @@ def test_send_refused_when_mandate_expired(paths):
 
 def test_uncertain_send_preserves_and_blocks_retry(paths, mandate):
     permit = _armed(paths)
-    receipt = send(paths, now=T0, permit_id=permit.permit_id,
-                   effect_payload=EFFECT, broker=ExplodingBroker())
+    receipt = send(
+        paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=ExplodingBroker()
+    )
     assert receipt["outcome"] == "uncertain"
     assert receipt["reason"] == "broker_transport_error"
     with pytest.raises(SupervisedRefused) as caught:
-        send(paths, now=shift_instant(T0, 2), permit_id=permit.permit_id,
-             effect_payload=EFFECT, broker=PaperPortBroker())
+        send(
+            paths,
+            now=shift_instant(T0, 2),
+            permit_id=permit.permit_id,
+            effect_payload=EFFECT,
+            broker=PaperPortBroker(),
+        )
     assert caught.value.reason == "permit_consumed"
     with pytest.raises(SupervisedRefused) as caught:
         record_intent(paths, _sup_intent("sup-002"))
     assert caught.value.reason == "package_already_in_flight"
     lifecycle = project_intent(paths, "sup-001")
-    assert lifecycle.state in (ExecutionState.UNKNOWN,
-                               ExecutionState.RECONCILIATION_REQUIRED)
+    assert lifecycle.state in (ExecutionState.UNKNOWN, ExecutionState.RECONCILIATION_REQUIRED)
 
 
 SETTLED = RECONCILE_SETTLE_S + 10
@@ -437,36 +631,40 @@ class SubmittedLookupBroker:
 
 def test_reconcile_not_submitted_clears_the_package(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=ExplodingBroker())
-    verdict = reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
-                               broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=ExplodingBroker())
+    verdict = reconcile_intent(
+        paths, now=shift_instant(T0, SETTLED), intent_id="sup-001", broker=PaperPortBroker()
+    )
     assert verdict["verdict"] == "confirmed_not_submitted"
     # A fresh intent for the same package is admissible again.
     record_intent(paths, _sup_intent("sup-002"))
     # Re-reconciling with the same verdict is idempotent.
-    again = reconcile_intent(paths, now=shift_instant(T0, SETTLED + 30),
-                             intent_id="sup-001", broker=PaperPortBroker())
+    again = reconcile_intent(
+        paths, now=shift_instant(T0, SETTLED + 30), intent_id="sup-001", broker=PaperPortBroker()
+    )
     assert again["verdict"] == "confirmed_not_submitted"
 
 
 def test_reconcile_refused_inside_settle_window(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=ExplodingBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=ExplodingBroker())
     with pytest.raises(SupervisedRefused) as caught:
-        reconcile_intent(paths, now=shift_instant(T0, RECONCILE_SETTLE_S - 1),
-                         intent_id="sup-001", broker=PaperPortBroker())
+        reconcile_intent(
+            paths,
+            now=shift_instant(T0, RECONCILE_SETTLE_S - 1),
+            intent_id="sup-001",
+            broker=PaperPortBroker(),
+        )
     assert caught.value.reason == "reconcile_too_early"
     assert not paths.reconciled("sup-001").exists()
 
 
 def test_reconcile_still_unknown_keeps_package_held_and_is_not_a_verdict(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=ExplodingBroker())
-    verdict = reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
-                               broker=ExplodingBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=ExplodingBroker())
+    verdict = reconcile_intent(
+        paths, now=shift_instant(T0, SETTLED), intent_id="sup-001", broker=ExplodingBroker()
+    )
     assert verdict["verdict"] == "still_uncertain"
     assert verdict["persisted"] is False
     assert not paths.reconciled("sup-001").exists()
@@ -479,30 +677,37 @@ def test_reconcile_still_unknown_keeps_package_held_and_is_not_a_verdict(paths, 
 def test_reconcile_upgrades_after_inconclusive_lookup(paths, mandate):
     """A lookup made while the gateway was down must not strand the package."""
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=ExplodingBroker())
-    reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
-                     broker=ExplodingBroker())
-    verdict = reconcile_intent(paths, now=shift_instant(T0, SETTLED + 60),
-                               intent_id="sup-001", broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=ExplodingBroker())
+    reconcile_intent(
+        paths, now=shift_instant(T0, SETTLED), intent_id="sup-001", broker=ExplodingBroker()
+    )
+    verdict = reconcile_intent(
+        paths, now=shift_instant(T0, SETTLED + 60), intent_id="sup-001", broker=PaperPortBroker()
+    )
     assert verdict["verdict"] == "confirmed_not_submitted"
     record_intent(paths, _sup_intent("sup-002"))
     audit = paths.reconcile_audit("sup-001").read_text().splitlines()
     assert [json.loads(line)["verdict"] for line in audit] == [
-        "still_uncertain", "confirmed_not_submitted"]
+        "still_uncertain",
+        "confirmed_not_submitted",
+    ]
 
 
 def test_reconcile_conflicting_confirmed_verdicts_refused(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=ExplodingBroker())
-    first = reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
-                             broker=SubmittedLookupBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=ExplodingBroker())
+    first = reconcile_intent(
+        paths, now=shift_instant(T0, SETTLED), intent_id="sup-001", broker=SubmittedLookupBroker()
+    )
     assert first["verdict"] == "confirmed_submitted"
     assert first["broker_order_id"] == "ib-sup-001"
     with pytest.raises(SupervisedRefused) as caught:
-        reconcile_intent(paths, now=shift_instant(T0, SETTLED + 60), intent_id="sup-001",
-                         broker=PaperPortBroker())
+        reconcile_intent(
+            paths,
+            now=shift_instant(T0, SETTLED + 60),
+            intent_id="sup-001",
+            broker=PaperPortBroker(),
+        )
     assert caught.value.reason == "reconcile_verdict_conflict"
     # A confirmed-submitted package stays held.
     with pytest.raises(SupervisedRefused) as caught:
@@ -512,31 +717,37 @@ def test_reconcile_conflicting_confirmed_verdicts_refused(paths, mandate):
 
 def test_reconcile_refuses_non_uncertain_intent(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=PaperPortBroker())
     with pytest.raises(SupervisedRefused) as caught:
-        reconcile_intent(paths, now=shift_instant(T0, 30), intent_id="sup-001",
-                         broker=PaperPortBroker())
+        reconcile_intent(
+            paths, now=shift_instant(T0, 30), intent_id="sup-001", broker=PaperPortBroker()
+        )
     assert caught.value.reason == "intent_not_uncertain"
 
 
 def test_rejected_send_allows_new_intent_for_package(paths, mandate):
     class RejectingBroker:
         def submit(self, attempt, effect_payload=b""):
-            return Refused(OrderReject(
-                record_id=f"rej-{attempt.record_id}", intent_id=attempt.intent_id,
-                reason_code="INSUFFICIENT_MARGIN",
-                broker_acknowledged_at=shift_instant(attempt.send_attempt_at, 1),
-                locally_received_at=shift_instant(attempt.send_attempt_at, 2),
-                source="supervised-test", source_sequence_id=f"rej-{attempt.record_id}",
-                broker_sequence_id=f"rej-{attempt.record_id}"))
+            return Refused(
+                OrderReject(
+                    record_id=f"rej-{attempt.record_id}",
+                    intent_id=attempt.intent_id,
+                    reason_code="INSUFFICIENT_MARGIN",
+                    broker_acknowledged_at=shift_instant(attempt.send_attempt_at, 1),
+                    locally_received_at=shift_instant(attempt.send_attempt_at, 2),
+                    source="supervised-test",
+                    source_sequence_id=f"rej-{attempt.record_id}",
+                    broker_sequence_id=f"rej-{attempt.record_id}",
+                )
+            )
 
         def lookup(self, intent_id):
             return LookupUnknown("never submitted")
 
     permit = _armed(paths)
-    receipt = send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-                   broker=RejectingBroker())
+    receipt = send(
+        paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=RejectingBroker()
+    )
     assert receipt["outcome"] == "rejected"
     assert receipt["reason_code"] == "INSUFFICIENT_MARGIN"
     record_intent(paths, _sup_intent("sup-002"))
@@ -567,8 +778,7 @@ def test_recover_reclassifies_orphan_sending(paths):
 
 def test_recover_drops_sending_when_terminal_exists(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=PaperPortBroker())
     paths.sending("sup-001").write_text('{"late": true}')
     assert recover(paths, now=shift_instant(T0, 1)) == []
     assert not paths.sending("sup-001").exists()
@@ -579,8 +789,7 @@ def test_recover_drops_sending_when_terminal_exists(paths, mandate):
 
 def test_status_reports_mandate_and_outbox(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=PaperPortBroker())
     report = status(paths, now=shift_instant(T0, 1))
     assert report["mandate"]["state"] == "active"
     assert report["mandate"]["orders_used"] == 1
@@ -596,22 +805,42 @@ def test_status_reports_mandate_and_outbox(paths, mandate):
 def _fill_before_intent(intent_id: str, broker_order_id: str, record_id: str) -> CompleteFill:
     """A fill stamped before the intent existed: the lifecycle must refuse it."""
     return CompleteFill(
-        record_id=record_id, intent_id=intent_id, broker_order_id=broker_order_id,
-        fill_quantity=1, cumulative_quantity=1, unit_price=Decimal("1.25"),
-        fees=Decimal("0.65"), exchange_event_at=shift_instant(T0, -60),
-        locally_received_at=shift_instant(T0, -59), source="bad-adapter",
-        source_sequence_id=record_id, broker_sequence_id=record_id)
+        record_id=record_id,
+        intent_id=intent_id,
+        broker_order_id=broker_order_id,
+        fill_quantity=1,
+        cumulative_quantity=1,
+        unit_price=Decimal("1.25"),
+        fees=Decimal("0.65"),
+        exchange_event_at=shift_instant(T0, -60),
+        locally_received_at=shift_instant(T0, -59),
+        source="bad-adapter",
+        source_sequence_id=record_id,
+        broker_sequence_id=record_id,
+    )
 
 
 def test_permit_expiry_clamped_to_send_deadline(paths, mandate):
     record_intent(paths, _sup_intent())
-    permit = issue_permit(paths, now=shift_instant(T0, 100), account_id=ACCOUNT,
-                          owner_epoch=OWNER, intent=_sup_intent(), canary_blockers=(),
-                          effect_payload=EFFECT, screening_sha256=SCREENING_SHA)
+    permit = issue_permit(
+        paths,
+        now=shift_instant(T0, 100),
+        account_id=ACCOUNT,
+        owner_epoch=OWNER,
+        intent=_sup_intent(),
+        canary_blockers=(),
+        effect_payload=EFFECT,
+        screening_sha256=SCREENING_SHA,
+    )
     assert permit.expires_at == shift_instant(T0, 120)
     with pytest.raises(SupervisedRefused) as caught:
-        send(paths, now=shift_instant(T0, 120), permit_id=permit.permit_id,
-             effect_payload=EFFECT, broker=PaperPortBroker())
+        send(
+            paths,
+            now=shift_instant(T0, 120),
+            permit_id=permit.permit_id,
+            effect_payload=EFFECT,
+            broker=PaperPortBroker(),
+        )
     assert caught.value.reason == "permit_expired"
     assert paths.pending("sup-001").exists()
 
@@ -621,9 +850,17 @@ def test_state_lock_refuses_when_busy(paths, monkeypatch):
     with open(paths.lock(), "a+b") as holder:
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
         with pytest.raises(SupervisedRefused) as caught:
-            grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
-                          strategy_version=STRATEGY, profile_digest="c" * 64,
-                          max_orders=1, ttl_seconds=3600, granted_by="operator-terminal")
+            grant_mandate(
+                paths,
+                now=T0,
+                account_id=ACCOUNT,
+                owner_epoch=OWNER,
+                strategy_version=STRATEGY,
+                profile_digest="c" * 64,
+                max_orders=1,
+                ttl_seconds=3600,
+                granted_by="operator-terminal",
+            )
         assert caught.value.reason == "state_busy"
     assert not paths.mandate().exists()
 
@@ -631,30 +868,38 @@ def test_state_lock_refuses_when_busy(paths, monkeypatch):
 def test_contradictory_broker_facts_become_uncertain(paths, mandate):
     class ContradictingBroker:
         def submit(self, attempt, effect_payload=b""):
-            ack = PaperBroker(intent=_order_intent(attempt.intent_id),
-                              quote=PaperQuote(bid=Decimal("1.10"), ask=Decimal("1.40"))
-                              ).acknowledge(attempt)
-            return Acknowledged(ack, (_fill_before_intent(
-                attempt.intent_id, ack.broker_order_id, "bad-fill"),))
+            ack = PaperBroker(
+                intent=_order_intent(attempt.intent_id),
+                quote=PaperQuote(bid=Decimal("1.10"), ask=Decimal("1.40")),
+            ).acknowledge(attempt)
+            return Acknowledged(
+                ack, (_fill_before_intent(attempt.intent_id, ack.broker_order_id, "bad-fill"),)
+            )
 
         def lookup(self, intent_id):
             return LookupUnknown("n/a")
 
     permit = _armed(paths)
-    receipt = send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-                   broker=ContradictingBroker())
+    receipt = send(
+        paths,
+        now=T0,
+        permit_id=permit.permit_id,
+        effect_payload=EFFECT,
+        broker=ContradictingBroker(),
+    )
     assert receipt["outcome"] == "uncertain"
     assert receipt["reason"] == "broker_facts_rejected"
     assert b"bad-fill" not in paths.journal("sup-001").read_bytes()
     # The journal still projects: nothing poisoned it.
     assert project_intent(paths, "sup-001").state in (
-        ExecutionState.UNKNOWN, ExecutionState.RECONCILIATION_REQUIRED)
+        ExecutionState.UNKNOWN,
+        ExecutionState.RECONCILIATION_REQUIRED,
+    )
 
 
 def test_status_survives_a_poisoned_journal(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=PaperPortBroker())
     poison = _fill_before_intent("sup-001", "paper-order-sup-001", "poison")
     with paths.journal("sup-001").open("a", encoding="utf-8") as stream:
         stream.write(poison.model_dump_json() + "\n")
@@ -666,8 +911,7 @@ def test_status_survives_a_poisoned_journal(paths, mandate):
 
 def test_intent_id_reuse_after_terminal_refused(paths, mandate):
     permit = _armed(paths)
-    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
-         broker=PaperPortBroker())
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT, broker=PaperPortBroker())
     with pytest.raises(SupervisedRefused) as caught:
         record_intent(paths, _sup_intent("sup-001", sha="e" * 64))
     assert caught.value.reason == "intent_id_reused"
@@ -676,5 +920,9 @@ def test_intent_id_reuse_after_terminal_refused(paths, mandate):
 @pytest.mark.parametrize("bad", ["NOT-A-SHA", "A" * 64, "a" * 63])
 def test_sha_fields_must_be_lowercase_hex(bad):
     with pytest.raises(ValueError):
-        SupervisedIntent(intent=_order_intent(), package_intent_sha256=bad,
-                         created_at=T0, send_deadline=shift_instant(T0, 60))
+        SupervisedIntent(
+            intent=_order_intent(),
+            package_intent_sha256=bad,
+            created_at=T0,
+            send_deadline=shift_instant(T0, 60),
+        )

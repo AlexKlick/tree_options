@@ -200,9 +200,7 @@ def check_once(
         book["last_notified_at"] = prior.get("last_notified_at")
         book["notify_failed_at"] = now.timestamp()
     elif push is not None and notify is not None:
-        settle_push(
-            book, prior, notify(push.title, push.message, push.priority), now.timestamp()
-        )
+        settle_push(book, prior, notify(push.title, push.message, push.priority), now.timestamp())
     if state_path is not None and not dry_run:
         _write_state(
             state_path,
@@ -218,10 +216,12 @@ def check_once(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--state", type=Path, default=None,
-                        help=f"default: <TREX_DESK_STATE>/{STATE_FILE}")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="report and change nothing, send nothing")
+    parser.add_argument(
+        "--state", type=Path, default=None, help=f"default: <TREX_DESK_STATE>/{STATE_FILE}"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="report and change nothing, send nothing"
+    )
     args = parser.parse_args(argv)
 
     env_path = paths.notify_env_path()
@@ -232,9 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         cal=session_calendar(),
         now=now,
         notify=lambda t, m, p: send(load_config(env_path), t, m, p),
-        urg=urgency(
-            now.timestamp(), exposed=False, quiet=load_quiet_hours(read_env(env_path))
-        ),
+        urg=urgency(now.timestamp(), exposed=False, quiet=load_quiet_hours(read_env(env_path))),
         dry_run=args.dry_run,
     )
     print(

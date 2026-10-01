@@ -20,13 +20,28 @@ Handoff references:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
+
+@dataclass(frozen=True, slots=True)
+class StrategyDefinition:
+    strategy_id: str
+    version: str
+    family: str
+    registration: str
+    required_inputs: tuple[str, ...]
+    description: str
+    data_status: str = "supported"
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+
+
 # -- Enumerations ------------------------------------------------------------
+
 
 class ResearchEvidenceKind(StrEnum):
     """How the candidate's evidence was produced.
@@ -35,11 +50,13 @@ class ResearchEvidenceKind(StrEnum):
     they are HTTP-level refusals enforced in ``research_view``.
     """
 
-    SYNTHETIC_BACKTEST = "synthetic_backtest"   # backtest/equity.py synthetic/v1
-    SHADOW_PROXY = "shadow_proxy"               # desk/shadows.py EOD-deadline proxy
-    SEALED_CAMPAIGN = "sealed_campaign"         # artifacts/campaign-2026-09/<scope>/sealed-round.json
-    PAPER_EXECUTION = "paper_execution"         # DESK_PAPER_DIR; reserved for RL-2
-    BROKER_PAPER = "broker_paper"               # E5; explicit out-of-scope for RL-1
+    DETERMINISTIC_REPLAY = "deterministic_replay"  # frozen PIT inputs, no broker effects
+    SIMULATED_EXECUTION = "simulated_execution"  # deterministic execution simulator
+    SYNTHETIC_BACKTEST = "synthetic_backtest"  # backtest/equity.py synthetic/v1
+    SHADOW_PROXY = "shadow_proxy"  # desk/shadows.py EOD-deadline proxy
+    SEALED_CAMPAIGN = "sealed_campaign"  # artifacts/campaign-2026-09/<scope>/sealed-round.json
+    PAPER_EXECUTION = "paper_execution"  # DESK_PAPER_DIR; reserved for RL-2
+    BROKER_PAPER = "broker_paper"  # E5; explicit out-of-scope for RL-1
 
 
 class ResearchRegistration(StrEnum):
@@ -71,14 +88,16 @@ class ResearchDisposition(StrEnum):
 #: scientific verdict: a PASS without reconstructable history cannot
 #: plot, and a FAIL with complete authorized history stays inspectable
 #: with its failure label intact (RL1-06).
-PLOT_FUNDED_ALLOWED: frozenset[ResearchDisposition] = frozenset({
-    ResearchDisposition.PASS,
-    ResearchDisposition.HOLD_STANDS,
-    ResearchDisposition.FAIL,
-    ResearchDisposition.INSUFFICIENT_N,
-    ResearchDisposition.INSUFFICIENT_COVERAGE,
-    ResearchDisposition.DESCRIPTIVE_ONLY_NO_REGIME_SIGNAL,
-})
+PLOT_FUNDED_ALLOWED: frozenset[ResearchDisposition] = frozenset(
+    {
+        ResearchDisposition.PASS,
+        ResearchDisposition.HOLD_STANDS,
+        ResearchDisposition.FAIL,
+        ResearchDisposition.INSUFFICIENT_N,
+        ResearchDisposition.INSUFFICIENT_COVERAGE,
+        ResearchDisposition.DESCRIPTIVE_ONLY_NO_REGIME_SIGNAL,
+    }
+)
 
 
 class FundedHistorySupport(StrEnum):
@@ -140,6 +159,7 @@ class ResearchRunStatus(StrEnum):
 
 
 # -- Records -----------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ResearchCandidate:
@@ -240,7 +260,9 @@ class ComparisonSpec:
             "position_sizing": self.position_sizing.value,
             "collateral": self.collateral.value,
             "borrowing": self.borrowing.value,
-            "knowledge_cutoff": self.knowledge_cutoff.isoformat() if self.knowledge_cutoff else None,
+            "knowledge_cutoff": self.knowledge_cutoff.isoformat()
+            if self.knowledge_cutoff
+            else None,
             "proposed_by": self.proposed_by,
             "notes": self.notes,
         }
@@ -304,9 +326,7 @@ class EvidenceEnvelope:
             "registered_or_exploratory": self.registered_or_exploratory.value,
             "diagnostics": dict(self.diagnostics),
             "robustness": list(self.robustness),
-            "source_artifacts": [
-                {"path": p, "sha256": s} for (p, s) in self.source_artifacts
-            ],
+            "source_artifacts": [{"path": p, "sha256": s} for (p, s) in self.source_artifacts],
             "reproduction_command": self.reproduction_command,
             "warnings": list(self.warnings),
         }

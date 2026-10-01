@@ -289,15 +289,11 @@ class Monitor:
                         realized = (st.exit_fill - st.entry_fill) * st.exit_filled_qty * 100
                 structures[spread.id] = {
                     "mark": mark,  # already a money-string or None
-                    "unrealized": (
-                        str(unrealized_open) if unrealized_open is not None else None
-                    ),
+                    "unrealized": (str(unrealized_open) if unrealized_open is not None else None),
                     "open_qty": st.open_qty,
                     "entry": str(entry) if entry is not None else None,
                     "unpriced": st.entry_unpriced_qty,
-                    "realized_to_date": (
-                        str(realized) if realized is not None else None
-                    ),
+                    "realized_to_date": (str(realized) if realized is not None else None),
                 }
             line: dict[str, Any] = {
                 "ts": (payload or {}).get("ts") or now_et().isoformat(),
@@ -343,7 +339,9 @@ class Monitor:
     # -- main loop ---------------------------------------------------------
 
     def run(self) -> int:
-        log.info("monitor armed for plan %s (%d structures)", self.plan.id, len(self.plan.structures))
+        log.info(
+            "monitor armed for plan %s (%d structures)", self.plan.id, len(self.plan.structures)
+        )
         self._start_health()
         self.adopt_open_exits()
         while not self._all_closed():
@@ -387,7 +385,7 @@ class Monitor:
             # a crash-looping monitor must not restart the blind clock
             # (clamped to today's open on the next session tick)
             blind = prior.get("spot_blind")
-            for sym, since in (blind.items() if isinstance(blind, dict) else ()):
+            for sym, since in blind.items() if isinstance(blind, dict) else ():
                 try:
                     parsed = datetime.fromisoformat(since)
                 except (TypeError, ValueError):
@@ -649,9 +647,7 @@ class Monitor:
                 structure=spread.id,
                 open_qty=qty,
             )
-            raise RuntimeError(
-                f"{spread.id}: negative open_qty {qty} — refusing exit order"
-            )
+            raise RuntimeError(f"{spread.id}: negative open_qty {qty} — refusing exit order")
         if qty <= 0:
             # flat: nothing to place (R3-03) — a zero-size SELL is an
             # invalid order request, never a normal replacement
@@ -756,13 +752,29 @@ class Monitor:
         (R2-02). Returns (status, changed)."""
         info = self.ib.order_status(ref)
         st = self.book.structures[sid]
-        before = (st.exit_filled_qty, st.exit_fill, st.exit_order_seen,
-                  st.exit_order_notional, st.exit_unpriced_qty)
-        new = drain(st, WorkingOrder(role="exit", filled=info.filled,
-                                     avg_fill_price=info.avg_fill_price,
-                                     order_id=str(ref.trade.order.orderId)))
-        after = (st.exit_filled_qty, st.exit_fill, st.exit_order_seen,
-                 st.exit_order_notional, st.exit_unpriced_qty)
+        before = (
+            st.exit_filled_qty,
+            st.exit_fill,
+            st.exit_order_seen,
+            st.exit_order_notional,
+            st.exit_unpriced_qty,
+        )
+        new = drain(
+            st,
+            WorkingOrder(
+                role="exit",
+                filled=info.filled,
+                avg_fill_price=info.avg_fill_price,
+                order_id=str(ref.trade.order.orderId),
+            ),
+        )
+        after = (
+            st.exit_filled_qty,
+            st.exit_fill,
+            st.exit_order_seen,
+            st.exit_order_notional,
+            st.exit_unpriced_qty,
+        )
         if new > 0:
             self.book.event(
                 self.events_path,
@@ -775,9 +787,13 @@ class Monitor:
             )
         elif after != before:
             self.book.event(
-                self.events_path, "exit_fill_revised", structure=sid,
-                filled=st.exit_filled_qty, order_filled=info.filled,
-                avg=str(st.exit_fill), status=info.status,
+                self.events_path,
+                "exit_fill_revised",
+                structure=sid,
+                filled=st.exit_filled_qty,
+                order_filled=info.filled,
+                avg=str(st.exit_fill),
+                status=info.status,
             )
         return info, after != before
 
@@ -797,9 +813,7 @@ class Monitor:
                 st.to(Status.CLOSED, self._now())
                 st.close_reason = st.exit_reason or "flat"
                 self._save_book()
-                self.book.event(
-                    self.events_path, "closed", structure=sid, reason=st.close_reason
-                )
+                self.book.event(self.events_path, "closed", structure=sid, reason=st.close_reason)
                 del self.orders[sid]
                 changed = True
         self._save_book()
@@ -816,9 +830,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="log decisions, place no orders")
     args = ap.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     plan = load_legacy_plan(args.plan)  # put spreads only: multi-leg is the desk's
     run_dir = _run_dir(plan, args.state_dir)

@@ -229,7 +229,9 @@ def _evaluate(
     # target selection discipline (targeted modes are filtered upstream;
     # an explicit delta/otm mode missing its input is refused, never silent)
     if mode == "delta" and not greeks_available:
-        rules.append(RuleResult("delta", NOT_EVALUABLE, "target_mode=delta requires greeks; none observed"))
+        rules.append(
+            RuleResult("delta", NOT_EVALUABLE, "target_mode=delta requires greeks; none observed")
+        )
         reasons.append("delta targeting unavailable: no greeks")
         ok = False
     elif mode == "otm" and (spot is None or spot.spot is None):
@@ -270,9 +272,15 @@ def _evaluate(
         long_mid = row_mid(long_row)
         short_mid = row_mid(short_row)
         if long_mid is None or short_mid is None:
-            reasons.append("no market on " + ("long" if long_mid is None else "") +
-                           ("short" if short_mid is None else "") + " leg")
-            rules.append(RuleResult("quotes", NOT_EVALUABLE, "no market (missing/zero-bid/crossed leg)"))
+            reasons.append(
+                "no market on "
+                + ("long" if long_mid is None else "")
+                + ("short" if short_mid is None else "")
+                + " leg"
+            )
+            rules.append(
+                RuleResult("quotes", NOT_EVALUABLE, "no market (missing/zero-bid/crossed leg)")
+            )
             ok = False
         else:
             rules.append(RuleResult("quotes", PASS, "both legs quoted"))
@@ -288,7 +296,9 @@ def _evaluate(
 
             # min debit floor
             if c.debit_mid < cfg.min_debit:
-                rules.append(RuleResult("min_debit", "FAIL", f"debit {c.debit_mid:.2f} < {cfg.min_debit}"))
+                rules.append(
+                    RuleResult("min_debit", "FAIL", f"debit {c.debit_mid:.2f} < {cfg.min_debit}")
+                )
                 reasons.append(f"debit {c.debit_mid:.2f} below floor {cfg.min_debit}")
                 ok = False
             else:
@@ -308,9 +318,15 @@ def _evaluate(
                     reasons.append(f"{label} leg unquoted")
                 elif frac > cfg.max_leg_spread_frac:
                     rules.append(
-                        RuleResult("leg_spread", "FAIL", f"{label} spread {frac:.2f} > {cfg.max_leg_spread_frac}")
+                        RuleResult(
+                            "leg_spread",
+                            "FAIL",
+                            f"{label} spread {frac:.2f} > {cfg.max_leg_spread_frac}",
+                        )
                     )
-                    reasons.append(f"{label} leg spread {frac:.2f} exceeds {cfg.max_leg_spread_frac}")
+                    reasons.append(
+                        f"{label} leg spread {frac:.2f} exceeds {cfg.max_leg_spread_frac}"
+                    )
                     ok = False
                 else:
                     rules.append(RuleResult("leg_spread", PASS, f"{label} spread {frac:.2f}"))

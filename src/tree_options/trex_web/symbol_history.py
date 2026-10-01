@@ -44,9 +44,7 @@ def clamp_request(range_key: str, max_points: int) -> tuple[str, int]:
 
 def _ts_ms(day: str) -> int:
     """Panel session date -> ET-midnight epoch ms (ET day formatting works)."""
-    return int(
-        datetime.fromisoformat(day).replace(tzinfo=ET).timestamp() * 1000
-    )
+    return int(datetime.fromisoformat(day).replace(tzinfo=ET).timestamp() * 1000)
 
 
 def _keep_indices(n: int, max_points: int) -> list[int]:
@@ -116,9 +114,7 @@ def history_payload(
 
     window = RANGES[range_key]
     if window is not None:
-        cut = (
-            datetime.fromisoformat(days[-1]) - calendar_days(window)
-        ).date().isoformat()
+        cut = (datetime.fromisoformat(days[-1]) - calendar_days(window)).date().isoformat()
         days = [d for d in days if d >= cut]
     base["range_start"] = days[0] if days else None
     base["range_sessions"] = len(days)
