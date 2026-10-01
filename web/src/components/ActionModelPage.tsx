@@ -162,6 +162,8 @@ const money = (value: number) => `${value < 0 ? '−' : '+'}$${Math.abs(value).t
 const ciText = (ci: [number, number]) => `[${money(ci[0])}, ${money(ci[1])}]`
 const pairText = (pair: LongRunPaired | null | undefined) =>
   pair ? `${money(pair.diff_total)} ${ciText(pair.ci95)}` : '—'
+const ownPairText = (own: (LongRunPaired & { p_enter: number }) | null | undefined) =>
+  own ? `${pairText(own)} · p_enter ${(own.p_enter * 100).toFixed(1)}%` : '—'
 const duration = (seconds: number | null) =>
   seconds === null ? 'unknown'
     : seconds < 90 ? `${Math.round(seconds)} s`
@@ -182,7 +184,7 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
       <div className="table-scroll">
         <table>
           <thead>
-            <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col">vs random</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
+            <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col" title="Paired diff vs a random null matched to THIS arm's own entry rate (p_enter is that matched rate) — the skill comparison.">vs random (own entry rate)</th><th scope="col" title="Legacy: one shared random null at the pooled entry rate, so this column is each arm's net total minus a single shared constant — NOT a skill measure. Retained for continuity only; never ranked on.">vs random (legacy)</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
           </thead>
           <tbody>
             {digest.standings.map((row) => (
@@ -192,7 +194,8 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
                 <td>{row.entered}{row.unevaluable > 0 ? ` (${row.unevaluable} no fill)` : ''}</td>
                 <td>{row.failures}</td>
                 <td>{money(row.net_total)} {ciText(row.net_ci95)}</td>
-                <td>{pairText(row.vs_random)}</td>
+                <td>{ownPairText(row.vs_random_own)}</td>
+                <td title="Legacy shared-null column — not a skill measure (see the column header).">{pairText(row.vs_random)}</td>
                 <td>{pairText(row.vs_incumbent)}</td>
                 <td>{pairText(row.vs_regime)}</td>
               </tr>
@@ -210,8 +213,22 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
           </tbody>
         </table>
       </div>
+      {digest.skill && Object.keys(digest.skill.arms).length > 0 && (
+        <p data-testid="longrun-skill">Skill (exact counterfactual, descriptive — never promotes): {Object.entries(digest.skill.arms).map(([name, a]) => `${name}: ${a.verdict}${(a.boards_dropped_unpriced ?? 0) > 0 ? ` — ${a.boards_dropped_unpriced} boards dropped unpriced` : ''}`).join(' · ')}</p>
+      )}
+      {(digest.skill?.no_price?.total ?? 0) > 0 && digest.skill?.no_price && (
+        <p data-testid="longrun-skill-no-price">NO PRICE: {digest.skill.no_price.total} boards dropped unpriced ({Object.entries(digest.skill.no_price.by_arm).map(([a, n]) => `${a} ${n}`).join(', ')}; reasons: {Object.entries(digest.skill.no_price.by_reason).map(([r, n]) => `${r} ${n}`).join(', ')}). Totals exclude them — a run the ledger refused to price is not a break-even result.</p>
+      )}
+      {digest.skill && Object.values(digest.skill.arms).some((a) => a.cost_provenance != null) && (
+        <p data-testid="longrun-skill-cost" className="muted">
+          {(() => {
+            const cp = Object.values(digest.skill!.arms).find((a) => a.cost_provenance)!.cost_provenance!
+            return `Cost basis: ${cp.source}${cp.snapshot_window_et ? ` (snapshots ${cp.snapshot_window_et} ET)` : ''}${cp.describes_fill_clock === false ? ' — these costs do not describe the fill clock' : ''}${cp.gap ? `: ${cp.gap}` : '.'}`
+          })()}
+        </p>
+      )}
       {wf.status === 'ok'
-        ? <p>Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists tested once): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map((f) => `${f.policy} test ${money(f.test.net_total)} ${ciText(f.test.net_ci95)}, vs random ${pairText(f.test.vs_random)}, Holm p ${f.holm_p.toFixed(3)}${f.eligible_for_operator_review ? ' — eligible for operator review' : ''}`).join('; ')}</p>
+        ? <p data-testid="longrun-wf">Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists tested once): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map((f) => `${f.policy} test ${money(f.test.net_total)} ${ciText(f.test.net_ci95)}, vs random ${pairText(f.test.vs_random)}, Holm p ${f.holm_p.toFixed(3)}${f.test_entries != null && wf.min_test_entries != null ? `, ${f.test_entries}/${wf.min_test_entries} evaluated test entries` : ''}${f.eligible_for_operator_review ? ' — eligible for operator review' : ''}`).join('; ')}</p>
         : <p className="muted">Walk-forward not applicable{wf.reason ? ` — ${wf.reason}` : ''}.</p>}
       <p className="muted">Never promoted: the pre-registered rule is text for the operator. {digest.promotion.rule}</p>
     </>
