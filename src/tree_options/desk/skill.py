@@ -913,8 +913,7 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
             "menu_block": base_block, "components": list(COMPONENTS),
             "random_control": ("the random picker's excess, participation, horizon, direction "
                                "and selection are 0 by construction; its total is BASE"),
-            "no_price": dict(no_price.as_dict()) if no_price is not None
-                         else {"total": 0, "by_arm": {}, "by_reason": {}},
+            "no_price": dict(no_price.as_dict()) if no_price is not None else None,
             "arms": doc_arms,
             "power": power_table(book, boards, horizons, options=opts)}
 
@@ -971,14 +970,27 @@ def progress_skill(boards: Sequence[Board], arms: Sequence[Arm],
 
 
 def cockpit_projection(section: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The served skill payload: per-arm verdicts plus the no-price ledger, so
+    a client can tell a run whose boards were refused unpriced (``no_price``
+    totals, ``boards_dropped_unpriced``, the 'NO PRICE (N dropped): ' verdict
+    prefix) from one that was priced and simply found no edge. The section
+    keys pass through verbatim: a section that predates the ledger serves
+    ``None`` rather than an invented zero, keeping "never looked" visibly
+    distinct from "looked, nothing refused"."""
     if not isinstance(section, Mapping):
         return None
     arms = section.get("arms") or {}
-    return {name: {"verdict": a.get("verdict"), "excess_total": a.get("excess_total"),
-                   "excess_block_ci95": ((a.get("intervals") or {}).get("excess") or {})
-                   .get("block_ci95"),
-                   "forward_significant": (a.get("cs_forward") or {}).get("significant")}
-            for name, a in arms.items() if isinstance(a, Mapping)}
+    return {
+        "no_price": section.get("no_price"),
+        "arms": {name: {"verdict": a.get("verdict"), "excess_total": a.get("excess_total"),
+                        "excess_block_ci95": ((a.get("intervals") or {}).get("excess") or {})
+                        .get("block_ci95"),
+                        "forward_significant": (a.get("cs_forward") or {}).get("significant"),
+                        "boards_dropped_unpriced": a.get("boards_dropped_unpriced"),
+                        "no_price": a.get("no_price"),
+                        "cost_provenance": a.get("cost_provenance")}
+                 for name, a in arms.items() if isinstance(a, Mapping)},
+    }
 
 
 def _ci(ci: Sequence[float | None] | None) -> str:
