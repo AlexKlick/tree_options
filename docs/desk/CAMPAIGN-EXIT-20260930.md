@@ -64,8 +64,8 @@ cause of death.
 
 | Retired claim | What it actually was | How it was caught |
 |---|---|---|
-| "Cost is **3.7x** optimistic" | A full-vs-half convention error: `outcomes.CostModel` charges HALF the quote per fill (`half_spread_per_share=0.03`, `src/tree_options/desk/outcomes.py`); the claim crossed the FULL quote on all 4 fills | Reading the model's own convention (`outcomes.py:84-102`) and restating like-for-like: ~1.0x, not 3.7x |
-| "Cost is **5.6x** optimistic" | A mean poisoned by deep-ITM rows: 9.2% of rows (spread ≥ $1.00, median \|delta\| 0.93, 10-lot displayed size) contribute **768% of the mean** — rows the desk does not trade | Re-deriving the spread distribution on the tradeable universe (\|delta\| ≤ 0.70, n=18,783); the 612,372-quote distribution reproduced exactly across two independent re-derivations — the mean over the wrong universe was the error (a later draft's "3.56x" died the same way, retracted in PR #48's description) |
+| "Cost is **3.7x** optimistic" | A full-vs-half convention error: `outcomes.CostModel` charges HALF the quote per fill (`half_spread_per_share=0.03`, `src/tree_options/desk/outcomes.py:109`, charged at `:118`); the claim crossed the FULL quote on all 4 fills | Reading the model's own convention and restating like-for-like: ~1.0x, not 3.7x |
+| "Cost is **5.6x** optimistic" | A mean poisoned by deep-ITM rows: 9.2% of rows (spread ≥ $1.00, median \|delta\| 0.93, 10-lot displayed size) contribute **768% of the mean** — rows the desk does not trade (decomposition: `docs/desk/COST-CORPUS-STATS.md`) | Re-deriving the spread distribution on the tradeable universe (\|delta\| ≤ 0.70, n=18,783); the 612,372-quote distribution reproduced exactly across two independent re-derivations — the mean over the wrong universe was the error (a later draft's "3.56x" died the same way, retracted in PR #48's description) |
 | "The book's max loss is understated **31.8x**" ($880 vs $28,000) | A category error: the NVDA structures are LONG DEBIT verticals — max loss = debit paid; width×100×qty ($27,120) is the best possible WIN, and the claimed max LOSS exceeds it. Understatement factor: 1.0x | Pinned impossibility arithmetic, landed as tests in #49 (`rail_reading`); width-based max loss belongs to credit kinds only |
 | "Drift was **QQQ +23.9%, IWM −8.9%**" | Those were the CBOE 30-day IMPLIED-VOLATILITY indices: `minute-bars-long.json`'s `iv_context` self-documents `index_for {IWM:RVX, QQQ:VXN, SPY:VIX}`, `source "CBOE 30-day implied-vol index closes"` | Reading the field's own `source` string, then the repo's parity spot (`outcomes.spot_series`): real price drift IWM +16.8% / QQQ +24.3% / SPY +14.5%. All three ROSE — the long-bull tilt was rewarded MORE than the wrong figures implied, so the negative result is STRONGER, not weaker |
 
@@ -80,13 +80,22 @@ cause of death.
   on 184 CBOE chain files (612,371 quotes; tradeable universe IWM/QQQ/SPY,
   7 ≤ dte ≤ 60, vol > 0, oi > 0, |delta| ≤ 0.70, n=18,783): median 2-leg
   RT $8.60 (0.59x flat), mean $15.76 (1.08x), p90 $34.60 (2.37x); median
-  full spread by bucket $0.02 (|d|<0.10) → $0.19 (0.50–0.70). The flat
+  full spread by bucket $0.02 (|d|<0.10) → $0.19 (0.50–0.70) — overall
+  figures and their derivation recorded in `docs/desk/COST-CORPUS-STATS.md`.
+  The flat
   model over-charges cheap wings ~3x and under-charges near-ATM legs. The
   fix is the SHAPE (#48), never a bigger scalar.
 - **On this run the LEVEL, not the shape, decides.** Re-rating the run's
   own entries under #48's model: mean measured cost $26.6968 on 17,511
   priced entries, 1,676 dropped fail-closed; `SET(shaped) == SET(level)` —
-  the four survivors are identical with the shape removed, and all 6 sign
+  the four survivors are identical with the shape removed, and 6 arms
+  change sign under the shape (e.g. refl-trend +279.00 → −262.92). Two
+  denominators appear in adjacent sections and are NOT a contradiction:
+  PR #48's integration review counted 17,511 priced / 1,676 dropped
+  fail-closed (refusals excluded); the re-rating verdict beside the
+  re-score counted 16,137 priced / 51 excluded (boundary-clamped
+  `delta_out_of_universe` rows ASSIGNED the boundary cell rather than
+  refused). Different refusal policies, both stated with their own counts.
   flips are produced by the level (PR #48 description). The shape still
   changes the ordering: 17/22 arms reorder at every sigma in
   [0.20, 0.25, 0.30, 0.40, 0.50] (final re-rating verdict beside the
@@ -149,8 +158,14 @@ finalists failed, promotion false, 0 eligible). The own-entry-rate null
 killed the `no_trade` phantom: the legacy shared-null column had shown
 `no_trade` (0 entries, $0) at **+$12,485.24, p=0.0001, rank 3**; the
 own-rate column reads 0.00 [0, 0] at rank 5. Run-wide the flat table
-charged $279,166.60 across 19,115 evaluated entries (= exactly $14.60 ×
-entries per arm).
+charged $279,166.60 — the sum of the skill block's `cost_drag` column,
+**19,121 charge units** of $14.60. That is six units more than the
+19,115 standings-level evaluated entries (entered − unevaluable, summed
+over arms: six arms — `m31-base-low#1/#2`, `xs_weak20_bear_h5`,
+`xs_weak5_bear_h5`, `first_row`, `always_put_debit` — each carry exactly
+one extra charge vs that count, an $87.60 / 0.03% difference; per-arm the
+"integer × 14.60" identity holds in both blocks). The two numbers are
+different derivations, not one identity.
 
 ## No-fill vs missing data (the 68.5% distinction)
 
@@ -345,6 +360,15 @@ missing-data rows excluded from the denominator (a missing bar is not a
 no-fill), the paired CI above zero, the first_row control failing the same
 bar, and Holm across tested arms. Until then everything stays as stopped
 above.
+
+Scope note for the A1 capture (critic followup): the forward-capture
+verifier (`forward-verify`, PR #55) asserts bar coverage at the THREE
+outcome-table decision clocks (10:00/10:15/15:15 ET,
+`outcomes.py decision_clocks_et`) — NOT the eight-clock schedule of
+`intraday_action_graph.py`. Its `ok: true` is therefore evidence that the
+corpus accumulates, not evidence that threshold C1 (eight-clock
+observation) is met: the restart scorer must compute eight-clock coverage
+from the captured full-session bars itself.
 
 ## No-execution statement (agent attestation)
 
