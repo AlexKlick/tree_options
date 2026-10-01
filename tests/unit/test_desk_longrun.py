@@ -175,6 +175,26 @@ def test_pick_null_places_the_realized_pick() -> None:
     assert 0.6 < doc["percentile"] < 0.9  # only the best-of-both draw ties 20
 
 
+def test_own_entry_rate_null_is_matched_not_the_incumbents() -> None:
+    """The per-arm null enters at THAT arm's rate, not the incumbent's.
+
+    The regression: one global null at the incumbent's entry rate was
+    subtracted from every arm, so a low-entry-rate arm was measured against a
+    picker that traded far more of the window than it did.
+    """
+    sessions = ["s1", "s2"]
+    options = [np.array([10.0, 0.0]), np.array([4.0])]
+    half = longrun.random_null(sessions, sessions, options, 0.5, seeds=400, seed=9)
+    full = longrun.random_null(sessions, sessions, options, 1.0, seeds=400, seed=9)
+    # per-board option means are 5 and 4, so p=0.5 -> [2.5, 2.0] and p=1 -> [5, 4]
+    assert half.expected_sessions.tolist() == [2.5, 2.0]
+    assert full.expected_sessions.tolist() == [5.0, 4.0]
+    # a zero-entry arm's own null expects exactly zero, whatever the incumbent does
+    never = longrun.random_null(sessions, sessions, options, 0.0, seeds=400, seed=9)
+    assert never.expected_sessions.tolist() == [0.0, 0.0]
+    assert never.totals.tolist() == [0.0] * 400
+
+
 def test_benchmark_rows_buy_and_hold_dollars_hand_case() -> None:
     rows = longrun.benchmark_rows(
         {"SPY": {"2026-05-29": 100.0, "2026-06-01": 110.0, "2026-06-03": 99.0},
@@ -328,6 +348,66 @@ def test_aa_flags_the_evaluation_invalid_when_the_repeats_differ() -> None:
     assert valid["aa"]["status"] == "valid" and valid["aa"]["agreement"] == 1.0
 
 
+def test_vs_random_is_matched_to_each_arms_own_entry_rate() -> None:
+    """The regression: the load-bearing vs-random column must be matched.
+
+    The single global null (at the incumbent's entry rate) was subtracted from
+    every arm, so the ranking column was net minus one shared constant. The
+    per-arm column ``vs_random_own`` is rebuilt at each arm's own entry rate;
+    the legacy ``vs_random`` is kept for continuity and is allowed to stay
+    degenerate.
+    """
+    boards, arms, receipts = _score_case()
+    proto = Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-01")
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), proto)
+    rows = {r["arm"]: r for r in doc["standings"]}
+    null_total = doc["random_null"]["expected_total"]
+
+    # the legacy column IS the degenerate shape, and stays that way on purpose
+    for row in doc["standings"]:
+        assert row["vs_random"]["diff_total"] == pytest.approx(
+            row["net_total"] - null_total, abs=0.01)
+
+    # the matched column is not: it varies with each arm's own entry rate
+    assert rows["m#1"]["vs_random_own"]["p_enter"] == 1.0
+    assert rows["m#2"]["vs_random_own"]["p_enter"] == 0.75
+    assert rows["no_trade"]["vs_random_own"]["p_enter"] == 0.0
+    # a zero-entry arm's own null expects zero, so its diff is its own net
+    assert rows["no_trade"]["vs_random_own"]["diff_total"] == rows["no_trade"]["net_total"] == 0.0
+    # the arms that enter less are no longer handed the incumbent's constant credit:
+    # m#2 enters 3 of 4 boards, so its own null expects less than the global 7.0
+    assert rows["m#2"]["vs_random_own"]["diff_total"] == pytest.approx(30.0 - 6.0)
+    assert rows["m#2"]["vs_random"]["diff_total"] == pytest.approx(30.0 - 7.0)
+    # the incumbent's own rate still drives the documented global null
+    assert doc["random_null"]["p_enter"] == 0.875
+
+
+def test_a_zero_entry_arm_is_not_credited_with_the_incumbents_null() -> None:
+    """A zero-entry arm earns 0 and must be measured against a 0-expectation null.
+
+    Regression: the shared null handed every arm the incumbent's large negative
+    expectation, so a zero-entry arm scored a positive "vs random" purely by
+    entering less. Its OWN null expects 0, so its diff is exactly its net.
+    """
+    boards, arms, receipts = _score_case()
+    proto = Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-01")
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), proto)
+    rows = {r["arm"]: r for r in doc["standings"]}
+    # the legacy column keeps its shape: net minus the one shared null total
+    null_total = doc["random_null"]["expected_total"]
+    assert rows["no_trade"]["vs_random"]["diff_total"] == pytest.approx(0.0 - null_total)
+    # the matched column removes the shared credit entirely
+    assert rows["no_trade"]["vs_random_own"]["diff_total"] == 0.0
+    assert rows["no_trade"]["vs_random_own"]["p_enter"] == 0.0
+    # and an arm that genuinely trades is separated from it by the matched null
+    assert rows["always_bullish"]["vs_random_own"]["diff_total"] > 0.0
+    assert rows["first_row"]["vs_random_own"]["diff_total"] < 0.0
+    # the sign of the zero-entry arm's advantage flips between the two columns
+    # whenever the shared null is negative, which is the production case
+    assert (rows["no_trade"]["vs_random_own"]["diff_total"]
+            > rows["no_trade"]["vs_random"]["diff_total"])
+
+
 def test_aa_not_run_leaves_the_evaluation_unvalidated() -> None:
     boards = boards_for(SESSIONS6[:2])
     arms = longrun.arms_of([PolicySpec("m", "model")])
@@ -343,10 +423,11 @@ def test_walk_forward_caps_finalists_at_two() -> None:
     pooled = {"a": np.array([5.0, 5.0, 1.0]), "b": np.array([1.0, 1.0, 9.0]),
               "c": np.array([3.0, 3.0, 3.0]), "d": np.array([-1.0, 0.0, 0.0]),
               "e": np.array([4.0, 4.0, -9.0])}
+    entries = {name: np.full(3, 5.0) for name in pooled}
     for cap in (2, 5):  # even a caller asking for more gets at most two
         wf = longrun.walk_forward(pooled, np.zeros(3), sessions, incumbent=None, cutoff="d2",
                                   metric="total", max_finalists=cap, draws=2000, seed=1,
-                                  alpha=0.05, aa_valid=True)
+                                  alpha=0.05, aa_valid=True, test_entries=entries)
         assert wf["max_finalists"] == 2
         assert [f["policy"] for f in wf["finalists"]] == ["a", "e"]  # tune totals 10, 8
     assert [r["policy"] for r in wf["ranking"]] == ["a", "e", "c", "b", "d"]
@@ -358,7 +439,7 @@ def test_walk_forward_caps_finalists_at_two() -> None:
         Protocol(max_finalists=3)
     one = longrun.walk_forward(pooled, np.zeros(3), sessions, incumbent=None, cutoff="d3",
                                metric="total", max_finalists=2, draws=2000, seed=1,
-                               alpha=0.05, aa_valid=True)
+                               alpha=0.05, aa_valid=True, test_entries=entries)
     assert one["status"] == "not_applicable"
 
 
@@ -366,17 +447,108 @@ def test_walk_forward_eligibility_needs_every_clause() -> None:
     sessions = [f"d{i:02d}" for i in range(1, 25)]
     strong = np.full(24, 10.0)
     pooled = {"challenger": strong, "inc": np.zeros(24)}
+    # clause (6) is part of the rule now, so the caller has to say how many
+    # evaluated entries each policy has in the test window
+    entries = {"challenger": np.full(24, 5.0), "inc": np.zeros(24)}
     wf = longrun.walk_forward(pooled, np.zeros(24), sessions, incumbent="inc", cutoff="d12",
                               metric="ci_low_diff_vs_random", max_finalists=2, draws=2000,
-                              seed=1, alpha=0.05, aa_valid=True)
+                              seed=1, alpha=0.05, aa_valid=True, test_entries=entries)
     top = wf["finalists"][0]
     assert top["policy"] == "challenger" and top["eligible_for_operator_review"] is True
     assert all(v is True for v in top["rule_check"].values())
     invalid = longrun.walk_forward(pooled, np.zeros(24), sessions, incumbent="inc",
                                    cutoff="d12", metric="ci_low_diff_vs_random",
                                    max_finalists=2, draws=2000, seed=1, alpha=0.05,
-                                   aa_valid=False)
+                                   aa_valid=False, test_entries=entries)
     assert invalid["finalists"][0]["eligible_for_operator_review"] is False
+
+
+def test_promotion_rule_cannot_be_won_by_not_trading() -> None:
+    """A rule that abstention can satisfy is not a test of skill.
+
+    The finished run let ``refl-trend-persistent-bullish-trend`` through with
+    Holm p 0.0040, a vs_random CI of [+540.97, +2398.67] and a TEST net_total
+    of exactly $0.00: it entered nowhere in the confirmatory window and beat a
+    null whose own expectation there was -$1,494.53 by not trading. Reproduced
+    here in miniature - every pre-fix clause passes, so the finalist is
+    eligible today.
+    """
+    sessions = [f"d{i:02d}" for i in range(1, 25)]
+    abstainer = np.concatenate([np.full(12, 10.0), np.zeros(12)])  # test net $0.00
+    pooled = {"abstainer": abstainer,
+              "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
+    # the random null expects to LOSE money in the test window, so standing
+    # still reads as a large positive paired diff
+    expected = np.concatenate([np.zeros(12), np.full(12, -100.0)])
+    wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
+                              metric="total", max_finalists=2, draws=2000, seed=1,
+                              alpha=0.05, aa_valid=True,
+                              test_entries={"abstainer": np.zeros(24),
+                                            "inc": np.zeros(24)})
+    top = wf["finalists"][0]
+    assert top["policy"] == "abstainer"
+    assert top["test"]["net_total"] == 0.0  # it never traded in the test window
+    assert top["test"]["vs_random"]["ci95"][0] > 0  # ... and still "beat" the null
+    assert top["holm_p"] < 0.05
+    # the pre-existing clauses all pass; only the two new ones can catch it
+    assert [k for k, v in top["rule_check"].items()
+            if v is not True] == ["test_net_positive", "test_entries_at_least_floor"]
+    assert top["eligible_for_operator_review"] is False
+
+
+def test_promotion_rule_needs_enough_test_entries_to_carry_a_ci() -> None:
+    """Six fills with a positive CI and a positive net are still not a result:
+    the floor stops a handful of entries from carrying the confirmatory look."""
+    sessions = [f"d{i:02d}" for i in range(1, 25)]
+    lucky = np.concatenate([np.full(12, 10.0),          # tune: ranks first
+                            [10.0, 10.0, 10.0, 0.0, 0.0, 0.0,
+                             10.0, 10.0, 10.0, 0.0, 0.0, 0.0]])
+    pooled = {"lucky": lucky,
+              "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
+    expected = np.concatenate([np.zeros(12), np.full(12, -100.0)])
+    entries = {"lucky": np.concatenate([np.full(12, 5.0), np.full(6, 1.0), np.zeros(6)]),
+               "inc": np.zeros(24)}
+    wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
+                              metric="total", max_finalists=2, draws=2000, seed=1,
+                              alpha=0.05, aa_valid=True, test_entries=entries)
+    top = wf["finalists"][0]
+    assert top["policy"] == "lucky"
+    assert top["test"]["net_total"] == 60.0  # positive, so clause (a) alone passes it
+    assert top["test"]["vs_random"]["ci95"][0] > 0
+    assert top["test_entries"] == 6 < longrun.MIN_TEST_ENTRIES
+    assert top["rule_check"]["test_net_positive"] is True
+    assert top["rule_check"]["test_entries_at_least_floor"] is False
+    assert top["eligible_for_operator_review"] is False
+    # the same arm over the same test window, with the fills it would need
+    enough = {k: v.copy() for k, v in entries.items()}
+    enough["lucky"][12:24] = longrun.MIN_TEST_ENTRIES
+    ok_wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
+                                 metric="total", max_finalists=2, draws=2000, seed=1,
+                                 alpha=0.05, aa_valid=True, test_entries=enough)
+    assert all(v is True for v in ok_wf["finalists"][0]["rule_check"].values())
+    assert ok_wf["finalists"][0]["eligible_for_operator_review"] is True
+
+
+def test_score_run_counts_only_evaluated_entries_in_the_test_window() -> None:
+    """The floor reads real per-session entry counts off the run, not a guess:
+    an arm that stops entering at the cutoff scores 0 there, one that keeps
+    entering scores its priced fills."""
+    boards = boards_for(SESSIONS6[:5])
+    arms = longrun.arms_of([PolicySpec("early", "model"), PolicySpec("always", "model")])
+    early = {b.snapshot: ok("w" if b.session <= "2026-06-02" else None) for b in boards}
+    always = {b.snapshot: ok("w") for b in boards}
+    doc = longrun.score_run(boards, arms, {"early": early, "always": always},
+                            OutcomeCache(table_outcome),
+                            Protocol(draws=2000, random_seeds=200, incumbent="early",
+                                     cutoff="2026-06-02"))
+    wf = doc["walk_forward"]
+    assert (wf["tune_sessions"], wf["test_sessions"]) == (2, 3)  # sessions, not boards
+    entered = {f["policy"]: f["test_entries"] for f in wf["finalists"]}
+    assert entered == {"always": 6, "early": 0}
+    assert wf["min_test_entries"] == longrun.MIN_TEST_ENTRIES
+    for f in wf["finalists"]:
+        assert f["rule_check"]["test_entries_at_least_floor"] == (f["test_entries"]
+                                                                   >= longrun.MIN_TEST_ENTRIES)
 
 
 # --------------------------------------------------------------- executor
@@ -389,7 +561,8 @@ def test_run_digest_leads_with_the_note_and_never_promotes(tmp_path: Path) -> No
     doc = json.loads((run_dir / "digest.json").read_text())
     assert list(doc)[:3] == ["schema", "untrusted_note", "promotion"]
     assert doc["promotion"] == {"promoted": False, "rule": PREREGISTERED_RULE,
-                                "pre_registered_at": doc["promotion"]["pre_registered_at"]}
+                                "pre_registered_at": doc["promotion"]["pre_registered_at"],
+                                "amendments": []}
     for path in run_dir.rglob("*"):
         if path.is_file():
             assert not re.search(r'"promoted"\s*:\s*true', path.read_text(), re.I), path
@@ -536,6 +709,101 @@ def test_resume_refuses_changed_boards_or_protocol(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="pre-registered"):
         run(run_dir, FakeAsk(), protocol=Protocol(draws=2000, random_seeds=200,
                                                   incumbent="m", cutoff="2026-06-02"))
+
+
+def run_roster(run_dir: Path, pols: list[PolicySpec], ask: FakeAsk) -> dict[str, Any]:
+    """``run_longrun`` with an explicit arm roster (the default helper pins it)."""
+    return longrun.run_longrun(
+        run_dir, boards=boards_for(SESSIONS6[:3]), policies=pols, outcome=table_outcome,
+        ask=ask, quota_ok=always_ok, protocol=PROTO,
+        settings=ExecSettings(concurrency=3, pause_s=60.0), sleep=lambda s: None)
+
+
+def test_resume_with_an_unchanged_roster_is_accepted_and_amendments_stay_empty(
+        tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_roster(run_dir, policies(), FakeAsk())
+    first = json.loads((run_dir / "plan.json").read_text())
+    assert first["amendments"] == []
+    assert "resumed_at" not in first
+
+    again = FakeAsk()
+    assert run_roster(run_dir, policies(), again)["status"] == "finished"
+    assert again.calls == []  # nothing re-asked: the run was already decided
+    second = json.loads((run_dir / "plan.json").read_text())
+    assert second["resumed_at"] and second["amendments"] == []
+    # the pre-registered roster itself is never rewritten by a resume
+    assert second["policies"] == first["policies"]
+    assert second["created"] == first["created"]
+
+
+def test_resume_refuses_a_changed_arm_roster_and_records_it_append_only(
+        tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_roster(run_dir, policies(), FakeAsk())
+    first = json.loads((run_dir / "plan.json").read_text())
+
+    grown = [*policies(), PolicySpec("m31-base", "model", repeats=1)]
+    with pytest.raises(ValueError, match="roster is pre-registered"):
+        run_roster(run_dir, grown, FakeAsk())
+    after_add = json.loads((run_dir / "plan.json").read_text())
+    # refused AND unchanged: the roster written before any scoring still stands
+    assert after_add["policies"] == first["policies"]
+    assert after_add["created"] == first["created"]
+    assert [sorted(entry) for entry in after_add["amendments"]] == [
+        ["added_at", "arm", "pre_registered_before_any_scoring", "reason"]]
+    entry = after_add["amendments"][0]
+    assert entry["arm"] == "m31-base" and "added" in entry["reason"]
+    assert entry["pre_registered_before_any_scoring"] is False
+    assert entry["added_at"] >= first["created"]
+
+    # append-only: a second refused attempt keeps the first record verbatim
+    shrunk = [p for p in policies() if p.name != "no_trade"]
+    with pytest.raises(ValueError, match="roster is pre-registered"):
+        run_roster(run_dir, shrunk, FakeAsk())
+    after_drop = json.loads((run_dir / "plan.json").read_text())
+    assert after_drop["amendments"][0] == entry
+    assert [a["arm"] for a in after_drop["amendments"]] == ["m31-base", "no_trade"]
+    assert "removed" in after_drop["amendments"][1]["reason"]
+    assert after_drop["policies"] == first["policies"]
+
+    # a changed arm (same name, different repeats) is a mutation too
+    retuned = [PolicySpec("m", "model", repeats=2), *longrun.builtin_controls()]
+    assert retuned != policies()
+    with pytest.raises(ValueError, match="roster is pre-registered"):
+        run_roster(run_dir, [PolicySpec("m", "model", repeats=3),
+                             *longrun.builtin_controls()], FakeAsk())
+    final = json.loads((run_dir / "plan.json").read_text())
+    assert [a["arm"] for a in final["amendments"]] == ["m31-base", "no_trade", "m"]
+    assert "changed" in final["amendments"][2]["reason"]
+
+
+def test_digest_says_so_when_the_roster_was_amended_before_scoring(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_roster(run_dir, policies(), FakeAsk())
+    # a pre-fix run dir: an earlier resume rewrote the roster in place and the
+    # plan carries no record of it, so the roster cannot be shown to be the
+    # one the run started with
+    plan_path = run_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan.pop("amendments")
+    plan["policies"] = [*plan["policies"], {"name": "m31-base", "kind": "model",
+                                            "repeats": 1, "provider": None,
+                                            "prompt_sha256": None}]
+    plan_path.write_text(json.dumps(plan))
+    grown = [*policies(), PolicySpec("m31-base", "model", repeats=1)]
+    assert run_roster(run_dir, grown, FakeAsk())["status"] == "finished"
+    doc = json.loads((run_dir / "digest.json").read_text())
+    marked = {e["arm"]: e for e in doc["promotion"]["amendments"]}
+    assert set(marked) == {str(p.name) for p in grown}
+    assert all(e["pre_registered_before_any_scoring"] is False for e in marked.values())
+    assert all("unverifiable" in e["reason"] for e in marked.values())
+    md = (run_dir / "digest.md").read_text()
+    assert "WEAK PROVENANCE" in md and "m31-base" in md and "no_trade" in md
+    # and the record is not lost: a second resume keeps it, it does not grow
+    assert run_roster(run_dir, grown, FakeAsk())["status"] == "finished"
+    again = json.loads(plan_path.read_text())
+    assert again["amendments"] == doc["promotion"]["amendments"]
 
 
 def test_progress_reports_per_arm_state(tmp_path: Path) -> None:
