@@ -465,6 +465,17 @@ def test_every_quote_carries_provenance_and_says_it_is_not_a_fill_clock() -> Non
     assert "17:45-06:30" in gap and "10:00" in gap
 
 
+def test_the_cost_block_quotes_the_single_provenance_authority() -> None:
+    """``outcomes.py`` once hand-copied this record into its own constructor
+    and the universe_filter wording drifted from the digest's provenance for
+    the SAME corpus -- two descriptions of one measurement. The block a
+    digest actually carries must equal ``cost.py``'s ``measured_corpus()``,
+    the declared single authority, byte for byte."""
+    from tree_options.desk import cost, outcomes
+    block = outcomes._costs_block(measured_model(), mc().NoPriceLedger(), True)
+    assert block["provenance"] == cost.CostProvenance.measured_corpus().as_dict()
+
+
 def test_provenance_survives_into_the_quote() -> None:
     """Cost that reaches a digest without its provenance is a number nobody
     can audit."""

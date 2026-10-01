@@ -791,13 +791,11 @@ def _costs_block(costs: CostModel | SpreadCostModel, no_price: NoPriceLedger,
 _BUCKET_PROBE = (Decimal("0.05"), Decimal("0.15"), Decimal("0.25"),
                  Decimal("0.40"), Decimal("0.60"))
 _BAND_DAY = (14, 30, 53)
-_CORPUS_PROVENANCE = CostProvenance(
-    source="cboe-delayed-eod-chains",
-    snapshot_window_et="17:45-06:30",
-    universe_filter="|delta|<=0.70, 7<=dte<=60, volume>0, oi>0, symbol in IWM/QQQ/SPY",
-    n_rows=18783,
-    decision_clocks_et=("10:00", "10:15", "15:15"),
-)
+#: the corpus this module's costs were measured on is the SAME corpus
+#: ``cost.py`` reports: the classmethod is the single authority, and a
+#: second hand-copied constructor here drifted (the universe_filter wording)
+#: from the digest's provenance for the identical corpus.
+_CORPUS_PROVENANCE = CostProvenance.measured_corpus()
 
 
 if __name__ == "__main__":
