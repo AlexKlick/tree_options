@@ -173,7 +173,11 @@ def main() -> int:
         "outcomes": {mode: {key: summary(cell) for key, cell in sorted(cells.items())}
                      for mode, cells in agg.items()},
         "intraday_no_fill_reasons": {k: dict(sorted(v.items())) for k, v in sorted(reasons.items())},
-        "note": "descriptive; trade-bar proxies; net = gross - CostModel round trip; not an edge claim"}
+        "note": ("descriptive; trade-bar proxies; net = gross - the FLAT CostModel round "
+                 "trip ($14.60, the frozen baseline every historical digest is calibrated "
+                 "on). That constant is one cell of the measured per-moneyness surface "
+                 "(|delta| 0.35-0.50, dte 7-21), not a rule: a wing-heavy or delta-heavy "
+                 "book is mis-costed by it. See desk.cost; not an edge claim")}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(document, indent=2) + "\n")
     print(json.dumps({k: document[k] for k in ("sessions", "boards_with_candidates", "candidates",

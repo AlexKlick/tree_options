@@ -420,7 +420,43 @@ def expected_net(row: Mapping[str, Any], p_up: float, payoff: Mapping[str, Any],
 
 
 def round_trip_cost() -> float:
+    """The FLAT fallback cost, and it says so.
+
+    This is ``outcomes.CostModel``: a flat $14.60 for any 2-leg vertical, the
+    baseline the 25-arm digest is calibrated on. It is a HIDDEN ASSUMPTION
+    inside expected value if it is used without a label, because the measured
+    spread varies ~10x with moneyness and a strategy that systematically trades
+    one moneyness is mis-costed in one direction. Use
+    :func:`round_trip_cost_by_bucket` when the bucket is known; the flat value
+    remains the default until the 25-arm digest is re-rated against the
+    measured model, which is a separate decision.
+    """
     return float(outcomes.CostModel().round_trip())
+
+
+#: what the flat fallback above actually is, for the artifacts that publish it
+ROUND_TRIP_COST_MODEL = "flat-fallback (outcomes.CostModel, $14.60; not per-moneyness)"
+
+
+def round_trip_cost_by_bucket(abs_delta: float, dte: int) -> float:
+    """The MEASURED, bucket-conditional 2-leg round trip in dollars.
+
+    Explicitly labelled rather than silently substituted: a caller that knows
+    the trade's moneyness should use this, and a caller that does not should
+    keep :func:`round_trip_cost` and carry the ``flat-fallback`` label.
+
+    The surface RAISES outside the measured universe (|delta| > 0.70, dte
+    outside 7..60) rather than answering: a measurement gap is not a cheap
+    fill, and a clamped boundary price is an extrapolation this data cannot
+    support.
+    """
+    from decimal import Decimal
+
+    from tree_options.desk.cost import Leg, SpreadCostModel
+    leg = Leg(symbol="SPY", abs_delta=Decimal(repr(round(abs_delta, 6))), dte=int(dte),
+              source_session="forecast", source_timestamp_et="forecast",
+              is_eod_snapshot=True)
+    return float(SpreadCostModel.measured().round_trip([leg, leg]))
 
 
 def decide_ev(rows: Sequence[Mapping[str, Any]], p_up: Mapping[str, Mapping[str, float]],
@@ -1067,6 +1103,7 @@ def report_plugin(params: Mapping[str, Any], ctx: PluginContext) -> Callable[...
                    "log_loss_clip": [LOGLOSS_EPS, 1 - LOGLOSS_EPS],
                    "climatology": state["climatology"], "momentum_k": state["momentum_k"],
                    "payoff_map": state["payoff"], "round_trip_cost": round_trip_cost(),
+                   "round_trip_cost_model": ROUND_TRIP_COST_MODEL,
                    "scores": scores, "aa_order": aa,
                    "position_bias": {n: _position_bias(r) for n, r in rows.items()},
                    "derived": derived, "warnings": warnings}

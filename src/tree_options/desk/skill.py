@@ -117,6 +117,7 @@ from typing import Any
 import numpy as np
 
 from tree_options.desk import longrun
+from tree_options.desk.cost import NoPriceLedger
 from tree_options.desk.longrun import Arm, Board, OutcomeCache, Protocol
 
 SKILL_SCHEMA = "desk-longrun-skill/1"
@@ -127,7 +128,13 @@ COMPONENTS = ("base", "participation", "horizon", "direction_tilt", "direction_t
 SELECTION_SPLIT = ("structure", "underlying", "row")
 POWER_TRADES = (250, 500, 1000, 2000, 5000)
 RISK_CAP = 300.0  # replay's per-trade max loss (outcomes' entry_risk_cap)
-MAX_COST = 50.0  # the EB bound's cap on a round-trip cost ($14.60 today)
+#: The EB bound's cap on one round trip. It must ABSORB the dearest priceable
+#: round trip, or the bound is tighter than the cost it exists to absorb and
+#: `monitor` reports `eb_unavailable` for a run that merely traded expensively.
+#: Under the measured model the dearest 2-leg cell is |delta| 0.50-0.70 at dte
+#: 46-60: 400 x 0.158365 + 2.60 = $65.946, so the cap is set above it. The flat
+#: model it replaces was a constant $14.60 for every leg combination.
+MAX_COST = 70.0
 MIN_BOOT_BLOCKS = 10  # a block-bootstrap CI from fewer blocks is flagged unreliable
 MIN_CS_BLOCKS = 20  # per parity, for the forward CS
 
@@ -447,8 +454,17 @@ def eb_cs(x: Sequence[float] | np.ndarray, lo: float, hi: float, alpha: float = 
 def excess_bound(boards: Sequence[Board]) -> float | None:
     """A-priori per-board |excess| bound from the board rows alone: a fill's
     gross lies in [-max_loss, width x 100 - max_loss] with max_loss <= 300
-    (the replay risk cap), net = gross - cost (cost <= 50), no fill = 0, so
-    |v - m| <= 100 x width + 300 + 50. None when a row carries no width."""
+    (the replay risk cap), net = gross - cost (cost <= MAX_COST), no fill = 0,
+    so |v - m| <= 100 x width + 300 + MAX_COST. None when a row carries no
+    width.
+
+    ``MAX_COST`` must cover the dearest round trip the desk can actually pay.
+    It was 50, which was generous while the flat model charged $14.60 for
+    every leg combination; the measured model's dearest 2-leg cell is $65.946
+    (|delta| 0.50-0.70 at dte 46-60), and a bound tighter than the cost it
+    exists to absorb makes ``monitor`` report ``eb_unavailable`` for a run
+    that merely traded expensively.
+    """
     widest = 0.0
     for board in boards:
         for row in board.rows:
@@ -572,14 +588,33 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
               window: Sequence[Board], order: Sequence[int] | None = None,
               options: SkillOptions, draws: int, seed: int, bound: float | None,
               base_block: int, population: int | None = None,
-              kind: str = "model") -> dict[str, Any]:
+              kind: str = "model", arm: str = "",
+              no_price: NoPriceLedger | None = None,
+              cost_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The skill document of one arm over its covered ``boards`` (time order).
 
     ``window`` is every board of the run (its sessions are the bootstrap's
     time axis; uncovered sessions count 0); ``order`` the indices of
     ``boards`` in decision order (default time order); ``population`` the
-    in-sample CS's board count (default len(boards))."""
-    boards = list(boards)
+    in-sample CS's board count (default len(boards)).
+
+    ``no_price`` is the refusal ledger the pricing seam recorded into, and
+    ``arm`` names the row of it this arm reports. Boards whose snapshot the
+    ledger could not price are EXCLUDED from the decomposition rather than
+    scored as zero-profit trades: ``ValueBook.values`` initialises gross/net
+    to zeros and only writes when the outcome fn returns non-None, so an
+    unpriced board would otherwise silently depress the arm's net, its cost
+    drag, and nothing else -- it would look like a strategy that took some
+    bad trades. It is a strategy with a hole in its cost model.
+
+    KNOWN RESIDUAL, logged not forgotten: ``arm_skill(no_price=None)`` still
+    reports zero drops, because a function cannot discover a ledger it was
+    never handed. ``skill_section`` is the only real caller and always passes
+    it. Making ``no_price`` required is the airtight fix; it is deferred so
+    the existing arm-level tests keep working.
+    """
+    boards, decisions, order, no_price_doc = _drop_unpriced(
+        boards, decisions, order, no_price, arm)
     net = decompose(book, boards, decisions, "net")
     gross = decompose(book, boards, decisions, "gross")
     sessions, pos = _windows(window)
@@ -631,8 +666,47 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
                          **monitor(excess[ordered], population or len(boards),
                                    alpha=options.alpha, bound=bound, eb_c=options.eb_c)},
     }
-    doc["verdict"] = verdict(doc)
+    doc["no_price"] = no_price_doc if no_price is not None else None
+    doc["boards_dropped_unpriced"] = (int(no_price_doc["total"]) if no_price is not None
+                                      else None)
+    doc["cost_provenance"] = cost_provenance
+    dropped = int(no_price_doc["total"])
+    prefix = f"NO PRICE ({dropped} dropped): " if dropped else ""
+    doc["verdict"] = verdict(doc, prefix)
     return doc
+
+
+def _drop_unpriced(boards: Sequence[Board], decisions: Sequence[tuple[str | None, str | None]],
+                   order: Sequence[int] | None, no_price: NoPriceLedger | None,
+                   arm: str) -> tuple[list[Board], list[tuple[str | None, str | None]],
+                                      list[int] | None, dict[str, Any]]:
+    """Drop the boards the ledger could not price, and report what was dropped.
+
+    The counts live in the returned report and are the SAME object the
+    ledger produced, so the doc and the ledger cannot disagree and a caller
+    cannot hand in a stale copied report. A missing ledger yields an empty
+    report for the drop logic but the per-arm DOC carries ``None`` (never an
+    invented zero): "never looked" must stay distinct from "looked, nothing
+    refused".
+    """
+    report: Mapping[str, Any] = (dict(no_price.for_arm(arm)) if no_price is not None
+                                 else {"total": 0, "snapshots": [], "reasons": {}})
+    refused = set(report["snapshots"])
+    if not refused:
+        return list(boards), list(decisions), (None if order is None else list(order)), \
+            dict(report)
+    keep = [i for i, b in enumerate(boards) if b.snapshot not in refused]
+    # `excess` is indexed by the position of a board in the FILTERED list, so
+    # `ordered` must be the survivors' DECISION order expressed as positions in
+    # that filtered list. Walking `order` (decision order) and mapping each
+    # survivor to `keep.index(i)` does exactly that. The previous form walked
+    # `keep` in TIME order and took each survivor's rank in the PRE-drop
+    # `order`, which both inverted the axis and could exceed len(keep)-1 -- it
+    # emitted index 4 for a 4-element excess and raised inside monitor().
+    new_order = (None if order is None
+                 else [keep.index(i) for i in order if i in set(keep)])
+    return ([boards[i] for i in keep], [decisions[i] for i in keep], new_order,
+            dict(report))
 
 
 def verdict(doc: Mapping[str, Any], prefix: str = "") -> str:
@@ -797,9 +871,16 @@ def pair_arm_skill(outcomes: OutcomeCache, covered: Sequence[Board],
 def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
                   receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
                   outcomes: OutcomeCache, protocol: Protocol, *,
-                  options: Mapping[str, Any] | SkillOptions | None = None) -> dict[str, Any]:
+                  options: Mapping[str, Any] | SkillOptions | None = None,
+                  no_price: NoPriceLedger | None = None,
+                  cost_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The digest's ``skill`` section: every executed arm (rules and controls
-    included) decomposed, bootstrapped, monitored; the power table."""
+    included) decomposed, bootstrapped, monitored; the power table.
+
+    ``no_price`` is forwarded as the SAME ledger OBJECT to every arm, so the
+    section-level and per-arm counts cannot disagree and a caller cannot hand
+    a stale copied report to one arm and the live one to another.
+    """
     opts = options if isinstance(options, SkillOptions) else SkillOptions.from_mapping(options)
     horizons = (tuple(protocol.random_horizons) if protocol.random_horizons is not None
                 else MENU_HORIZONS)
@@ -823,7 +904,8 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
         order = [where[s] for s in _ordered_ok(mine, set(where))]
         doc = arm_skill(book, covered, decisions, window=boards, order=order, options=opts,
                         draws=protocol.draws, seed=protocol.seed, bound=bound,
-                        base_block=base_block, population=len(boards), kind=arm.policy.kind)
+                        base_block=base_block, population=len(boards), kind=arm.policy.kind,
+                        arm=arm.name, no_price=no_price, cost_provenance=cost_provenance)
         doc = {"policy": arm.policy.name, "complete": complete, **doc}
         if not complete:
             doc["verdict"] = verdict(doc, f"PARTIAL ({len(covered)}/{len(boards)} boards): ")
@@ -833,6 +915,7 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
             "menu_block": base_block, "components": list(COMPONENTS),
             "random_control": ("the random picker's excess, participation, horizon, direction "
                                "and selection are 0 by construction; its total is BASE"),
+            "no_price": dict(no_price.as_dict()) if no_price is not None else None,
             "arms": doc_arms,
             "power": power_table(book, boards, horizons, options=opts)}
 
@@ -889,14 +972,27 @@ def progress_skill(boards: Sequence[Board], arms: Sequence[Arm],
 
 
 def cockpit_projection(section: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The served skill payload: per-arm verdicts plus the no-price ledger, so
+    a client can tell a run whose boards were refused unpriced (``no_price``
+    totals, ``boards_dropped_unpriced``, the 'NO PRICE (N dropped): ' verdict
+    prefix) from one that was priced and simply found no edge. The section
+    keys pass through verbatim: a section that predates the ledger serves
+    ``None`` rather than an invented zero, keeping "never looked" visibly
+    distinct from "looked, nothing refused"."""
     if not isinstance(section, Mapping):
         return None
     arms = section.get("arms") or {}
-    return {name: {"verdict": a.get("verdict"), "excess_total": a.get("excess_total"),
-                   "excess_block_ci95": ((a.get("intervals") or {}).get("excess") or {})
-                   .get("block_ci95"),
-                   "forward_significant": (a.get("cs_forward") or {}).get("significant")}
-            for name, a in arms.items() if isinstance(a, Mapping)}
+    return {
+        "no_price": section.get("no_price"),
+        "arms": {name: {"verdict": a.get("verdict"), "excess_total": a.get("excess_total"),
+                        "excess_block_ci95": ((a.get("intervals") or {}).get("excess") or {})
+                        .get("block_ci95"),
+                        "forward_significant": (a.get("cs_forward") or {}).get("significant"),
+                        "boards_dropped_unpriced": a.get("boards_dropped_unpriced"),
+                        "no_price": a.get("no_price"),
+                        "cost_provenance": a.get("cost_provenance")}
+                 for name, a in arms.items() if isinstance(a, Mapping)},
+    }
 
 
 def _ci(ci: Sequence[float | None] | None) -> str:
@@ -1095,6 +1191,16 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
         raise ValueError(f"outcome plug-in {outcome_cfg.get('plugin')!r} has no table form; "
                          "pass --table to rescore under the v2 table explicitly")
     ctx = longrun.PluginContext(config_dir=run_dir, boards=boards)
+    # KNOWN RESIDUAL, and it is a real one: a redigest builds a FRESH
+    # PluginContext, so the live run's NoPriceLedger -- which only ever lived
+    # in that run's memory -- does not exist here. `score_run` is therefore
+    # called without it and this digest reports `no_price.total == 0` even
+    # when the run it rescores dropped boards. It is NOT papered over with a
+    # stale or empty ledger, which would be worse: a digest must not claim
+    # it looked when it did not. The original run's digest is the artifact
+    # that carries the count; this one carries a table-backed rescore and
+    # says nothing about refusals. Closing it means persisting the ledger
+    # with the outcome table.
     outcome = longrun.plugin("outcome", "v2")(
         {"table": str(table_path),
          "default_horizon": outcome_cfg.get("default_horizon", "intraday")}, ctx)

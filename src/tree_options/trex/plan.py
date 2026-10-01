@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -48,6 +49,10 @@ CREDIT_KINDS: frozenset[str] = frozenset({"credit_vertical", "iron_condor"})
 # computed max loss by at most this factor; above it IBKR is treating the
 # package as undefined risk (a leg it doesn't see as covering) - refused.
 WHATIF_MARGIN_FACTOR = Decimal("1.1")
+# The live-book hard rail (see TradePlan._validate_book): worst-case dollars
+# a live plan may commit at caps. One constant so the parse-time assertion
+# and any runtime readout (rail_reading) can never drift apart.
+LIVE_HARD_RAIL = Decimal(5000)
 
 
 def cents(value: Decimal) -> Decimal:
@@ -621,7 +626,7 @@ class TradePlan(BaseModel):
                 f"sum of per-structure caps {committed} exceeds book cap "
                 f"{self.total_debit_cap}"
             )
-        if self.account_mode == "live" and committed > Decimal(5000):
+        if self.account_mode == "live" and committed > LIVE_HARD_RAIL:
             # Guard rail, not a policy: a live book above this size needs a
             # fresh operator-authored plan, not a TOML edit.
             raise ValueError(f"live book committed {committed} above the 5000 hard rail")
@@ -638,6 +643,37 @@ class TradePlan(BaseModel):
     def all_specs(self) -> list[LegStructure]:
         """Every structure as a LegStructure (put spreads via as_spec())."""
         return [s.as_spec() for s in self.structures] + list(self.leg_structures)
+
+
+@dataclass(frozen=True)
+class RailReading:
+    """A runtime-readable snapshot of a plan's rails (see rail_reading)."""
+
+    committed: Decimal  # the book's worst-case dollars at risk, at caps
+    book_cap: Decimal  # the plan's total_debit_cap
+    live_rail: Decimal  # LIVE_HARD_RAIL
+    account_mode: str
+    within_book_cap: bool
+    within_live_rail: bool  # paper books are never against the live rail
+
+
+def rail_reading(plan: TradePlan) -> RailReading:
+    """Re-read a loaded plan's rails without parsing TOML or catching
+    exceptions. Construction (load_plan / TradePlan(...)) stays the only
+    ENFORCING point — this is the readable surface a monitor or the desk
+    can call at any time. It stays honest on books that reached an
+    over-rail state through unvalidated pydantic paths (model_copy and
+    friends skip validators), reporting False rather than assuming the
+    parse-time assertion already ran."""
+    committed = plan.committed_at_caps
+    return RailReading(
+        committed=committed,
+        book_cap=plan.total_debit_cap,
+        live_rail=LIVE_HARD_RAIL,
+        account_mode=plan.account_mode,
+        within_book_cap=committed <= plan.total_debit_cap,
+        within_live_rail=plan.account_mode != "live" or committed <= LIVE_HARD_RAIL,
+    )
 
 
 def load_plan(path: Path | str) -> TradePlan:

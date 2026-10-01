@@ -283,8 +283,13 @@ def test_monitor_maps_the_mean_to_the_population_total() -> None:
 
 
 def test_excess_bound_from_board_rows() -> None:
+    # 100 x width + RISK_CAP + MAX_COST = 100 x 5 + 300 + 70 = 870. The
+    # expected value moved 850 -> 870 with MAX_COST (50 -> 70): the cap must
+    # cover the dearest measured 2-leg round trip ($65.946), or the empirical-
+    # Bernstein bound is tighter than the cost it exists to absorb. See
+    # test_desk_cost_integration_defects.py for the measurement.
     rows = [{"id": "a", "width": "5"}, {"id": "b", "width": "1"}]
-    assert skill.excess_bound([Board("s", "2026-06-01", "10:00", rows)]) == 850.0
+    assert skill.excess_bound([Board("s", "2026-06-01", "10:00", rows)]) == 870.0
     assert skill.excess_bound([Board("s", "2026-06-01", "10:00", [{"id": "a"}])]) is None
 
 
@@ -406,7 +411,10 @@ def test_progress_shows_the_live_excess_and_cs(tmp_path: Path) -> None:
     assert arms["no_trade"]["in_sample_significant"] is False
     view = longrun.cockpit_view(run_dir)
     assert view["progress"]["skill"]["arms"]["m#1"]["excess"] == 48.0
-    assert view["digest"]["skill"]["m#1"]["excess_total"] == 48.0
+    # the served skill payload wraps the arms (the section-level no_price
+    # ledger lives beside them); a pre-ledger section serves no_price: None
+    assert view["digest"]["skill"]["arms"]["m#1"]["excess_total"] == 48.0
+    assert view["digest"]["skill"]["no_price"] is None
 
 
 # ------------------------------------------------------------ redigest CLI
