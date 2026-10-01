@@ -1265,8 +1265,17 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               plan_created: str | None = None, complete: bool = True,
               amendments: Sequence[Mapping[str, Any]] | None = None,
               clock: Clock = _utcnow,
-              skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """The digest document. Pure over its inputs (fixed seeds throughout)."""
+              skill_options: Mapping[str, Any] | None = None,
+              no_price: Any = None,
+              cost_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The digest document. Pure over its inputs (fixed seeds throughout).
+
+    ``no_price`` is the refusal ledger the pricing seam recorded into. It
+    MUST be forwarded to ``skill_section``: a run in which every board was
+    refused produces zero-profit rows through ``ValueBook.values``, and
+    without the ledger those rows are indistinguishable from a strategy that
+    broke even. See the ``NO PRICE (N dropped):`` verdict prefix.
+    """
     draws, seed = protocol.draws, protocol.seed
     scored = [b for b in boards
               if all(receipts.get(a.name, {}).get(b.snapshot, {}).get("ok") for a in arms)]
@@ -1451,7 +1460,9 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         from tree_options.desk import skill
 
         skill_doc = skill.skill_section(boards, arms, receipts, outcomes, protocol,
-                                        options=skill_options)
+                                        options=skill_options,
+                                        no_price=no_price,
+                                        cost_provenance=cost_provenance)
     except Exception as error:
         skill_doc = {"status": "error", "error": f"{type(error).__name__}: {str(error)[:200]}"}
     return {
@@ -1883,7 +1894,9 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
                 monotonic: Callable[[], float] = time.monotonic,
                 clock: Clock = _utcnow,
                 skill_options: Mapping[str, Any] | None = None,
-                reports: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None
+                reports: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
+                no_price: Any = None,
+                cost_provenance: Mapping[str, Any] | None = None,
                 ) -> dict[str, Any]:
     """Execute (or resume) every missing (arm, board), then score and digest.
 
@@ -1929,7 +1942,8 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
                                benchmarks=benchmarks, receipts_files=files,
                                run_id=run_dir.name, plan_created=plan.get("created"),
                                amendments=plan.get("amendments"),
-                               complete=complete, clock=clock, skill_options=skill_options)
+                               complete=complete, clock=clock, skill_options=skill_options,
+                               no_price=no_price, cost_provenance=cost_provenance)
         except Exception:
             executor.status = "scoring_failed"
             executor.write_progress()
@@ -2186,8 +2200,12 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     """Net-of-cost, leg-synced outcomes per horizon. With ``table`` (an
     ``desk outcome-table`` JSONL) the lookup is free; otherwise each
     (snapshot, candidate, horizon) is computed live from the v2 index with
-    the default CostModel and ``sync`` minutes, memoized. A missing horizon
-    (rules that do not choose one) uses ``default_horizon``."""
+    the cost model named by ``params["cost_model"]`` -- ``flat`` (the frozen
+    $14.60 baseline) or ``measured`` (per moneyness) -- and ``sync`` minutes,
+    memoized. Under ``measured`` a candidate the model cannot price is
+    REFUSED and recorded in the shared ``NoPriceLedger`` rather than scored as
+    a zero-profit trade. A missing horizon (rules that do not choose one)
+    uses ``default_horizon``."""
     from tree_options.desk import outcomes
 
     default_horizon = str(params.get("default_horizon", "intraday"))
@@ -2214,7 +2232,21 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     state = ctx.shared.get("v2")
     if state is None:
         raise ValueError("the v2 outcome plug-in needs a table or the v2 boards plug-in")
-    costs = outcomes.CostModel()
+    # The cost model is an EXPLICIT choice, never a silent default. `flat` is
+    # the frozen $14.60 baseline the 25-arm digest is calibrated on;
+    # `measured` prices per moneyness from the measured surface.
+    model_name = str(params.get("cost_model", "flat"))
+    if model_name == "flat":
+        costs: Any = outcomes.CostModel()
+    elif model_name == "measured":
+        from tree_options.desk.cost import NoPriceLedger, SpreadCostModel
+        costs = SpreadCostModel.measured()
+        # A refusal must be COUNTED here, not swallowed: the live path is the
+        # one place the measured model will actually run, and an uncounted
+        # refusal scores as a zero-profit trade.
+        ctx.shared.setdefault("no_price", NoPriceLedger())
+    else:
+        raise ValueError(f"cost_model must be 'flat' or 'measured', not {model_name!r}")
     sync = params.get("sync", 2)
     memo: dict[tuple[str, str, str], dict[str, Any] | None] = {}
 
@@ -2227,8 +2259,9 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
             doc = outcomes.candidate_outcome(
                 state["index"], date.fromisoformat(day_text), clock, candidate_id,
                 exit_mode=mode, costs=costs,
-                leg_sync_minutes=None if sync in (None, "off") else int(sync))
-            memo[key] = (None if doc is None or doc.get("status") == "no_fill"
+                leg_sync_minutes=None if sync in (None, "off") else int(sync),
+                no_price=ctx.shared.get("no_price"))
+            memo[key] = (None if doc is None or doc.get("status") in ("no_fill", "no_price")
                          or doc.get("net") is None
                          else {"gross": float(doc["gross"]), "net": float(doc["net"]),
                                "exit_at": doc.get("exit_at")})
@@ -2402,6 +2435,21 @@ def new_run_dir(root: Path, now: datetime) -> Path:
             suffix += 1
 
 
+def _cost_provenance(ctx: PluginContext) -> dict[str, Any] | None:
+    """The corpus-level provenance of the cost model, or ``None`` if flat.
+
+    The outcome plug-in records which model it used in ``ctx.shared``
+    (``_v2_outcome`` sets ``no_price`` only for the measured model), so this
+    reports the model that ACTUALLY priced the run rather than a constant.
+    Nothing here is invented: under the flat model the field is absent, and
+    the digest says so by omission.
+    """
+    if ctx.shared.get("no_price") is None:
+        return None
+    from tree_options.desk.cost import CostProvenance
+    return CostProvenance.measured_corpus().as_dict()
+
+
 def run_from_config(config_path: Path, *, run_dir: Path | None = None,
                     limit: int | None = None, score_only: bool = False,
                     concurrency: int | None = None, shared: Mapping[str, Any] | None = None,
@@ -2461,7 +2509,9 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
                        quota_ok=quota_ok, protocol=protocol, settings=settings,
                        benchmarks=benchmarks, meta=meta, score_only=score_only,
                        sleep=sleep, clock=clock, skill_options=cfg.get("skill"),
-                       reports=reports)
+                       reports=reports,
+                       no_price=ctx.shared.get("no_price"),
+                       cost_provenance=_cost_provenance(ctx))
 
 
 # ------------------------------------------------------------------ cockpit

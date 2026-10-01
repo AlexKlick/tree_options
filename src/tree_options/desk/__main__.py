@@ -99,12 +99,17 @@
 
     outcome-table --bundle FILE --out FILE.jsonl [--sync 2|off]
                   [--half-spread 0.03] [--commission 0.65]
+                  [--cost-model flat|measured]
         Environment v2 (desk.outcomes): one row per (board, candidate,
         exit mode) of a frozen minute-bar bundle — gross and net of the
         round-trip cost, leg-synced fills and marks (default 2 min),
-        status closed / marked_at_end / no_fill — plus the summary
-        FILE.jsonl.summary.json (printed too). Pure mechanics: no model, no
-        network, no store writes; it takes no state lock. Exit 0 written,
+        status closed / marked_at_end / no_fill / no_price — plus the summary
+        FILE.jsonl.summary.json (printed too). --cost-model is an EXPLICIT
+        choice: flat (default) is the frozen $14.60 baseline every historical
+        digest is calibrated on; measured prices per moneyness from the CBOE
+        EOD corpus and, because a board candidate carries no |delta, refuses
+        and counts every candidate it cannot price. Pure mechanics: no model,
+        no network, no store writes; it takes no state lock. Exit 0 written,
         2 bad arguments or an unreadable bundle.
 
     longrun run --config FILE.json [--run-dir DIR] [--limit N] [--score-only]
@@ -303,6 +308,11 @@ def _parser() -> argparse.ArgumentParser:
     ot.add_argument("--sync", default="2")
     ot.add_argument("--half-spread", default="0.03")
     ot.add_argument("--commission", default="0.65")
+    ot.add_argument("--cost-model", default="flat", metavar="{flat,measured}",
+                    help="flat: the frozen $14.60 baseline every digest is calibrated on. "
+                         "measured: per-moneyness, from the CBOE EOD corpus; every "
+                         "candidate without a |delta| is refused and counted, never "
+                         "back-filled flat. Explicit, never defaulted silently.")
     sup = sub.add_parser("supervised-previews",
                          help="E6 shadow: request previews from the deal queue (never the inbox)")
     sup.add_argument("--session", type=date.fromisoformat)
@@ -624,7 +634,8 @@ def run_cli(
 
         return _outcomes_cli(["--bundle", str(args.bundle), "--out", str(args.out),
                               "--sync", args.sync, "--half-spread", args.half_spread,
-                              "--commission", args.commission])
+                              "--commission", args.commission,
+                              "--cost-model", args.cost_model])
     if args.command == "longrun":  # its own per-run-dir lock; `status` is read-only
         from tree_options.desk import longrun
 
