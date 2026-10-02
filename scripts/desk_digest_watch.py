@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import re
 import sys
 from dataclasses import dataclass, field
@@ -246,9 +247,35 @@ def main(argv: list[str] | None = None) -> int:
     if now.tzinfo is None:
         parser.error("--now needs a timezone (e.g. 2026-10-02T01:30:00+00:00)")
     result = check_challenge_digest(store, now)
+    # An in-flight game is healthy, not a failure: the 19:30 slot can race a
+    # long game (observed 2026-10-01: a 30-min game wrote its digest at
+    # ~19:31, after the watcher fired). If anything failed AND the challenge
+    # service is still running, downgrade to a single warning and exit 0 —
+    # the next night's watcher (or the ops loop's own read) judges the
+    # finished digest.
+    if result.exit_code != 0 and _challenge_service_running():
+        print(
+            "desk-digest-watch: WARN game still in flight "
+            "(desk-challenge.service active); digest pending - not a failure"
+        )
+        return 0
     for line in result.lines:
         print(f"desk-digest-watch: {line}")
     return result.exit_code
+
+
+def _challenge_service_running() -> bool:
+    """True when the user's desk-challenge.service is active or activating
+    (a oneshot mid-run). Unavailable systemd (or a non-user context)
+    reports not-running: the watcher then keeps its strict semantics."""
+    try:
+        state = subprocess.run(
+            ["systemctl", "--user", "is-active", "desk-challenge.service"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return state in ("active", "activating")
 
 
 if __name__ == "__main__":
