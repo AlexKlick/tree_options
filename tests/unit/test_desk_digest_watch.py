@@ -305,3 +305,49 @@ def test_cli_exits_one_on_missing_digest(tmp_path, capsys):
 def test_cli_refuses_naive_now(tmp_path):
     with pytest.raises(SystemExit):
         watch.main(["--store", str(tmp_path), "--now", "2026-10-02T01:30:00"])
+
+
+class TestInFlightDowngrade:
+    """A 19:30 watcher can race a still-running game (observed 2026-10-01:
+    the game wrote its digest ~19:31). An active service downgrades ANY
+    failure to one WARN line and exit 0; a finished service keeps strict
+    semantics."""
+
+    def test_active_service_downgrades_failure_to_warn(self, tmp_path, monkeypatch, capsys):
+        from scripts.desk_digest_watch import main as watch_main
+
+        monkeypatch.setattr(
+            "scripts.desk_digest_watch._challenge_service_running", lambda: True
+        )
+        # an empty store: without the downgrade this fails digest-missing
+        rc = watch_main(["--store", str(tmp_path), "--now", "2026-10-02T01:30:00+00:00"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "WARN game still in flight" in out
+        assert "digest-missing" not in out
+
+    def test_finished_service_keeps_strict_failure(self, tmp_path, monkeypatch, capsys):
+        from scripts.desk_digest_watch import main as watch_main
+
+        monkeypatch.setattr(
+            "scripts.desk_digest_watch._challenge_service_running", lambda: False
+        )
+        rc = watch_main(["--store", str(tmp_path), "--now", "2026-10-02T01:30:00+00:00"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "digest-missing" in out
+
+    def test_clean_result_never_mentions_flight(self, tmp_path, monkeypatch, capsys):
+        # reuse the existing happy-path store builder from this file
+        store = _build_store(tmp_path)  # the module's own happy-path builder
+        from scripts.desk_digest_watch import main as watch_main
+
+        monkeypatch.setattr(
+            "scripts.desk_digest_watch._challenge_service_running", lambda: True
+        )
+        rc = watch_main(
+            ["--store", str(store), "--now", "2026-10-02T01:30:00+00:00"]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "in flight" not in out
