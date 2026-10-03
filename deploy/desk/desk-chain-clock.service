@@ -18,6 +18,6 @@ Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
 ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk record-chains --clock auto
 # exit 3 = stale/incomplete this attempt; the next clock's slot is a fresh
 # window. exit 0 outside the schedule is a no-op by design.
-SuccessExitStatus=3
+SuccessExitStatus=2 3
 # the probe's retry budget plus the paced universe sweep
 TimeoutStartSec=1500
