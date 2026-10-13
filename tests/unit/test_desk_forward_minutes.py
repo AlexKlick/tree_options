@@ -354,6 +354,37 @@ def _full_bodies() -> dict[str, object]:
 
 
 class TestCapture:
+    def test_a_banked_session_is_terminal_even_under_a_postdating_selection(
+        self, chain_store
+    ) -> None:
+        # 2026-10-12 in production: Friday's bars were banked, Saturday's
+        # selection postdates them, and the Monday catch-up re-refused the
+        # banked session (exit 4, unit failed). A banked session is terminal.
+        good = fm.refresh_selection(selected_on=SELECT_ON)
+        wire = FakeWire(_full_bodies() | {
+            t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
+            for t in good["tickers"] if t not in IWM_PICKS
+        })
+        first = fm.capture_session(
+            SESSION, selection=good, client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
+                                      cap=100),
+            now=NOW,
+        )
+        assert first.exit_code == 0 and first.status == "written"
+        written = (chain_store["forward"] / "bars" / "2026-10-05.json").read_bytes()
+        later = fm.refresh_selection(selected_on=date(2026, 10, 10))
+        assert later["selected_on"] > SESSION.isoformat()  # the refusing shape
+        recheck = fm.capture_session(
+            SESSION, selection=later,
+            client=_client(FakeWire({}), chain_store["cache"]),
+            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
+                                      cap=100),
+            now=NOW,
+        )
+        assert recheck.exit_code == 0 and recheck.status == "exists"
+        assert (chain_store["forward"] / "bars" / "2026-10-05.json").read_bytes() == written
+
     def test_captures_every_contract_once_and_records_dte_at_session(
         self, chain_store
     ) -> None:
@@ -651,6 +682,55 @@ class TestTimerSchedule:
 
 
 class TestCli:
+    def test_the_catch_up_slot_uses_the_newest_legal_selection(
+        self, chain_store, static_calendar
+    ) -> None:
+        # the Monday-morning catch-up after a Saturday selection: the newest
+        # file (10-10) postdates the session, so the newest LEGAL selection
+        # (10-03) must feed the capture instead of refusing it
+        assert run_cli(["forward-select", "--selected-on", str(SELECT_ON)],
+                       cal=static_calendar) == 0
+        assert run_cli(["forward-select", "--selected-on", "2026-10-10"],
+                       cal=static_calendar) == 0
+        newest = fm.latest_selection(root=chain_store["forward"])
+        assert newest is not None
+        assert newest["selected_on"] == "2026-10-10"  # latest_selection stays newest
+        assert fm.latest_selection_for(
+            SESSION, root=chain_store["forward"])["selected_on"] == SELECT_ON.isoformat()
+        assert fm.latest_selection_for(
+            date(2026, 10, 2), root=chain_store["forward"]) is None  # nothing legal
+        wire = FakeWire(_full_bodies() | {
+            t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
+            for t in fm.latest_selection_for(
+                SESSION, root=chain_store["forward"])["tickers"]
+            if t not in IWM_PICKS
+        })
+        rc = run_cli(
+            ["forward-minutes", "--session", str(SESSION),
+             "--massive-cache", str(chain_store["cache"]), "--budget", "100"],
+            forward_client=_client(wire, chain_store["cache"]),
+            now=NOW,
+            cal=static_calendar,
+        )
+        assert rc == 0
+        doc = json.loads((chain_store["forward"] / "bars" / "2026-10-05.json").read_text())
+        assert doc["selected_on"] == SELECT_ON.isoformat()  # the older one fed it
+
+    def test_no_legal_selection_for_the_session_exits_stale(
+        self, chain_store, static_calendar
+    ) -> None:
+        assert run_cli(["forward-select", "--selected-on", "2026-10-10"],
+                       cal=static_calendar) == 0
+        rc = run_cli(
+            ["forward-minutes", "--session", str(SESSION),
+             "--massive-cache", str(chain_store["cache"]), "--budget", "100"],
+            forward_client=_client(FakeWire({}), chain_store["cache"]),
+            now=NOW,
+            cal=static_calendar,
+        )
+        assert rc == fm.STALE_SELECTION_EXIT
+        assert not (chain_store["forward"] / "bars" / "2026-10-05.json").exists()
+
     def test_forward_minutes_and_verify_through_run_cli(
         self, chain_store, static_calendar
     ) -> None:
@@ -695,8 +775,9 @@ class TestCliExitMapping:
             lambda *a, **k: (_ for _ in ()).throw(exc),
         )
         monkeypatch.setattr(
-            main_mod.forward_minutes, "latest_selection",
-            lambda: {"schema": "desk-forward-selection/1", "contracts": []},
+            main_mod.forward_minutes, "latest_selection_for",
+            lambda session, root=None: {"schema": "desk-forward-selection/1",
+                                        "contracts": []},
         )
         args = argparse.Namespace(
             session=None, selection=None, budget=None, dry_run=True,

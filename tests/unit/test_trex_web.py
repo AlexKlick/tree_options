@@ -48,23 +48,23 @@ entry_window_end = "12:00"
 id = "nvda-oct"
 underlying = "NVDA"
 entry_date = 2026-09-18
-expiry = 2026-10-16
+expiry = 2027-10-16
 long_strike = 185.0
 short_strike = 150.0
 quantity = 5
 limit_cap = 0.50
-exit_deadline = 2026-10-09
+exit_deadline = 2027-10-09
 
 [[structures]]
 id = "qqq-nov"
 underlying = "QQQ"
 entry_date = 2026-09-18
-expiry = 2026-11-20
+expiry = 2027-11-20
 long_strike = 600.0
 short_strike = 475.0
 quantity = 4
 limit_cap = 2.40
-exit_deadline = 2026-11-06
+exit_deadline = 2027-11-06
 """
 
 
@@ -333,7 +333,8 @@ class TestRunbookStatus:
         _write_plan(plans)
         plan = self._plan(plans)
         rb = compute_runbook_status(plan, heartbeat=None, armed=False)
-        # nvda-oct deadline is 2026-10-09, qqq-nov is 2026-11-06.
+        # nvda-oct deadline is 2027-10-09, qqq-nov is 2027-11-06 (the fixture
+        # dates roll forward ~yearly: past deadlines break days_to_deadline >= 0).
         assert set(rb.days_to_exit_deadline) == {"nvda-oct", "qqq-nov"}
         assert all(isinstance(v, int) for v in rb.days_to_exit_deadline.values())
 

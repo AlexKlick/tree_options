@@ -151,6 +151,35 @@ def latest_selection(root: Path | None = None) -> dict[str, Any] | None:
     return json.loads((directory / f"{best}.json").read_text())
 
 
+def latest_selection_for(
+    session: date, root: Path | None = None
+) -> dict[str, Any] | None:
+    """The newest selection written on or before ``session`` (``None`` if none).
+
+    A catch-up slot replays a past session; a selection that postdates it is
+    hindsight and must never feed that capture, so the newest LEGAL selection
+    wins even when a newer file exists (the Monday-morning catch-up after a
+    Saturday selection would otherwise find only the weekend's file and
+    refuse a session it is allowed to capture).
+    """
+    directory = (root or forward_root()) / "selection"
+    if not directory.is_dir():
+        return None
+    best: date | None = None
+    for entry in directory.iterdir():
+        try:
+            d = date.fromisoformat(entry.stem)
+        except ValueError:
+            continue
+        if d > session:
+            continue
+        if best is None or d > best:
+            best = d
+    if best is None:
+        return None
+    return json.loads((directory / f"{best}.json").read_text())
+
+
 # ---------------------------------------------------------------- selection
 
 
@@ -432,12 +461,17 @@ def capture_session(
     """Capture ``session``'s minute bars for the selection's contracts.
 
     Write-once: an existing ``bars/<session>.json`` short-circuits to
-    ``status == "exists"`` without touching the wire. A selection that
-    postdates the session, or has aged past ``MAX_SELECTION_AGE_DAYS``,
-    refuses before any request (exit :data:`STALE_SELECTION_EXIT`).
+    ``status == "exists"`` without touching the wire, BEFORE any staleness
+    ruling (a banked session is terminal truth; a newer selection file must
+    not re-refuse it). A selection that postdates the session, or has aged
+    past ``MAX_SELECTION_AGE_DAYS``, refuses before any request (exit
+    :data:`STALE_SELECTION_EXIT`).
     ``dry_run`` is cache-only: no wire request is made or budgeted, and
     nothing is written (the report says what a real run would find).
     """
+    target = bars_path(session, root)
+    if target.exists():
+        return CaptureResult(session, "exists", 0)
     age = calendar_days_between(selection["selected_on"], session.isoformat())
     chain_session = date.fromisoformat(selection["chain_session"])
     if not 0 <= age <= MAX_SELECTION_AGE_DAYS or chain_session >= session:
@@ -446,9 +480,6 @@ def capture_session(
             note=f"selection {selection['selected_on']} is {age:g} days from the "
                  f"session (chain {selection['chain_session']}); run forward-select",
         )
-    target = bars_path(session, root)
-    if target.exists():
-        return CaptureResult(session, "exists", 0)
     cache: ResponseCache | None = client.cache
     headroom = client.backoff.max_attempts
     wire = 0
@@ -642,6 +673,7 @@ __all__ = [
     "default_massive_cache",
     "forward_root",
     "latest_selection",
+    "latest_selection_for",
     "refresh_selection",
     "selection_path",
     "verdict_path",

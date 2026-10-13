@@ -379,6 +379,32 @@ def test_verify_body_refuses_unusable_series(body: dict[str, Any]) -> None:
 V1_SHA256 = "37de77aa629f30edca74777befecc6d25287ba8c7d9a02a3cbdcf0efd277965f"
 V1_REL = Path("evaluations/intraday-graph/20260927-v1/minute-bars-4mo-expanded.json")
 
+# The ONE deliberate prompt change since the pin: #48 (3bd32c1, measured
+# moneyness-aware cost) replaced the flat-cost clause with the per-moneyness
+# cost paragraph. Swapping it back must reproduce the pre-change code's
+# prompts byte for byte, so any OTHER prompt drift still fails the pin.
+V1_FLAT_COST_CLAUSE = "; every round trip is charged 14.60 in commissions and half-spreads"
+PR48_COST_PARAGRAPH = (
+    ". Execution cost is PER-MONEYNESS, not a constant: measured against CBOE delayed "
+    "end-of-day chain snapshots (captured 17:45-06:30 ET, which are NOT the decision "
+    "clocks you trade on), a 2-leg round trip runs from about $6.60 deep out of the "
+    "money to about $40.60 near the money, against the flat 14.60 the desk's historical "
+    "digests used. Treat the flat figure as one price point, not the rule: a wing-heavy "
+    "book and a delta-heavy book of the same width and tenor cost very differently"
+)
+
+
+def _as_pinned_v1(prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The prompt with #48's cost paragraph swapped back for the v1 clause."""
+    out = []
+    for message in prompt:
+        content = message["content"]
+        if PR48_COST_PARAGRAPH in content:
+            assert content.count(PR48_COST_PARAGRAPH) == 1
+            content = content.replace(PR48_COST_PARAGRAPH, V1_FLAT_COST_CLAUSE)
+        out.append({**message, "content": content})
+    return out
+
 
 def _v1_bundle() -> Path | None:
     from tree_options.desk import paths
@@ -401,7 +427,7 @@ def test_the_frozen_v1_vintage_is_byte_identical_under_the_new_rules() -> None:
     raw = json.loads(data)
     index = outcomes.prepare_index(raw)
     assert index.iv == {} and getattr(index.contracts, "widths", None) is None
-    boards, prompts, count = hashlib.sha256(), hashlib.sha256(), 0
+    boards, prompts, count, with_pr48 = hashlib.sha256(), hashlib.sha256(), 0, 0
     for day, clock, at in index.timeline:
         candidates = outcomes.board_candidates(index, day, clock)
         count += len(candidates)
@@ -409,9 +435,12 @@ def test_the_frozen_v1_vintage_is_byte_identical_under_the_new_rules() -> None:
         if candidates:
             context = lab.board_context(index, day, clock)
             rows = lab.board_rows_v2({"as_of": at.isoformat(), "candidates": candidates}, context)
-            prompts.update(json.dumps(lab.board_prompt_v2(rows, context), sort_keys=True).encode())
+            prompt = lab.board_prompt_v2(rows, context)
+            with_pr48 += sum(PR48_COST_PARAGRAPH in m["content"] for m in prompt)
+            prompts.update(json.dumps(_as_pinned_v1(prompt), sort_keys=True).encode())
     assert count == 10298
     assert boards.hexdigest() == "b27d05a9ad473c72027ee56094f8704aa25af7bc54b0c0e3d44aed39075cbb62"
+    assert with_pr48 == 688  # every board prompt carries #48's paragraph exactly once
     assert prompts.hexdigest() == "d9ef9c320f262fddc544e73a6d82cdba4eb3bde6093ed819a7a9617a39f57e3e"
     table, rows_seen = hashlib.sha256(), 0
     last = index.sessions[1].isoformat()

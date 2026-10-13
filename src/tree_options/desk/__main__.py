@@ -625,7 +625,7 @@ def _forward_minutes(
         session = args.session
     selection = (
         json.loads(args.selection.read_text()) if args.selection
-        else forward_minutes.latest_selection()
+        else forward_minutes.latest_selection_for(session)
     )
     if selection is None:
         print("forward-minutes: no selection in the forward store; run forward-select",
