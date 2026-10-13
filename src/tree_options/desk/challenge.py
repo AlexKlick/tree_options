@@ -424,8 +424,14 @@ def accumulate_standings(store_root: Path) -> dict[str, Any]:
             row["model_calls"] += int(run.get("model_calls", 0) or 0)
             row["model_failures"] += int(run.get("model_failures", 0) or 0)
             for entry in s.get("by_session", []) or []:
+                # one game replays a session once per bundle that holds it
+                # (overlapping bundles): SUM them, so the paired series and
+                # closed_pnl_sum measure the same quantity (an overwrite kept
+                # only the last bundle's row)
                 key = f"{digest_id}:{entry['session']}"
-                row["session_pnl"][key] = float(Decimal(str(entry["closed_pnl"])))
+                row["session_pnl"][key] = row["session_pnl"].get(key, Decimal(0)) + Decimal(
+                    str(entry["closed_pnl"])
+                )
                 row["session_dates"].add(str(entry["session"]))
     out_rows = []
     for policy in sorted(rows):
@@ -444,7 +450,7 @@ def accumulate_standings(store_root: Path) -> dict[str, Any]:
                 "model_calls": row["model_calls"],
                 "model_failures": row["model_failures"],
                 "sessions_distinct": len(row["session_dates"]),
-                "session_pnl": dict(sorted(row["session_pnl"].items())),
+                "session_pnl": {k: float(v) for k, v in sorted(row["session_pnl"].items())},
             }
         )
     return {
@@ -457,11 +463,45 @@ def accumulate_standings(store_root: Path) -> dict[str, Any]:
     }
 
 
+def _clustered_paired(
+    own: Mapping[str, float], base: Mapping[str, float], *, draws: int, seed: int
+) -> dict[str, Any] | None:
+    """The paired difference with the MARKET SESSION as the resampling unit.
+
+    Every nightly game replays the same frozen sessions, so ``<digest>:<session>``
+    keys are not independent: K games of N sessions are N observations, not
+    N*K. Bootstrapping the N*K keys i.i.d. narrows the CI with every replay
+    while no new market evidence arrives (2026-10-13: 2484 keys = 207 sessions
+    x 12 games). Each session contributes its mean over the games that
+    observed it in BOTH series; the CI and sign-flip p run over sessions, on
+    the scale of one average game. ``None`` below two shared sessions."""
+    from tree_options.desk.longrun import paired
+
+    pairs: dict[str, list[tuple[float, float]]] = {}
+    shared = sorted(set(own) & set(base))
+    for key in shared:
+        pairs.setdefault(key.split(":", 1)[1], []).append((own[key], base[key]))
+    if len(pairs) < 2:
+        return None
+    sessions = sorted(pairs)
+    out = paired(
+        [sum(a for a, _ in pairs[s]) / len(pairs[s]) for s in sessions],
+        [sum(b for _, b in pairs[s]) / len(pairs[s]) for s in sessions],
+        draws=draws,
+        seed=seed,
+    )
+    out["unit"] = "market session (mean over the games that replayed it)"
+    out["game_sessions"] = len(shared)
+    return out
+
+
 def rule_check(standings: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The registered PROMOTION-RULE clauses evaluated per model policy
     against the standings. Informational only: promotion is the operator's
-    act; this prints pass/fail, it promotes nothing."""
-    from tree_options.desk.longrun import holm, paired
+    act; this prints pass/fail, it promotes nothing. Clauses 3 and 4 pair
+    per market session (:func:`_clustered_paired`), never per replayed
+    game-session (owner ruling 2026-10-13)."""
+    from tree_options.desk.longrun import holm
 
     rows = {r["policy"]: r for r in standings.get("policies", [])}
     checks: list[dict[str, Any]] = []
@@ -495,33 +535,27 @@ def rule_check(standings: Mapping[str, Any]) -> list[dict[str, Any]]:
         )
         paired_vs_null = None
         if base:
-            shared = sorted(set(own) & set(base.get("session_pnl") or {}))
-            if len(shared) >= 2:
-                paired_vs_null = paired(
-                    [own[k] for k in shared],
-                    [base["session_pnl"][k] for k in shared],
-                    draws=2000,
-                    seed=7,
-                )
+            paired_vs_null = _clustered_paired(
+                own, base.get("session_pnl") or {}, draws=2000, seed=7
+            )
+            if paired_vs_null:
                 p_values[policy] = paired_vs_null["p_one_sided"]
         clauses.append(
             {
                 "clause": 3,
                 "name": "paired CI95 > 0 vs no_trade",
                 "pass": bool(paired_vs_null and paired_vs_null["ci95"][0] > 0),
-                "detail": "no shared sessions" if not paired_vs_null else str(paired_vs_null["ci95"]),
+                "detail": "no shared sessions"
+                if not paired_vs_null
+                else f"{paired_vs_null['ci95']} over {paired_vs_null['sessions']} market sessions",
             }
         )
         first_ci = None
-        if first:
-            shared = sorted(set(first.get("session_pnl") or {}) & set(base.get("session_pnl") or {}))
-            if len(shared) >= 2:
-                first_ci = paired(
-                    [first["session_pnl"][k] for k in shared],
-                    [base["session_pnl"][k] for k in shared],
-                    draws=2000,
-                    seed=7,
-                )["ci95"]
+        if first and base:
+            first_paired = _clustered_paired(
+                first.get("session_pnl") or {}, base.get("session_pnl") or {}, draws=2000, seed=7
+            )
+            first_ci = first_paired["ci95"] if first_paired else None
         clauses.append(
             {
                 "clause": 4,

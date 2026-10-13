@@ -102,6 +102,32 @@ class TestAccumulate:
         assert rows["no_trade"]["closed_pnl_sum"] == "3"
         assert st["registration_sample_through"] == challenge.REGISTRATION_SAMPLE_THROUGH
 
+    def test_overlapping_bundles_sum_per_session_and_match_the_total(
+        self, tmp_path: Path
+    ) -> None:
+        # one game, two bundles (two runs of the same policy) that both hold
+        # 2026-10-06: the session's paired value is the SUM of both rows, so
+        # the series adds up to closed_pnl_sum (an overwrite kept 2.0 only)
+        s = tmp_path / "store"
+        _digest(
+            s,
+            D_POST1,
+            runs={
+                "w-bundle-a": _run_summary("gepa:w", pnl=7, minimum=5000, boards=10,
+                                           by_session={"2026-10-05": 3.0, "2026-10-06": 4.0}),
+                "w-bundle-b": _run_summary("gepa:w", pnl=5, minimum=5000, boards=10,
+                                           by_session={"2026-10-06": 2.0, "2026-10-07": 3.0}),
+            },
+        )
+        row = challenge.accumulate_standings(s)["policies"][0]
+        assert row["session_pnl"] == {
+            f"{D_POST1}:2026-10-05": 3.0,
+            f"{D_POST1}:2026-10-06": 6.0,  # 4 + 2
+            f"{D_POST1}:2026-10-07": 3.0,
+        }
+        assert row["closed_pnl_sum"] == "12"  # 7 + 5
+        assert sum(row["session_pnl"].values()) == 12.0
+
 
 class TestRuleCheck:
     def test_clauses_against_hand_numbers(self, store: Path) -> None:
@@ -120,6 +146,52 @@ class TestRuleCheck:
         assert clauses[5]["pass"] is True  # 4600 >= 4500
         assert clauses[6]["pass"] is True  # 1 failure / 30 calls = 3.3% < 5%
         assert c["all_pass"] is False  # the sample clause is honestly short
+
+    @staticmethod
+    def _replayed(tmp_path: Path, games: int) -> dict:
+        """``games`` nightly digests replaying the SAME 20 frozen sessions:
+        the arm makes +3 / -2 alternately (mean +0.5 per session), no_trade 0."""
+        sessions = [f"2026-08-{d:02d}" for d in range(1, 21)]
+        arm = {s: (3.0 if i % 2 == 0 else -2.0) for i, s in enumerate(sessions)}
+        s = tmp_path / f"store-{games}"
+        for night in range(games):
+            _digest(
+                s,
+                f"202610{night + 2:02d}T010000Z",
+                runs={
+                    "gepa:arm": _run_summary("gepa:arm", pnl=10, minimum=5000, boards=600,
+                                             by_session=arm),
+                    "no_trade": _run_summary("no_trade", pnl=0, minimum=5000, boards=600,
+                                             by_session=dict.fromkeys(sessions, 0.0)),
+                    "first_row": _run_summary("first_row", pnl=0, minimum=5000, boards=600,
+                                              by_session=dict.fromkeys(sessions, 0.0)),
+                },
+            )
+        return challenge.accumulate_standings(s)
+
+    def test_replaying_the_same_sessions_never_manufactures_significance(
+        self, tmp_path: Path
+    ) -> None:
+        from tree_options.desk.longrun import paired
+
+        one = challenge.rule_check(self._replayed(tmp_path, 1))[0]
+        twelve_st = self._replayed(tmp_path, 12)
+        twelve = challenge.rule_check(twelve_st)[0]
+        # 20 market sessions either way: replays are not new observations,
+        # so the CI, the p-value and the clause verdict are IDENTICAL
+        assert one["paired_vs_no_trade"]["sessions"] == 20
+        assert twelve["paired_vs_no_trade"]["sessions"] == 20
+        assert twelve["paired_vs_no_trade"]["game_sessions"] == 240
+        assert twelve["paired_vs_no_trade"]["ci95"] == one["paired_vs_no_trade"]["ci95"]
+        assert twelve["paired_vs_no_trade"]["p_one_sided"] == one["paired_vs_no_trade"]["p_one_sided"]
+        # one average game: 10 x (+3) + 10 x (-2) = +10
+        assert twelve["paired_vs_no_trade"]["diff_total"] == 10.0
+        clause3 = {c["clause"]: c for c in twelve["clauses"]}[3]
+        assert clause3["pass"] is False  # +0.5/session over 20 sessions is not significant
+        # the defect this pins: the same 240 keys bootstrapped i.i.d. DO clear 0
+        row = {r["policy"]: r for r in twelve_st["policies"]}["gepa:arm"]
+        iid = paired(list(row["session_pnl"].values()), [0.0] * 240, draws=2000, seed=7)
+        assert iid["ci95"][0] > 0
 
 
 class TestCli:
