@@ -84,3 +84,31 @@ columns are its mechanical inputs.
 Nothing in this repo implements promotion: `best_advisory` returns
 `promoted: false` by construction, and the register -> seal -> rule steps
 are operator acts on pre-registered artifacts.
+
+### rule-check pairs per MARKET SESSION (implementation correction, owner ruling 2026-10-13)
+
+The sealed text of clause 3 reads "per-session paired difference". Until
+2026-10-13 `challenge.rule_check` keyed the pairs by `<digest>:<session>` and
+bootstrapped them i.i.d. Every nightly game replays the SAME frozen sessions,
+so 12 games of 207 sessions became 2,484 "independent" pairs. The CI narrowed
+with every replay while no new market evidence arrived. On 2026-10-12/13 that
+reported both gepa arms ALL_PASS (Holm p 0.002-0.004) on what is a
+pseudoreplication artifact. The PROMOTION-RULE text is unchanged (no reseal,
+no window reset). Only the implementation now matches it:
+
+- `_clustered_paired`: each market session contributes its mean over the
+  games that replayed it; the bootstrap CI and sign-flip p run over
+  sessions, on the scale of one average game.
+- `accumulate_standings`: a game replays a session once per bundle that
+  holds it (the three bundles overlap: 293 rows, 207 sessions per night).
+  Those rows are now SUMMED. Before, they were overwritten, so the paired
+  series measured a different quantity than `closed_pnl_sum`. Now
+  `sum(session_pnl) == closed_pnl_sum` for every policy.
+
+Live read after the fix (12 games, 207 sessions): gepa:5db18ac9200c CI95
+[-282.72, 473.81], p 0.37; gepa:e47e99125d37 [-174.51, 497.80], p 0.23;
+Holm 0.46. Clause 3 fails for both arms, so neither is promotable.
+Consequence: replaying frozen bundles cannot accumulate promotion-grade
+evidence at any game count. Each further game only averages out model
+stochasticity on the same sessions. New out-of-sample sessions are the only
+route (forward corpus / RESTART-THRESHOLD study).
