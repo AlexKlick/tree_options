@@ -1,0 +1,7 @@
+[Unit]
+Description=TREX premarket at 08:00 Eastern on NYSE weekdays
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:00:00 America/New_York
+Persistent=false
+[Install]
+WantedBy=timers.target

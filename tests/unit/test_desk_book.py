@@ -773,3 +773,81 @@ class TestDefaults:
         monkeypatch.delenv("TREX_STATE")
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         assert desk_book.default_state_root() == tmp_path / "home" / ".local" / "state" / "trex"
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_owner_spec_and_legacy_spec_have_identical_exposure(tmp_path, wrapped):
+    from tree_options.trex.desk_spec import DeskSpec
+
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    specs = tmp_path / "desk" / "specs"
+    specs.mkdir(parents=True)
+    spec = _spec()
+    raw = spec.model_dump(mode="json")
+    if wrapped:
+        raw = DeskSpec(
+            intent_id="intent-1",
+            account_id="paper-test",
+            structure=spec,
+            entry_order_ref="trex:desk:d1",
+            registered_at=datetime(2026, 9, 24, 10, tzinfo=ET),
+        ).model_dump(mode="json", by_alias=True)
+    (specs / "d1.json").write_text(json.dumps(raw))
+    book = specs.parent / "book.json"
+    book.write_text(
+        json.dumps(
+            {
+                "structures": {
+                    "d1": _state(status="open", entry_fill="1.10", filled_qty=2, exit_filled_qty=1)
+                }
+            }
+        )
+    )
+    before = _tree_digest(tmp_path)
+    exposure = desk_book.account_exposure(
+        as_of=AS_OF,
+        plans_root=plans,
+        state_root=tmp_path / "state",
+        desk_specs=specs,
+        desk_book=book,
+    )
+    assert exposure.countable
+    assert exposure.desk.max_loss_usd == D("190")  # (3 - 1.10) * one remaining * 100
+    assert exposure.desk.positions[0].quantity == 1
+    assert _tree_digest(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "change", ["unknown_version", "missing_schema", "missing_owner", "bad_structure", "extra"]
+)
+def test_invalid_owner_envelopes_are_uncountable(tmp_path, change):
+    from tree_options.trex.desk_spec import DeskSpec
+
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    raw = DeskSpec(
+        intent_id="intent-1",
+        account_id="paper-test",
+        structure=_spec(),
+        entry_order_ref="trex:desk:d1",
+        registered_at=datetime(2026, 9, 24, 10, tzinfo=ET),
+    ).model_dump(mode="json", by_alias=True)
+    if change == "unknown_version":
+        raw["schema"] = "trex-desk-spec/99"
+    elif change == "missing_schema":
+        del raw["schema"]
+    elif change == "missing_owner":
+        del raw["account_id"]
+    elif change == "bad_structure":
+        raw["structure"]["quantity"] = -1
+    else:
+        raw["unexpected"] = "do not ignore"
+    (specs / "d1.json").write_text(json.dumps(raw))
+    exposure = desk_book.account_exposure(
+        as_of=AS_OF, plans_root=plans, state_root=tmp_path / "state", desk_specs=specs
+    )
+    assert not exposure.countable
+    assert "unreadable" in exposure.problems[0]

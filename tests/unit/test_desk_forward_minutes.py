@@ -21,9 +21,9 @@ synthetic full-session minutes.
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import hashlib
-import argparse
 import json
 import re
 import urllib.parse

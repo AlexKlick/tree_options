@@ -136,8 +136,38 @@ def attach(
     plans_root: Path | None = None,
     state_root: Path | None = None,
 ) -> None:
+    snapshot_path = os.environ.get("TREX_DESK_READ_SNAPSHOT")
+
+    def published_view(view: str) -> JSONResponse:
+        from tree_options.desk.read_snapshot import read
+
+        assert snapshot_path is not None
+        try:
+            snapshot = read(Path(snapshot_path), now=now_et())
+            doc = dict(snapshot["payload"][view])
+            doc["read_snapshot"] = {
+                key: snapshot[key] for key in ("published_at", "source_release", "payload_sha256")
+            }
+            status = 503 if view == "health" and doc["evidence_status"] != "ready" else 200
+            return JSONResponse(doc, status_code=status, headers={"Cache-Control": "no-store"})
+        except (EvidenceError, OSError) as error:
+            reason = str(error) if isinstance(error, EvidenceError) else "snapshot_unreadable"
+            return JSONResponse(
+                {
+                    "schema": "desk-error/1",
+                    "error": "evidence_unavailable",
+                    "evidence_status": "unavailable",
+                    "evidence_blockers": [reason],
+                    "execution_enabled": False,
+                },
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+
     @app.get("/api/desk/health")
     def health() -> JSONResponse:
+        if snapshot_path:
+            return published_view("health")
         try:
             doc = production.health(database=database, now=now_et(), cal=session_calendar())
             return JSONResponse(
@@ -150,6 +180,8 @@ def attach(
 
     @app.get("/api/desk/scorecards")
     def summary() -> JSONResponse:
+        if snapshot_path:
+            return published_view("scorecards")
         try:
             return JSONResponse(
                 scorecards.build_scorecards(database), headers={"Cache-Control": "no-store"}

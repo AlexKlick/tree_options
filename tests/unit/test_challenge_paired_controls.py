@@ -9,11 +9,9 @@ the implementation's own computations.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-
-import pytest
 
 from tests.unit.test_desk_challenge import BUNDLE_NAME, _store
 from tests.unit.test_desk_hindsight import multi_day_bundle
@@ -21,12 +19,10 @@ from tree_options.desk import lab
 from tree_options.desk.challenge import (
     PolicyEntry,
     _paired_columns,
-    _session_series,
     policy_field,
     run_challenge,
 )
 
-UTC = timezone.utc
 DAYS = (date(2026, 9, 21), date(2026, 9, 22), date(2026, 9, 23))
 T0 = datetime(2026, 9, 25, 1, 0, tzinfo=UTC)
 VINTAGE = "20260927-v1"

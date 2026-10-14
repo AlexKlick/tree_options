@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh TREX evidence read snapshot
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Persistent=false
+[Install]
+WantedBy=timers.target

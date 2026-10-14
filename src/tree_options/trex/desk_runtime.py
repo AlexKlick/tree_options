@@ -64,14 +64,13 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
-
-from pydantic import Field
+from typing import Any
 
 from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.desk.dividends import DividendSnapshot, ex_dividends
-from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.trex.clock import ET, EntryWindow
+from tree_options.trex.desk_spec import SPEC_SCHEMA as SPEC_SCHEMA
+from tree_options.trex.desk_spec import DeskSpec as DeskSpec
 from tree_options.trex.engine import (
     AbortEntry,
     CloseOrder,
@@ -101,7 +100,6 @@ from tree_options.trex.supervised_ibkr import (
 
 log = logging.getLogger("trex.desk_runtime")
 
-SPEC_SCHEMA = "trex-desk-spec/1"
 DESK_REF_PREFIX = ORDER_REF_PREFIX + "desk:"
 #: the E6 entry window; supervised entries only ever cancel inside it
 DEFAULT_ENTRY_WINDOW = EntryWindow(time(9, 50), time(11, 30))
@@ -113,17 +111,6 @@ _CANCELLED = frozenset({"Cancelled", "ApiCancelled", "Inactive"})
 
 def desk_order_ref(structure_id: str) -> str:
     return DESK_REF_PREFIX + structure_id
-
-
-class DeskSpec(StrictModel):
-    """One supervised structure the runtime owns (``specs/<sid>.json``)."""
-
-    schema_version: Literal["trex-desk-spec/1"] = Field(default="trex-desk-spec/1", alias="schema")
-    intent_id: IdStr
-    account_id: IdStr
-    structure: LegStructure
-    entry_order_ref: str
-    registered_at: datetime
 
 
 @dataclass(frozen=True)

@@ -364,6 +364,11 @@ def _parser() -> argparse.ArgumentParser:
     from tree_options.desk import production
 
     production.register(sub)
+    qsl = sub.add_parser("qsl", help="preregistered modeled shadow queue; no broker effects")
+    qsl.add_argument("--session", type=date.fromisoformat)
+    qsl.add_argument("--dry-run", action="store_true")
+    qsl.add_argument("--out", type=Path)
+    qsl.add_argument("--store-root", type=Path)
     lab = sub.add_parser("lab-run", help="the historical theory lab: one quota-gated policy run")
     lab.add_argument("--bundle", required=True, type=Path)
     lab.add_argument("--policy", required=True)
@@ -713,11 +718,11 @@ def _probe_clock_tier(
 
     inst = store_mod.clock_instant(session, target_clock)
     deadline = store_mod.shift_instant(inst, store_mod.CLOCK_WINDOW_S)
-    for attempt in range(attempts):
+    for _attempt in range(attempts):
         try:
             raw = store_mod.fetch_raw("SPY", transport)
             parsed = store_mod.parse_chain(raw, "SPY")
-        except Exception as exc:  # probe failures retry; the sweep reports its own
+        except Exception:  # probe failures retry; the sweep reports its own
             sleep(interval_s)
             continue
         if inst <= parsed.source_as_of < deadline:
@@ -953,6 +958,17 @@ def run_cli(
         if not owned:
             print(f"{args.command}: another run holds the lock; retry later", file=sys.stderr)
             return 3
+        if args.command == "qsl":
+            from tree_options.desk.qsl import run_qsl
+
+            result = run_qsl(
+                session=args.session, now=clock(), cal=cal, dry_run=args.dry_run,
+                out=args.out, store=args.store_root,
+            )
+            print(result.line())
+            for line in result.summary():
+                print(line)
+            return result.exit_code
         if args.command == "record-chains":
             return _record_chains(
                 args,
@@ -974,8 +990,8 @@ def run_cli(
                     f"clock {row['clock']}: ok {row['ok']} stale {row['stale']}"
                     + (f" stale_names={','.join(row['stale_names'])}" if row["stale_names"] else "")
                 )
-                names = set(row["stale_names"])
-                persistent = names if persistent is None else (persistent & names)
+                stale_names = set(row["stale_names"])
+                persistent = stale_names if persistent is None else (persistent & stale_names)
             if persistent:
                 print("persistent stale (every clock): " + ",".join(sorted(persistent)))
             short = [r for r in rows if r["ok"] < args.min_ok]

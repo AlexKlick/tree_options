@@ -1,0 +1,11 @@
+[Service]
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=TREX_DESK_STATE=@DESK_STATE@
+Environment=DESK_STORE=@DESK_STORE@
+Environment=TREX_DESK_QSL_QUEUE=@DESK_STATE@/queue-qsl
+Environment=TREX_DESK_QSL_DB=@DESK_STATE@/evidence/qsl.sqlite3
+ExecStart=
+ExecStart=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.desk qsl
+ExecStartPost=
+ExecStartPost=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.desk shadows --queue-dir @DESK_STATE@/queue-qsl --database @DESK_STATE@/evidence/qsl.sqlite3

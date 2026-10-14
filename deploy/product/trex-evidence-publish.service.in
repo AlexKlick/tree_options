@@ -1,0 +1,17 @@
+[Unit]
+Description=TREX verified evidence read snapshot (no broker effects)
+[Service]
+Type=oneshot
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TREX_DESK_STATE=@DESK_STATE@
+Environment=DESK_STORE=@DESK_STORE@
+ExecStart=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.desk publish-evidence --database @DESK_STATE@/evidence/desk.sqlite3 --out @READ_SNAPSHOT@ --source-release @RELEASE_HEAD@
+SuccessExitStatus=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DESK_STATE@

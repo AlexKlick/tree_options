@@ -98,7 +98,7 @@ CAPTURE_CATCHUP_SLOT = time(6, 50)  # Mon-Sat morning second chance
 CAPTURE_DAYS = frozenset(range(5))  # Mon..Fri
 CAPTURE_CATCHUP_DAYS = frozenset(range(6))  # Mon..Sat
 
-AGGS_PARAMS = {"adjusted": "true", "sort": "asc", "limit": 50000}
+AGGS_PARAMS: dict[str, Any] = {"adjusted": "true", "sort": "asc", "limit": 50000}
 
 
 class SelectionError(RuntimeError):
@@ -504,7 +504,7 @@ def capture_session(
                 entries[ticker] = {**contract, "status": "budget", "bars": []}
                 continue
             before = client.stats.requests
-            body = client.get_json(path, AGGS_PARAMS)
+            body = dict(client.get_json(path, AGGS_PARAMS))
             spent = client.stats.requests - before
             wire += spent
             budget.record(ticker, spent)

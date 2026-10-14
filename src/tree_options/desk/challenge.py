@@ -612,7 +612,7 @@ def _with_paired_columns(
 
 
 def _paired_columns(
-    runs: Mapping[str, list[Mapping[str, Any]]],
+    runs: Mapping[str, Sequence[Mapping[str, Any]]],
     entries: Sequence[PolicyEntry],
     *,
     seed: int,

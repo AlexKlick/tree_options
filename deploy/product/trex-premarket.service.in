@@ -1,0 +1,15 @@
+[Unit]
+Description=TREX premarket research and readiness (no broker effects)
+[Service]
+Type=oneshot
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
+Environment=TREX_DESK_STATE=@DESK_STATE@
+Environment=DESK_STORE=@DESK_STORE@
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.trex.premarket --run
+# Exit 3 is degraded readiness, deliberately not treated as success.
+UMask=0077
+TimeoutStartSec=300

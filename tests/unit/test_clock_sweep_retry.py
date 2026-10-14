@@ -75,7 +75,7 @@ class TestSweepRetry:
         names = ["KO", "PEP", "PG"]
         # PG is stale on the first sweep, rolls by its 2nd read (the retry)
         t = RollingTransport(names, late={"PG"}, rolls_at=1)
-        summary, sleeps, root = _record(tmp_path, static_calendar, t)
+        summary, _sleeps, root = _record(tmp_path, static_calendar, t)
         assert {s: r.status for s, r in summary.results.items()} == {
             "KO": "ok",
             "PEP": "ok",
@@ -88,7 +88,7 @@ class TestSweepRetry:
     ) -> None:
         names = ["KO", "PG"]
         t = RollingTransport(names, late={"PG"}, rolls_at=99)  # never rolls
-        summary, sleeps, root = _record(tmp_path, static_calendar, t)
+        summary, sleeps, _root = _record(tmp_path, static_calendar, t)
         assert summary.results["KO"].status == "ok"
         assert summary.results["PG"].status == "stale"
         # oracle: the pause fires exactly once per retry pass (2 passes, PG

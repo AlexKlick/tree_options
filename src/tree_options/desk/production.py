@@ -27,6 +27,7 @@ COMMANDS = (
     "desk-health",
     "verify-evidence",
     "backup-evidence",
+    "publish-evidence",
 )
 
 
@@ -49,10 +50,15 @@ def register(sub: Any) -> None:
             p.add_argument("--armed", action="store_true", help="always refused in this build")
         if name == "scorecards":
             p.add_argument("--as-of", type=date.fromisoformat)
-        if name == "backup-evidence":
+        if name in ("backup-evidence", "publish-evidence"):
             p.add_argument(
-                "--out", type=Path, required=True, help="new snapshot file; never overwrite"
+                "--out",
+                type=Path,
+                required=True,
+                help="snapshot destination; backup-evidence never overwrites",
             )
+        if name == "publish-evidence":
+            p.add_argument("--source-release", required=True)
 
 
 def health(*, database: Path | None, now: datetime, cal: Calendar) -> dict[str, Any]:
@@ -161,6 +167,25 @@ def dispatch(args: argparse.Namespace, *, now: datetime, cal: Calendar) -> int:
         elif args.command == "verify-evidence":
             with EvidenceStore(database, readonly=True) as store:
                 doc = store.verify()
+        elif args.command == "publish-evidence":
+            from tree_options.desk.read_snapshot import publish
+
+            snapshot = publish(
+                database=database,
+                out=args.out,
+                now=now,
+                cal=cal,
+                source_release=args.source_release,
+            )
+            ready = snapshot["payload"]["health"]["evidence_status"] == "ready"
+            doc = {
+                "schema": "desk-publication/1",
+                "status": "ready" if ready else "degraded",
+                "published_at": snapshot["published_at"],
+                "payload_sha256": snapshot["payload_sha256"],
+                "execution_enabled": False,
+            }
+            code = 0 if ready else 3
         elif args.command == "backup-evidence":
             with EvidenceStore(database, readonly=True) as store:
                 # Keep the verified source snapshot stable through backup.

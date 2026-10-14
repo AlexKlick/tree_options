@@ -751,7 +751,7 @@ def record_session(
         # freshness window (the validate branch refuses anything past it
         # anyway, so the window is the bound). Clock tiers only: the
         # evening tier runs a single pass (see CLOCK_RETRY_PASSES).
-        for attempt in range(CLOCK_RETRY_PASSES):
+        for _attempt in range(CLOCK_RETRY_PASSES):
             stale = [s for s, r in results.items() if r.status == "stale"]
             if not stale:
                 break

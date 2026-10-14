@@ -1,0 +1,18 @@
+[Service]
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
+Environment=RESEARCH_WORKSPACE_DIR=@RESEARCH_WORKSPACE@
+Environment=TREX_PAPER_WORKSPACE=@PAPER_WORKSPACE@
+Environment=TREX_PAPER_CATALOG=@PAPER_CATALOG@
+Environment=TREX_DESK_STATE=@DESK_STATE@
+Environment=DESK_STORE=@DESK_STORE@
+Environment=TREX_DESK_READ_SNAPSHOT=@READ_SNAPSHOT@
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
+ExecStart=
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.trex_web --host 127.0.0.1 --port 8090
+# Inherit ingress and filesystem restrictions from the base unit. Evidence
+# publication is owned by its service, never a ReadWritePaths exception here.

@@ -198,8 +198,9 @@ class TestCli:
     def test_standings_writes_and_rule_check_prints(
         self, store: Path, tmp_path: Path, monkeypatch, capsys, static_calendar
     ) -> None:
-        from tree_options.desk.__main__ import run_cli
         from datetime import datetime
+
+        from tree_options.desk.__main__ import run_cli
         from tree_options.trex.clock import ET
 
         monkeypatch.setenv("DESK_STORE", str(store))

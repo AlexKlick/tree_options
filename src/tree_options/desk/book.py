@@ -60,6 +60,7 @@ from pathlib import Path
 
 from tree_options.desk import paths
 from tree_options.desk.rails import BookPosition, BookView
+from tree_options.trex.desk_spec import DeskSpec
 from tree_options.trex.plan import LegStructure, PutSpread, load_plan
 from tree_options.trex.state import Status, StructureState
 
@@ -291,7 +292,15 @@ def _desk(
     if specs_dir is not None and specs_dir.is_dir():
         for spec_path in sorted(specs_dir.glob("*.json")):
             try:
-                spec = LegStructure.model_validate_json(spec_path.read_bytes())
+                raw = json.loads(spec_path.read_bytes())
+                # Validate the entire envelope, including its version and owner
+                # fields. Never accept an unknown wrapper by just unwrapping it.
+                if isinstance(raw, dict) and ("schema" in raw or "structure" in raw):
+                    if "schema" not in raw:
+                        raise ValueError("desk spec wrapper missing schema")
+                    spec = DeskSpec.model_validate(raw).structure
+                else:
+                    spec = LegStructure.model_validate(raw)
             except (OSError, ValueError) as exc:
                 problems.append(f"desk spec {spec_path.name} unreadable ({type(exc).__name__})")
                 continue
