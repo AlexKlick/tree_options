@@ -9,6 +9,7 @@ Environment=TREX_PAPER_CATALOG=@PAPER_CATALOG@
 Environment=TREX_DESK_STATE=@DESK_STATE@
 Environment=DESK_STORE=@DESK_STORE@
 Environment=TREX_DESK_READ_SNAPSHOT=@READ_SNAPSHOT@
+Environment=TREX_EXPERIMENT_SNAPSHOT=@EXPERIMENT_SNAPSHOT@
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStartPre=
 ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check

@@ -27,6 +27,11 @@ def release_config(tmp_path, monkeypatch):
         "first_session": "2026-10-01",
     }
     config.update({key: str(tmp_path / "state" / key) for key in release.STATE_KEYS})
+    Path(config["experiment_sources"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(config["experiment_sources"]).write_text(
+        '{"schema":"trex-experiment-sources/1","sources":{}}'
+    )
+    config["experiment_snapshot"] = str(tmp_path / "state/desk_state/read-model/experiments.json")
     config["read_snapshot"] = str(tmp_path / "state/desk_state/read-model/evidence.json")
     monkeypatch.setattr(
         release, "_git", lambda path, *args: "" if args[0] == "status" else "a" * 40
@@ -36,13 +41,16 @@ def release_config(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "change", ["asset", "extra_asset", "python_lock", "head", "packages", "authority"]
+    "change",
+    ["asset", "extra_asset", "python_lock", "head", "packages", "authority", "experiment_sources"],
 )
 def test_sealed_release_refuses_drift(release_config, monkeypatch, change):
     manifest = release.seal(release_config)
     source = Path(manifest["source"])
     release.verify_manifest(manifest)
-    if change == "asset":
+    if change == "experiment_sources":
+        Path(manifest["experiment_sources"]).write_text("changed sources")
+    elif change == "asset":
         (source / "src/tree_options/trex_web/static/index.html").write_text("changed")
     elif change == "extra_asset":
         (source / "src/tree_options/trex_web/static/unbound.js").write_text("changed")

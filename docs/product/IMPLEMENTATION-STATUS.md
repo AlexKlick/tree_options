@@ -96,7 +96,13 @@ Phase 0 is OPEN: canary recovery/exit, complete owner-coordinated backup and
 restore rehearsal, and complete experiment/source inventory remain outstanding.
 Phase 1 is an isolated candidate, not an installed release.
 
-Phases 2-6 remain OPEN: unified experiments and three-program pilot; five-page
+Phase 2 now has an isolated experiment index, detail API and React destination;
+see [EXPERIMENTS.md](EXPERIMENTS.md). Its nine-source publication preserves
+replay/forward distinctions, closed verdicts, long-run accounting lineage and
+virtual allocations. The equity pilot remains blocked on qualified inputs,
+frozen registration and enforced resource budgets. This is not the Phase 2 exit gate.
+
+Phases 3-6 remain OPEN: five-page
 React workflows and onboarding; Family Apps signed command authorization;
 durable per-trade browser approvals and entry pause; IBKR equity custody,
 execution and cash accounting; ten consecutive NYSE paper sessions with ten

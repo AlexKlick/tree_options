@@ -1,0 +1,18 @@
+[Unit]
+Description=TREX experiment inventory publication (no study or broker effects)
+[Service]
+Type=oneshot
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.research.experiments --config @EXPERIMENT_SOURCES@ --out @EXPERIMENT_SNAPSHOT@ --source-release @RELEASE_HEAD@
+# Exit 3 means a valid degraded publication with unavailable sources.
+SuccessExitStatus=3
+Nice=10
+TimeoutStartSec=90
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DESK_STATE@

@@ -501,6 +501,10 @@ def create_app(
 
     attach_quant(app)
 
+    from tree_options.trex_web.experiments_view import attach as attach_experiments
+
+    attach_experiments(app)
+
     from tree_options.trex_web.paper_view import attach as attach_paper_workspace
     from tree_options.trex_web.quant_jobs_view import attach as attach_quant_jobs
 

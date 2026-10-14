@@ -16,12 +16,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "trex-research-release/1"
+SCHEMA = "trex-research-release/2"
 COMMANDS = [
     "tree_options.trex_web",
     "tree_options.desk qsl",
     "tree_options.desk publish-evidence",
     "tree_options.trex.premarket",
+    "tree_options.research.experiments",
 ]
 STATE_KEYS = (
     "research_workspace",
@@ -32,6 +33,8 @@ STATE_KEYS = (
     "artifacts",
     "read_snapshot",
     "premarket_runs",
+    "experiment_sources",
+    "experiment_snapshot",
 )
 
 
@@ -89,6 +92,16 @@ print(json.dumps({'python': sys.version, 'prefix': sys.prefix,
     )
     if result.returncode or "--dry-run" not in result.stdout:
         raise ValueError("release_qsl_command_missing")
+    result = subprocess.run(
+        [str(python), "-m", "tree_options.research.experiments", "--help"],
+        cwd=source,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if result.returncode or "--source-release" not in result.stdout:
+        raise ValueError("release_experiment_command_missing")
     return dict(doc)
 
 
@@ -110,6 +123,12 @@ def _configuration(config: dict[str, Any]) -> Path:
         .is_relative_to(Path(config["desk_state"]).resolve())
     ):
         raise ValueError("snapshot_outside_publisher_state")
+    if (
+        not Path(config["experiment_snapshot"])
+        .resolve()
+        .is_relative_to(Path(config["desk_state"]).resolve())
+    ):
+        raise ValueError("experiment_snapshot_outside_publisher_state")
     if config.get("previous_release") is not None:
         previous = Path(config["previous_release"])
         if not previous.is_absolute() or not previous.is_file():
@@ -128,6 +147,7 @@ def seal(config: dict[str, Any]) -> dict[str, Any]:
         "schema": SCHEMA,
         "release_head": _git(source, "rev-parse", "HEAD"),
         "release_tree": _git(source, "rev-parse", "HEAD^{tree}"),
+        "experiment_sources_sha256": _hash(Path(config["experiment_sources"])),
         "uv_lock_sha256": _hash(source / "uv.lock"),
         "frontend_lock_sha256": _hash(source / "web/package-lock.json"),
         "static_sha256": _assets(source),
@@ -143,6 +163,7 @@ def verify_manifest(manifest: dict[str, Any]) -> None:
     for key in (
         "release_head",
         "release_tree",
+        "experiment_sources_sha256",
         "uv_lock_sha256",
         "frontend_lock_sha256",
         "static_sha256",

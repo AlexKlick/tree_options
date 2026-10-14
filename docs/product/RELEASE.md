@@ -20,6 +20,7 @@ and all state roots. Do not run these commands in a service-owned checkout.
 4. Place a private input config outside the source directory. Required fields are
    `source`, `research_workspace`, `paper_workspace`, `paper_catalog`, `desk_store`,
    `desk_state`, `artifacts`, `read_snapshot`, `premarket_runs`, `first_session`,
+   `experiment_sources`, `experiment_snapshot`,
    `previous_release`, `orders_authorized: false`, and `live_money: false`.
    Use absolute paths; keep `read_snapshot` inside the evidence owner's
    `desk_state` directory, but outside `evidence/`. Keep `premarket_runs` outside
@@ -35,8 +36,15 @@ and all state roots. Do not run these commands in a service-owned checkout.
    .venv/bin/python -m tree_options.trex.release render --config /private/release/config.json --out /private/release/units
    ```
 
+Version 2 also requires an existing experiment-source JSON config outside the
+release, and an experiment snapshot path inside `desk_state`. Its config hash is
+sealed with the release. See [EXPERIMENTS.md](EXPERIMENTS.md) for the source keys.
+Version 1 manifests are preserved as history; do not rewrite an old manifest to
+claim version 2 identity.
+
 The output manifest binds the installed interpreter and package versions, source
-head and tree, both dependency locks, all frontend files, and QSL command presence.
+head and tree, both dependency locks, all frontend files, QSL and experiment publisher command presence, and the
+experiment-source configuration hash.
 The manifest is identity evidence, not a successful test receipt. Keep the full
 validation logs and source identity alongside it outside replaceable directories.
 

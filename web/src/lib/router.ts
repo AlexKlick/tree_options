@@ -13,8 +13,12 @@ export type Route =
   | { view: 'trade-floor' }
   | { view: 'quant' }
   | { view: 'workspace' }
+  | { view: 'experiments'; id?: string }
 
 export function parseHash(hash: string): Route {
+  if (hash === '#/experiments') return { view: 'experiments' }
+  const experiment = /^#\/experiments\/([a-zA-Z0-9_.:-]{1,200})$/.exec(hash)
+  if (experiment) return { view: 'experiments', id: experiment[1] }
   if (hash === '#/discover') return { view: 'discover' }
   if (hash === '#/stats') return { view: 'stats' }
   if (hash === '#/market') return { view: 'market' }
@@ -30,6 +34,7 @@ export function parseHash(hash: string): Route {
 }
 
 export function serialize(route: Route): string {
+  if (route.view === 'experiments') return route.id ? `#/experiments/${route.id}` : '#/experiments'
   if (route.view === 'discover') return '#/discover'
   if (route.view === 'stats') return '#/stats'
   if (route.view === 'market') return '#/market'

@@ -701,3 +701,15 @@ footer {
 @media (prefers-reduced-motion: reduce) { .trade-floor-controls *, .trade-floor-seats * { scroll-behavior: auto; animation: none; transition: none; } }
 
 .research-workspace pre { max-height: 24rem; overflow: auto; }
+
+/* Research index remains readable with long provenance hashes on phones. */
+.experiments-page { max-width: 75rem; margin-inline: auto; }
+.experiment-card { margin-block: 1rem; overflow-wrap: anywhere; }
+.experiment-card code, .experiments-page time { overflow-wrap: anywhere; white-space: normal; }
+.experiment-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 1rem; }
+.experiment-metrics dt { font-weight: 600; }
+.experiment-metrics dd { margin: .25rem 0 0; }
+.experiment-filters { display: flex; flex-wrap: wrap; gap: 1rem; margin-block: 1rem; }
+.experiment-filters label { display: grid; gap: .4rem; }
+.experiment-filters select { max-width: 100%; }
+.experiment-card summary { cursor: pointer; padding-block: .5rem; }

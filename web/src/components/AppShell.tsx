@@ -49,6 +49,7 @@ export function AppShell({
           <div className="eyebrow">{contextLabel}</div>
           <h1>{title}</h1>
           <nav className="nav" aria-label="Sections">
+            <a href="#/experiments" aria-current={title === 'Experiments' ? 'page' : undefined}>Experiments</a>
             <a href="#/" aria-current={title === 'Plans' ? 'page' : undefined}>
               Plans
             </a>

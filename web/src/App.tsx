@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { parseHash, type Route } from './lib/router'
 import { DensityProvider } from './density'
+import { ExperimentsPage } from './components/ExperimentsPage'
 import { DiscoverPage } from './components/DiscoverPage'
 import { PerformancePage } from './components/PerformancePage'
 import { PlanDetail } from './components/PlanDetail'
@@ -22,7 +23,9 @@ export default function App() {
   }, [])
   return (
     <DensityProvider>
-      {route.view === 'plan' ? (
+      {route.view === 'experiments' ? (
+        <ExperimentsPage id={route.id} />
+      ) : route.view === 'plan' ? (
         <PlanDetail key={route.id} id={route.id} />
       ) : route.view === 'discover' ? (
         <DiscoverPage />

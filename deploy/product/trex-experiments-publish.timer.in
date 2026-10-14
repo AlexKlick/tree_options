@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh the read-only TREX experiment inventory
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=45s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

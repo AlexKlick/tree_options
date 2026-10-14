@@ -35,8 +35,9 @@ def test_summary_and_page_are_read_only(world):
     assert response.status_code == 200 and response.json()["families"] == []
     page = c.get("/desk/evidence")
     assert page.status_code == 200
-    assert "No desk broker orders" in page.text
-    assert "legacy execution is separate" in page.text
+    assert "This page cannot place orders" in page.text
+    assert "may hold broker positions" in page.text
+    assert "authority and positions must be checked separately" in page.text
     assert "frame-ancestors" in page.headers["content-security-policy"]
     assert c.post("/api/desk/scorecards", json={"execution_enabled": True}).status_code == 405
     assert not (world.root / "desk-state").exists()
