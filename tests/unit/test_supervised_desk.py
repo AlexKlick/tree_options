@@ -824,6 +824,11 @@ def _events(rig: Rig, name: str) -> list[dict[str, Any]]:
         # whatever its torn-down client raises)
         ("openTrades", "tick", AttributeError, True),
         ("qualifyContracts", "requests", TypeError, True),
+        # the adapter's preflight turns these into a blocker only while the
+        # session is up: once it is gone they reach the loop (exit 6 now,
+        # not a result.json blocker carrying the provider text)
+        ("qualifyContracts", "requests", RuntimeError, True),
+        ("qualifyContracts", "requests", ValueError, True),
     ],
 )
 def test_a_drop_mid_loop_exits_6_with_a_gateway_lost_record(
@@ -980,6 +985,107 @@ def test_an_answered_claim_is_not_recovered(rig):
     (sent,) = rig.desk.process_requests()
     assert rig.desk.recover_interrupted_requests() == []
     assert rig.result() == sent
+
+
+# ------------------------------- the inbox never replaces a claim or a result
+
+
+def _evidence(*paths: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in paths if p.exists()}
+
+
+@pytest.mark.parametrize("evidence", ["orphaned_claim", "recovered_result", "result_only"])
+def test_a_resubmitted_request_never_replaces_the_original_evidence(rig, monkeypatch, evidence):
+    rig.ready()
+    rig.request()
+    inbox = rig.desk.requests_dir()
+    claimed, answered = inbox / "sup-001.claimed.json", inbox / "sup-001.result.json"
+    _drop_during_preflight(rig, monkeypatch)  # claimed, never answered
+    rig.gw.is_connected = True
+    if evidence != "orphaned_claim":
+        (interrupted,) = rig.desk.recover_interrupted_requests()
+        assert interrupted["status"] == "interrupted"
+    if evidence == "result_only":
+        claimed.unlink()  # the operator archived the claim and kept its answer
+    before = _evidence(claimed, answered)
+    sends = len(rig.gw.trades)
+
+    resubmitted = rig.request(deadline_s=600)  # the same intent id, new bytes
+    new_bytes = resubmitted.read_bytes()
+    (refused,) = rig.desk.process_requests()
+    assert (refused["status"], refused["reason"]) == ("refused", "duplicate_request")
+    assert _evidence(claimed, answered) == before, "the original claim/result, byte for byte"
+    assert not resubmitted.exists()
+    assert (inbox / "sup-001.duplicate-1.json").read_bytes() == new_bytes, "set aside intact"
+    assert refused["moved_to"] == "sup-001.duplicate-1.json"
+    assert json.loads((inbox / "sup-001.duplicate-1.result.json").read_text()) == refused
+    assert len(rig.gw.trades) == sends, "a duplicate never reaches the broker"
+    (event,) = [e for e in _events(rig, "entry_request") if e.get("reason") == "duplicate_request"]
+    assert (event["request"], event["status"]) == ("sup-001", "refused")
+
+    # every resubmission gets its own name; nothing is ever replaced
+    rig.request(deadline_s=900)
+    (again,) = rig.desk.process_requests()
+    assert again["moved_to"] == "sup-001.duplicate-2.json"
+    assert (inbox / "sup-001.duplicate-1.json").read_bytes() == new_bytes
+    assert rig.desk.process_requests() == [], "a set-aside file is never a request"
+    assert _evidence(claimed, answered) == before
+
+    # the orphaned claim is still answered at the next start, under its own name
+    recovered = rig.desk.recover_interrupted_requests()
+    if evidence == "orphaned_claim":
+        (only,) = recovered
+        assert (only["request"], only["status"]) == ("sup-001", "interrupted")
+        assert rig.result() == only
+        assert claimed.read_bytes() == before[claimed.name]
+    else:
+        assert recovered == []
+        assert _evidence(claimed, answered) == before
+    assert len(rig.gw.trades) == sends
+
+
+def test_a_result_written_mid_request_is_never_replaced(rig, monkeypatch):
+    """The answer is published with a no-replace rename: even a result.json
+    that appears while the request is handled survives, and the desk's own
+    answer takes the next free name."""
+    rig.ready()
+    rig.request()
+    inbox = rig.desk.requests_dir()
+    foreign = b'{"status": "written by someone else"}\n'
+    real = rig.desk._handle
+
+    def handle(claimed: Path, name: str) -> dict[str, Any]:
+        (inbox / f"{name}.result.json").write_bytes(foreign)
+        return real(claimed, name)
+
+    monkeypatch.setattr(rig.desk, "_handle", handle)
+    (result,) = rig.desk.process_requests()
+    assert result["status"] == "sent"
+    assert (inbox / "sup-001.result.json").read_bytes() == foreign
+    assert json.loads((inbox / "sup-001.collision-1.result.json").read_text()) == result
+    assert rig.desk.process_requests() == []
+    assert rig.desk.recover_interrupted_requests() == []
+    assert not list(inbox.glob("*.tmp")), "no private tmp left behind"
+
+
+@pytest.mark.parametrize("native", [True, False], ids=["renameat2", "link_fallback"])
+def test_rename_noreplace_never_replaces_its_target(tmp_path, monkeypatch, native):
+    from tree_options.trex import supervised_desk
+
+    if not native:
+        monkeypatch.setattr(supervised_desk, "_native_renameat2", lambda: None)
+    src, dst = tmp_path / "a.json", tmp_path / "b.json"
+    src.write_text("new")
+    dst.write_text("old")
+    with pytest.raises(FileExistsError):
+        supervised_desk.rename_noreplace(src, dst)
+    assert (src.read_text(), dst.read_text()) == ("new", "old"), "both names untouched"
+    dst.unlink()
+    supervised_desk.rename_noreplace(src, dst)
+    assert not src.exists() and dst.read_text() == "new"
+    with pytest.raises(FileNotFoundError):
+        supervised_desk.rename_noreplace(src, tmp_path / "c.json")
+    assert not (tmp_path / "c.json").exists()
 
 
 # ---------------------------------------------------- D2: main's exit code

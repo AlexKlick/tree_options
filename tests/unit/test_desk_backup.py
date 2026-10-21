@@ -313,6 +313,105 @@ def test_restore_refuses_a_damaged_backup_before_writing_anything(tmp_path):
     assert not scratch.exists()
 
 
+# ------------------------------------------------ restore is crash-atomic
+
+
+def _failing_copy(monkeypatch: pytest.MonkeyPatch, *, after: int) -> None:
+    """Every file copy after the first ``after`` fails like a full disk."""
+    from tree_options.trex import desk_backup
+
+    real = desk_backup._copy
+    calls = [0]
+
+    def copy(source: Path, target: Path) -> tuple[str, int]:
+        calls[0] += 1
+        if calls[0] > after:
+            raise OSError(28, "No space left on device")
+        return real(source, target)
+
+    monkeypatch.setattr(desk_backup, "_copy", copy)
+
+
+def _partials(parent: Path) -> list[Path]:
+    return sorted(parent.glob(".restore-partial-*"))
+
+
+def test_a_restore_that_fails_midway_leaves_nothing_behind(tmp_path, monkeypatch):
+    run, sup = _roots(tmp_path)
+    backup = snapshot(run, sup, tmp_path / "backups", now=TAKEN)
+    scratch = tmp_path / "scratch"
+    _failing_copy(monkeypatch, after=len(EXPECTED_FILES) - 1)  # all but the last file
+    with pytest.raises(BackupError) as failed:
+        restore(backup, scratch, now=TAKEN)
+    assert failed.value.reason == "restore_failed_cleaned"
+    assert failed.value.detail == "OSError", "the error class only"
+    assert not scratch.exists(), "no half restore: old authority is never active"
+    assert _partials(tmp_path) == [], "the partial tree was removed"
+
+
+def test_a_failed_restore_that_cannot_clean_up_names_the_partial_tree(tmp_path, monkeypatch):
+    from tree_options.trex import desk_backup
+
+    run, sup = _roots(tmp_path)
+    backup = snapshot(run, sup, tmp_path / "backups", now=TAKEN)
+    scratch = tmp_path / "scratch"
+    _failing_copy(monkeypatch, after=len(EXPECTED_FILES) - 1)
+    monkeypatch.setattr(desk_backup.shutil, "rmtree", lambda *_, **__: None)
+    with pytest.raises(BackupError) as failed:
+        restore(backup, scratch, now=TAKEN)
+    assert failed.value.reason == "restore_failed_partial"
+    (partial,) = _partials(tmp_path)
+    assert str(partial) in failed.value.detail, "the operator is told where it is"
+    assert not scratch.exists(), "the destination never held a half restore"
+    active = {
+        p.relative_to(partial).as_posix()
+        for p in partial.rglob("*")
+        if p.is_file() and p.relative_to(partial).parts[0] != "archive"
+    }
+    assert active and not active & QUARANTINED, "authority is archived from the first byte"
+    assert not (partial / "RESTORE.json").exists(), "no receipt for an incomplete tree"
+
+
+def test_restore_publishes_one_complete_tree_with_its_receipt(tmp_path, monkeypatch):
+    """The destination appears in ONE rename of a tree that already holds
+    the archive and RESTORE.json: no instant shows old authority active."""
+    run, sup = _roots(tmp_path)
+    backup = snapshot(run, sup, tmp_path / "backups", now=TAKEN)
+    scratch = tmp_path / "scratch"
+    real = os.rename
+    published: list[tuple[Path, set[str]]] = []
+
+    def rename(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        source = Path(src)
+        files = (
+            {p.relative_to(source).as_posix() for p in source.rglob("*") if p.is_file()}
+            if source.is_dir()
+            else {source.name}
+        )
+        published.append((Path(dst), files))
+        real(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", rename)
+    receipt = restore(backup, scratch, now=TAKEN)
+    (only,) = published
+    expected = {f"archive/{rel}" if rel in QUARANTINED else rel for rel in EXPECTED_FILES}
+    assert only == (scratch.resolve(), expected | {"RESTORE.json"})
+    assert set(receipt["quarantined"]) == QUARANTINED
+    assert _partials(tmp_path) == []
+
+
+def test_restore_into_an_existing_empty_directory(tmp_path):
+    run, sup = _roots(tmp_path)
+    backup = snapshot(run, sup, tmp_path / "backups", now=TAKEN)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    receipt = restore(backup, scratch, now=TAKEN)
+    assert json.loads((scratch / "RESTORE.json").read_text()) == receipt
+    assert (scratch / "archive" / "run" / "owner.json").exists()
+    assert not (scratch / "run" / "owner.json").exists()
+    assert _partials(tmp_path) == []
+
+
 def _destinations(tmp_path: Path, run: Path, sup: SupervisedPaths) -> dict[str, Path]:
     elsewhere = tmp_path / "elsewhere-live"
     elsewhere.mkdir()
@@ -399,6 +498,30 @@ def test_cli_snapshot_verify_restore_round_trip(tmp_path, capsys):
     assert rc == 0
     assert set(json.loads(out)["quarantined"]) == QUARANTINED
     assert (scratch / "archive" / "supervised" / "mandate.json").exists()
+
+
+def test_cli_reports_a_failed_restore_as_failed_not_refused(tmp_path, monkeypatch, capsys):
+    """'refused' means nothing was written; a restore that failed after it
+    started writing says so, with its own status and exit code."""
+    run, sup = _roots(tmp_path)
+    backup = snapshot(run, sup, tmp_path / "backups", now=TAKEN)
+    scratch = tmp_path / "scratch"
+    _failing_copy(monkeypatch, after=3)
+    rc, out, err = _cli(
+        capsys,
+        "restore",
+        str(backup),
+        "--into",
+        str(scratch),
+        "--run-dir",
+        str(run),
+        "--supervised-dir",
+        str(sup.root),
+    )
+    assert (rc, out) == (3, "")
+    assert err.startswith("failed: restore_failed_cleaned OSError"), err
+    assert "refused" not in err
+    assert not scratch.exists() and _partials(tmp_path) == []
 
 
 def test_cli_snapshot_refuses_while_the_owner_holds_the_run_dir(tmp_path, capsys):

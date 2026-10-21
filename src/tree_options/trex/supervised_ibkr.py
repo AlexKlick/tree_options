@@ -176,9 +176,21 @@ class IbkrSupervisedBroker:
             blockers.append("account_not_paper")
         return blockers
 
+    def _session_up(self) -> bool:
+        try:
+            return bool(self.ib.connected)
+        except Exception:  # an unreadable session state is not a live session
+            return False
+
     def preflight(self, effect_payload: bytes) -> list[str]:
         """Blockers observable before a permit: session, encoding, contracts,
-        order bounds, and a two-sided package quote. Never places anything."""
+        order bounds, and a two-sided package quote. Never places anything.
+
+        A blocker lands in ``requests/<intent_id>.result.json``, so it names
+        the error CLASS only: the message can carry provider or account
+        text. An error raised once the session reads disconnected is a lost
+        gateway, not an unbuildable order: it propagates, and the desk loop
+        records ``gateway_lost`` and exits 6 at once."""
         try:
             effect = decode_effect(effect_payload)
         except ValueError as error:
@@ -190,7 +202,9 @@ class IbkrSupervisedBroker:
             self.ib.prepare([effect.structure])
             self.ib._order(effect.structure, effect.side, effect.quantity, effect.limit)
         except (ValueError, RuntimeError) as error:
-            return [f"order_unbuildable:{error}"]
+            if not self._session_up():
+                raise
+            return [f"order_unbuildable:{type(error).__name__}"]
         if self.ib.package_quote(effect.structure.id) is None:
             blockers.append("package_quote_incomplete")
         return blockers
@@ -204,11 +218,13 @@ class IbkrSupervisedBroker:
         ``Uncertain`` with a ``not_sent:`` reason: the core keeps the effect
         held until reconciliation confirms (after its settle window) that
         nothing reached the broker. Nothing here fabricates a broker fact.
+        An error's detail is its CLASS only: it is kept in the outbox's
+        terminal receipt and the request's result.
         """
         try:
             effect = decode_effect(effect_payload)
         except ValueError as error:
-            return Uncertain("not_sent:effect_invalid", repr(error))
+            return Uncertain("not_sent:effect_invalid", type(error).__name__)
         if effect.intent_id != attempt.intent_id:
             return Uncertain("not_sent:intent_mismatch", effect.intent_id)
         blockers = self.paper_blockers(effect.account_id)
@@ -225,7 +241,7 @@ class IbkrSupervisedBroker:
                 effect.structure, effect.side, effect.quantity, effect.limit
             )
         except (ValueError, RuntimeError) as error:
-            return Uncertain("not_sent:order_unbuildable", repr(error))
+            return Uncertain("not_sent:order_unbuildable", type(error).__name__)
         order.orderRef = effect.order_ref
         order.account = effect.account_id
         trade = self.ib._ib.placeOrder(contract, order)

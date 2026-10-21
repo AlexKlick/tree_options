@@ -132,6 +132,85 @@ def test_cli_refuses_a_bad_request_and_writes_nothing(tmp_path, monkeypatch, cap
     )
 
 
+def _auto_request(tmp_path, monkeypatch, capsys) -> tuple[int, dict, str]:
+    """``request`` with no --intent-id on a fixed entry date."""
+    monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
+    rc = _cli(
+        [
+            "--dir",
+            str(tmp_path / "desk"),
+            "request",
+            "--buy-strike",
+            "744",
+            "--sell-strike",
+            "742",
+            "--expiry",
+            "2026-11-20",
+            "--debit",
+            "0.90",
+            "--entry-date",
+            "2026-10-21",
+            "--exit-deadline",
+            "2026-10-23",
+        ]
+    )
+    out, err = capsys.readouterr()
+    return rc, (json.loads(out) if rc == 0 else {}), err
+
+
+@pytest.mark.parametrize(
+    "trace",
+    [
+        "{id}.json",
+        "{id}.claimed.json",
+        "{id}.result.json",
+        "{id}.duplicate-1.json",
+        "{id}.duplicate-1.result.json",
+    ],
+)
+def test_automatic_intent_id_skips_every_trace_of_a_used_id(tmp_path, monkeypatch, capsys, trace):
+    """An orphaned claim (or a set-aside duplicate) still owns its id: a new
+    request reusing it would be refused as a duplicate by the desk."""
+    inbox = tmp_path / "desk" / "requests"
+    inbox.mkdir(parents=True)
+    used = inbox / trace.format(id="canary-2026-10-21-a")
+    used.write_text("{}")
+    rc, out, _ = _auto_request(tmp_path, monkeypatch, capsys)
+    assert rc == 0
+    assert out["intent_id"] == "canary-2026-10-21-b"
+    assert (inbox / "canary-2026-10-21-b.json").exists()
+    assert used.read_text() == "{}", "the trace is never touched"
+
+
+def test_automatic_intent_id_uses_the_last_letter_then_refuses(tmp_path, monkeypatch, capsys):
+    inbox = tmp_path / "desk" / "requests"
+    inbox.mkdir(parents=True)
+    for letter in "abcdefghijklmnopqrstuvwxy":
+        (inbox / f"canary-2026-10-21-{letter}.result.json").write_text("{}")
+    rc, out, _ = _auto_request(tmp_path, monkeypatch, capsys)
+    assert (rc, out["intent_id"]) == (0, "canary-2026-10-21-z")
+    rc, _, err = _auto_request(tmp_path, monkeypatch, capsys)
+    assert rc == 2 and "no free intent id" in err
+
+
+def test_status_inbox_lists_only_requests_awaiting_a_claim(tmp_path):
+    paths = DeskPaths(tmp_path)
+    inbox = tmp_path / "requests"
+    inbox.mkdir(parents=True)
+    for name in (
+        "sup-002.json",
+        "sup-001.claimed.json",
+        "sup-001.result.json",
+        "sup-001.duplicate-1.json",
+        "sup-001.duplicate-1.result.json",
+    ):
+        (inbox / name).write_text("{}")
+    supervised = SupervisedPaths(tmp_path / "supervised")
+    supervised.prepare()
+    report = collect_status(paths, supervised, now=T0)
+    assert report["inbox"] == ["sup-002.json"], "a set-aside duplicate is not pending"
+
+
 def test_kill_file_round_trip(tmp_path):
     rc = _cli(["--dir", str(tmp_path), "halt"])
     assert rc == 0 and (tmp_path / "HALT").exists()

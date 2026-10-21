@@ -14,6 +14,11 @@ supervised trades therefore runs HERE:
   assignment plan, and the reconciled open/day loss of the E5 book plus the
   legacy books) -> intent -> permit -> ``DeskRuntime.register`` -> ``send``.
   The outcome is ``requests/<intent_id>.result.json``; nothing is retried.
+- **Evidence is never replaced.** The claim and every result are made with
+  a no-replace rename. A request for an intent that already has a claim or
+  a result is never processed: it moves aside to
+  ``<intent_id>.duplicate-<n>.json`` and is refused in
+  ``<intent_id>.duplicate-<n>.result.json``.
 - **The loop.** Inside the session: one ``DeskRuntime.tick``, then the
   inbox. Outside it: heartbeat only. A lost gateway connection, seen at
   the loop top or raised mid tick/inbox/sleep, is one ``gateway_lost``
@@ -37,10 +42,14 @@ v1 supports debit kinds only: the execution records represent BUY-to-open
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
+import functools
 import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time as wall
@@ -105,6 +114,52 @@ EXIT_DISCONNECTED = 6
 DISCONNECT_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError, OSError)
 #: an interrupted request whose order the outbox cannot prove either way
 _UNKNOWN: Mapping[str, str] = {"order_sent": "unknown", "note": "reconciliation_required"}
+#: what the desk writes beside a request (claims, results, a duplicate set
+#: aside and its refusal, a collision answer): never itself a request
+_BOOKKEEPING = re.compile(r"\.(?:claimed|result|duplicate-\d+)\.json$")
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+
+
+def request_name(path: Path) -> str | None:
+    """The request name of an inbox file ``<name>.json``; None for the
+    desk's own bookkeeping files and anything that is not ``*.json``."""
+    if not path.name.endswith(".json") or _BOOKKEEPING.search(path.name):
+        return None
+    return path.name.removesuffix(".json")
+
+
+@functools.cache
+def _native_renameat2() -> Callable[..., int] | None:
+    """glibc's ``renameat2``, or None where the C library lacks it."""
+    try:
+        fn = ctypes.CDLL(None, use_errno=True).renameat2
+    except (OSError, AttributeError):
+        return None
+    fn.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    fn.restype = ctypes.c_int
+    return fn
+
+
+def rename_noreplace(src: Path, dst: Path) -> None:
+    """Rename ``src`` to ``dst`` unless ``dst`` exists, in one step.
+
+    ``renameat2(RENAME_NOREPLACE)``: FileExistsError leaves both names
+    untouched, FileNotFoundError means ``src`` is gone, and no instant shows
+    both names or neither. Where the kernel or filesystem lacks the flag:
+    a hard link (which never replaces either) then unlinking ``src``. A
+    crash between those two leaves both names; the inbox then refuses the
+    request as a duplicate of its own claim, so it is still never
+    processed twice."""
+    native = _native_renameat2()
+    if native is not None:
+        if native(_AT_FDCWD, os.fsencode(src), _AT_FDCWD, os.fsencode(dst), _RENAME_NOREPLACE) == 0:
+            return
+        code = ctypes.get_errno()
+        if code not in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+            raise OSError(code, os.strerror(code), str(src), None, str(dst))
+    os.link(src, dst)
+    os.unlink(src)
 
 
 class EntryRequest(StrictModel):
@@ -326,30 +381,111 @@ class SupervisedDesk:
         if not inbox.is_dir():
             return results
         for path in sorted(inbox.glob("*.json")):
-            if path.name.endswith((".claimed.json", ".result.json")):
+            name = request_name(path)
+            if name is None:
                 continue
-            claimed = path.with_name(path.name.removesuffix(".json") + ".claimed.json")
+            claimed = self.claim_path(name)
+            if claimed.exists() or self.result_path(name).exists():
+                refused = self._set_aside(path, name)
+                if refused is not None:
+                    results.append(refused)
+                continue
             try:
-                os.rename(path, claimed)  # the claim: processed exactly once
+                rename_noreplace(path, claimed)  # the claim: processed exactly once
             except FileNotFoundError:
                 continue
-            name = path.name.removesuffix(".json")
+            except FileExistsError:  # claimed meanwhile: never take it over
+                refused = self._set_aside(path, name)
+                if refused is not None:
+                    results.append(refused)
+                continue
             result = self._handle(claimed, name)
-            self._write_result(name, result)
+            out = self._publish(name, result)
+            extra = {} if out == self.result_path(name) else {"result_file": out.name}
             self.runtime._event(
-                "entry_request", intent=result.get("intent_id"), status=result["status"]
+                "entry_request", intent=result.get("intent_id"), status=result["status"], **extra
             )
             results.append(result)
         return results
 
+    def claim_path(self, name: str) -> Path:
+        return self.requests_dir() / f"{name}.claimed.json"
+
     def result_path(self, name: str) -> Path:
         return self.requests_dir() / f"{name}.result.json"
 
-    def _write_result(self, name: str, result: Mapping[str, Any]) -> None:
-        out = self.result_path(name)
-        tmp = out.with_name(out.name + ".tmp")
-        tmp.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n")
-        os.replace(tmp, out)
+    def _set_aside(self, path: Path, name: str) -> dict[str, Any] | None:
+        """A request for an intent that already has a claim or a result.
+
+        It is never processed and never replaces that evidence: it moves to
+        the first free ``<name>.duplicate-<n>.json`` (one no-replace rename)
+        and its refusal is ``<name>.duplicate-<n>.result.json``. None when
+        the request vanished meanwhile."""
+        existing = sorted(
+            p.name for p in (self.claim_path(name), self.result_path(name)) if p.exists()
+        )
+        n = 0
+        while True:
+            n += 1
+            moved = path.with_name(f"{name}.duplicate-{n}.json")
+            if self.result_path(f"{name}.duplicate-{n}").exists():
+                continue
+            try:
+                rename_noreplace(path, moved)
+            except FileExistsError:
+                continue
+            except FileNotFoundError:
+                return None
+            break
+        result: dict[str, Any] = {
+            "schema": RESULT_SCHEMA,
+            "at": self.clock().isoformat(),
+            "request": name,
+            "status": "refused",
+            "reason": "duplicate_request",
+            "detail": "the intent already has a claim or a result; neither is replaced",
+            "existing": existing,
+            "moved_to": moved.name,
+        }
+        self._publish(f"{name}.duplicate-{n}", result)
+        self.runtime._event(
+            "entry_request",
+            request=name,
+            status="refused",
+            reason="duplicate_request",
+            moved_to=moved.name,
+        )
+        return result
+
+    def _publish(self, stem: str, result: Mapping[str, Any]) -> Path:
+        """Write ``<stem>.result.json``, never replacing a file.
+
+        A private tmp, fsynced, then one no-replace rename. If that name is
+        taken (written meanwhile by someone else), the answer goes to the
+        first free ``<stem>.collision-<n>.result.json`` and the existing
+        file stays as it is. Returns the path written."""
+        inbox = self.requests_dir()
+        tmp = inbox / f".{stem}.result.json.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            n = 0
+            while True:
+                out = inbox / (
+                    f"{stem}.result.json" if n == 0 else f"{stem}.collision-{n}.result.json"
+                )
+                try:
+                    rename_noreplace(tmp, out)
+                except FileExistsError:
+                    n += 1
+                    continue
+                if n:
+                    log.error("%s.result.json existed: answer written to %s", stem, out.name)
+                return out
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def recover_interrupted_requests(self) -> list[dict[str, Any]]:
         """Answer every request a previous owner claimed and never answered.
@@ -379,7 +515,7 @@ class SupervisedDesk:
                 "reason": "owner_stopped_before_result",
                 **self._outbox_report(name),
             }
-            self._write_result(name, result)
+            self._publish(name, result)
             self.runtime._event(
                 "entry_request",
                 intent=name,

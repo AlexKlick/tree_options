@@ -101,8 +101,9 @@ restored book, against a broker) is rehearsed hermetically by
      ~/.local/state/trex/desk-backups/<backup> --into ~/trex-restore-scratch/20261021
    ```
 
-   The tool refuses (exit 2, nothing written) when the destination is not
-   empty, or when it is, is inside, or contains any of these roots:
+   The tool refuses (exit 2, `refused: <reason>`, nothing written) when the
+   destination is not empty, or when it is, is inside, or contains any of
+   these roots:
    - the run dir or the supervised dir (given with `--run-dir` and
      `--supervised-dir`, and their defaults);
    - the backup root;
@@ -110,8 +111,31 @@ restored book, against a broker) is rehearsed hermetically by
    - any `--live-root`.
 
    Symlinks are resolved before the check.
+
+   The restore is crash-atomic. It is built in a hidden sibling directory,
+   `.restore-partial-<scratch name>-<UTC stamp>-*`, next to the scratch
+   path. Quarantined files are written straight into its `archive/`, so they
+   are never active, not even in a half-written tree. `RESTORE.json` is
+   written last, every file and directory is fsynced, and one rename then
+   puts the whole tree at the scratch path (owner-only permissions). The
+   scratch path therefore holds either a complete restore with its
+   `RESTORE.json`, or nothing.
+
+   A restore that fails after it began writing exits 3 with `failed:`,
+   never `refused:`:
+   - `failed: restore_failed_cleaned <cause>`: the partial tree was removed.
+     Nothing was left anywhere; fix the cause and run the restore again.
+   - `failed: restore_failed_partial <path> <cause>`: the partial tree at
+     `<path>` could not be removed. Its old authority sits under its
+     `archive/` only, and it has no `RESTORE.json`. Never use it: delete it
+     by hand, then run the restore again.
+
+   `<cause>` is a reason code (for example `file_mismatch`) or an error
+   class (for example `OSError`), never an error message.
 3. Read `<scratch>/RESTORE.json`: the backup, its owner epoch, the restored
    and quarantined file lists, and the steps required before any entry.
+   A scratch directory without `RESTORE.json` is not a restore made by this
+   tool: never put it into service.
 4. Compare `<scratch>/run/book.json` with the broker's view of the bound
    account. Use read-only tools only, for example the desk's status pages.
 
@@ -126,12 +150,13 @@ The restored layout:
 
 ## What is quarantined
 
-These files are MOVED into `archive/` and are never active after a restore:
+These files are restored into `archive/` only and are never active after a
+restore:
 
 | File | Why it can never be active again |
 | --- | --- |
 | `run/owner.json` | It names the old owner epoch. Every owner start mints a new epoch and writes its own file. |
-| `run/requests/*` (unclaimed, `.claimed`, `.result`) | These are consumed command state. An unclaimed request restored into the inbox would be processed by the next owner as a new entry. |
+| `run/requests/*` (unclaimed, `.claimed`, `.result`, `.duplicate-<n>`) | These are consumed command state. An unclaimed request restored into the inbox would be processed by the next owner as a new entry. |
 | `run/FLATTEN`, `run/RESOLVE-FLAT-*` (including `.applied`) | These are operator commands about a past moment. A restored FLATTEN would close positions; a restored RESOLVE-FLAT would close a book entry unpriced. |
 | `supervised/mandate.json`, `supervised/mandate.expired-*.json` | These are old authority. A mandate is bound to the epoch it was granted for. |
 | `supervised/permits/*` (issued and consumed) | These are single-use authority for old intents. |
@@ -170,6 +195,10 @@ Do this only when the live roots are lost or corrupt. It is an owner
 replacement: position-aware, Alex-in-the-loop, and separate from this
 runbook's rehearsal.
 
+0. Confirm that `<scratch>/RESTORE.json` exists and names the backup you
+   meant to restore. It must exist before ANY of the steps below. Without
+   it, the scratch directory is not a complete restore: stop and restore
+   again.
 1. The operator stops the desk owner. Confirm that the runtime lock is free:
    `desk_backup snapshot` must not refuse with `owner_running`.
 2. Preserve what remains of the live roots. Move them aside; never delete

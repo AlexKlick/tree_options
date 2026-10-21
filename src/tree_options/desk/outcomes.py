@@ -87,8 +87,9 @@ STRUCTURES = ("put_credit", "put_debit", "call_credit", "call_debit")
 # test pins the equality and forces a revisit if either side ever moves).
 # Distinct from the EIGHT observation clocks the A2 chain tier captures
 # (desk.intraday_action_graph.SCHEDULE): fills are measured at these three,
-# the book is observed at eight. (Formatting pinned by the forward-minutes
-# guard test: it greps this exact literal.)
+# the book is observed at eight. (The forward-minutes guard test pins the
+# VALUE, not the text: reformatting the literal is safe, changing a clock
+# is not.)
 decision_clocks_et = ("10:00", "10:15", "15:15")
 BULLISH = frozenset({"put_credit", "call_debit"})
 AGE_S = 15 * 60  # replay's freshness / entry-delay limit (seconds)
