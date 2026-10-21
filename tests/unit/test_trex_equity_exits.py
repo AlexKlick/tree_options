@@ -373,6 +373,55 @@ def test_exit_close_prices_flatten_like_the_runtime_needs() -> None:
     assert priced_only_rt == EquityClose(EquityExitReason.FLATTEN, 2, None)
 
 
+# (review P1: the runtime's standing-FLATTEN close is priced by
+# marketable_limit, which used to need a real-time bid)
+
+#: quote shape -> the limit a close takes from it at once (bid 670.00)
+_LIMIT_NOW: list[tuple[str, int | None]] = [
+    ("realtime", 67000),  # AT a real-time bid
+    ("delayed", 66998),  # 2 cents below any other bid
+    ("frozen", 66998),
+    ("unnamed", 66998),  # not real-time, type not reported
+    ("none", None),
+    ("no-bid", None),
+    ("zero-bid", None),
+]
+
+
+def _shaped(shape: str, at: datetime) -> EquityQuote | None:
+    return {
+        "realtime": _q(67000, at),
+        "delayed": _q(67000, at, kind="delayed"),
+        "frozen": _q(67000, at, kind="frozen"),
+        "unnamed": _q(67000, at, realtime=False),
+        "none": None,
+        "no-bid": _q(None, at, kind="delayed"),
+        "zero-bid": _q(0, at, kind="delayed"),
+    }[shape]
+
+
+@pytest.mark.parametrize(("shape", "limit"), _LIMIT_NOW)
+def test_marketable_limit_takes_the_best_available_bid(shape: str, limit: int | None) -> None:
+    assert ee.marketable_limit(_shaped(shape, _at(ENTRY_DAY, 10, 0))) == limit
+
+
+@pytest.mark.parametrize(("working_s", "concession"), _WALK)
+def test_marketable_limit_walks_a_non_realtime_bid_like_a_forced_exit(
+    working_s: int, concession: int
+) -> None:
+    at = _at(ENTRY_DAY, 10, 0)
+    delayed = _q(67000, at, kind="delayed")
+    assert ee.marketable_limit(delayed, working_s=working_s) == 67000 - concession
+    assert ee.marketable_limit(_q(67000, at), working_s=working_s) == 67000
+    assert ee.marketable_limit(_q(199, at, kind="frozen"), working_s=working_s) == 199
+
+
+@pytest.mark.parametrize(("shape", "limit"), _LIMIT_NOW)
+def test_realtime_bid_reads_a_real_time_bid_only(shape: str, limit: int | None) -> None:
+    expected = limit if shape == "realtime" else None
+    assert ee.realtime_bid(_shaped(shape, _at(ENTRY_DAY, 10, 0))) == expected
+
+
 def test_a_quote_type_contradicting_realtime_refuses() -> None:
     with pytest.raises(ValueError, match="market_data_type"):
         EquityQuote(bid_cents=1, ask_cents=2, realtime=True, at=None, market_data_type="delayed")

@@ -51,7 +51,9 @@ only, so delayed data never fires them. The close itself is priced:
   structure per session.
 
 ``EquityClose.quote_type`` / ``bid_cents`` record what priced the limit,
-for the exit event.
+for the exit event. ``marketable_limit`` is that any-bid price on its own:
+the runtime's standing-FLATTEN close (decided before ``decide_equity``)
+takes it, so a FLATTEN closes on delayed or frozen data too (review P1).
 """
 
 from __future__ import annotations
@@ -229,13 +231,28 @@ def _working_reason(stored: str | None) -> EquityExitReason:
         return EquityExitReason.FORCED
 
 
-def marketable_limit(quote: EquityQuote | None) -> int | None:
+def realtime_bid(quote: EquityQuote | None) -> int | None:
     """A positive REAL-TIME bid, else None: what the price triggers read
-    (target) and what prices an exit that needs real time. Time-driven
-    exits price through ``exit_close``."""
+    (target) and the only bid a price-triggered exit closes on before the
+    clock's rules are due."""
     if quote is None or not quote.realtime or quote.bid_cents is None:
         return None
     return quote.bid_cents if quote.bid_cents > 0 else None
+
+
+def marketable_limit(quote: EquityQuote | None, *, working_s: int = 0) -> int | None:
+    """The limit an exit that must close now takes from ``quote``: AT a
+    positive real-time bid, else a positive delayed, frozen or unnamed bid
+    less ``stale_concession_cents(bid, working_s)``; None without a positive
+    bid. Never a trigger (``realtime_bid`` is). The runtime's standing
+    FLATTEN close prices through it (review P1: it used to need real time,
+    so a FLATTEN on delayed data never sold)."""
+    bid = None if quote is None else quote.bid_cents
+    if quote is None or bid is None or bid <= 0:
+        return None
+    if quote.realtime:
+        return bid
+    return bid - stale_concession_cents(bid, working_s)
 
 
 def stale_concession_cents(bid_cents: int, working_s: int) -> int:
@@ -271,15 +288,10 @@ def exit_close(
     """The close of ``qty`` shares for ``reason``: AT a positive real-time
     bid; with ``any_bid`` (a time- or operator-driven exit) from a positive
     non-real-time bid less ``stale_concession_cents``; else pending."""
-    bid = None if quote is None else quote.bid_cents
-    if quote is None or bid is None or bid <= 0:
+    limit = marketable_limit(quote, working_s=working_s) if any_bid else realtime_bid(quote)
+    if quote is None or limit is None:
         return EquityClose(reason, qty, None)
-    if quote.realtime:
-        return EquityClose(reason, qty, bid, quote_type=quote.quote_type, bid_cents=bid)
-    if not any_bid:
-        return EquityClose(reason, qty, None)
-    limit = bid - stale_concession_cents(bid, working_s)
-    return EquityClose(reason, qty, limit, quote_type=quote.quote_type, bid_cents=bid)
+    return EquityClose(reason, qty, limit, quote_type=quote.quote_type, bid_cents=quote.bid_cents)
 
 
 def _count_stop(
@@ -301,7 +313,7 @@ def _rule(
     """The first exit rule that fires now, if any."""
     if ticks >= policy.stop_confirm_ticks:
         return EquityExitReason.STOP
-    bid = marketable_limit(quote)
+    bid = realtime_bid(quote)
     target = policy.target_price_cents
     if target is not None and bid is not None and bid >= target:
         return EquityExitReason.TARGET
