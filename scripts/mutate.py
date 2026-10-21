@@ -7747,6 +7747,37 @@ MUTANTS.extend(
 )
 
 
+# Parked with the derived-cost custody/governance suites (docs/desk/PARKED-DERIVED-COST.md).
+# Their guarded source and owning tests never landed on main, so these anchors occur 0x
+# and cannot be re-pinned; running them only reports MUTATION_DRIFT. They return to
+# MUTANTS with the follow-up campaign that re-derives those suites onto the landed engine.
+PARKED_MUTANT_IDS = frozenset(
+    {
+        "QC07-policy-resume-custody",
+        "QC08-source-resume-custody",
+        "QC10-engine-resume-custody",
+        "QC11-full-board-payload-custody",
+        "QC13-whole-row-choice-identity",
+        "QC14-pair-completion-uncertainty",
+        "MG01-tune-rate-holdout-leak",
+        "MG02-tune-horizon-holdout-leak",
+        "MG06-repeat-count-inflation",
+        "MG07-retrospective-confirmation",
+        "MG08-duplicate-board-coverage",
+        "MG10-cost-future-availability",
+        "MG11-selected-refusal-attribution",
+        "MG12-counterfactual-cost-coverage",
+        "MG13-derived-confirmation-custody",
+        "MG14-config-review-floor",
+        "MG16-declared-cost-basis-custody",
+        "MG17-skill-cost-scope-complete",
+    }
+)
+PARKED_MUTANTS = [m for m in MUTANTS if m["id"] in PARKED_MUTANT_IDS]
+assert len(PARKED_MUTANTS) == len(PARKED_MUTANT_IDS), "a parked id names no registered mutant"
+MUTANTS = [m for m in MUTANTS if m["id"] not in PARKED_MUTANT_IDS]
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout
