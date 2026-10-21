@@ -291,6 +291,142 @@ def test_flatten_without_halt_stays_quiet(tmp_path, capsys):
     assert "WARNING" not in capsys.readouterr().err
 
 
+def _audit_lines(root):
+    from tree_options.trex import pause
+
+    return [json.loads(x) for x in (root / pause.PAUSE_AUDIT_FILE).read_text().splitlines()]
+
+
+def test_pause_and_resume_entries_round_trip_without_touching_halt(tmp_path, capsys):
+    rc = _cli(["--dir", str(tmp_path), "pause", "--reason", "owner away", "--actor", "alex"])
+    assert rc == 0 and (tmp_path / "PAUSE_ENTRIES").exists()
+    assert not (tmp_path / "HALT").exists() and not (tmp_path / "FLATTEN").exists()
+    record = json.loads((tmp_path / "PAUSE_ENTRIES").read_text())
+    assert (record["actor"], record["reason"]) == ("alex", "owner away")
+    assert "paused" in capsys.readouterr().out.lower()
+    rc = _cli(["--dir", str(tmp_path), "resume-entries", "--actor", "alex"])
+    assert rc == 0 and not (tmp_path / "PAUSE_ENTRIES").exists()
+    assert [a["event"] for a in _audit_lines(tmp_path)] == ["entries_paused", "entries_resumed"]
+
+
+def test_pause_entries_is_an_alias_of_pause(tmp_path):
+    assert _cli(["--dir", str(tmp_path), "pause-entries"]) == 0
+    assert (tmp_path / "PAUSE_ENTRIES").exists()
+    assert _audit_lines(tmp_path)[0]["actor"] == "operator-terminal"
+
+
+def test_resume_lifts_halt_and_flatten_but_never_the_entries_pause(tmp_path, capsys):
+    """``resume`` keeps its meaning (HALT and FLATTEN); lifting the
+    entries-only pause is its own explicit verb (contracts default 11)."""
+    _cli(["--dir", str(tmp_path), "halt"])
+    _cli(["--dir", str(tmp_path), "pause"])
+    capsys.readouterr()
+    assert _cli(["--dir", str(tmp_path), "resume"]) == 0
+    assert not (tmp_path / "HALT").exists()
+    assert (tmp_path / "PAUSE_ENTRIES").exists()
+    out = capsys.readouterr().out
+    assert "PAUSE_ENTRIES" in out and "resume-entries" in out
+
+
+def test_halt_and_flatten_do_not_pause_and_pause_does_not_halt(tmp_path):
+    _cli(["--dir", str(tmp_path), "pause"])
+    assert not (tmp_path / "HALT").exists()
+    _cli(["--dir", str(tmp_path), "resume-entries"])
+    _cli(["--dir", str(tmp_path), "halt"])
+    _cli(["--dir", str(tmp_path), "flatten"])
+    assert not (tmp_path / "PAUSE_ENTRIES").exists()
+
+
+def test_a_paused_desk_refuses_new_entry_requests(tmp_path, monkeypatch, capsys):
+    """The live inbox is an entry path: a pause refuses composing into it."""
+    monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
+    desk = tmp_path / "desk"
+    request = [
+        "--dir",
+        str(desk),
+        "request",
+        "--buy-strike",
+        "744",
+        "--sell-strike",
+        "742",
+        "--expiry",
+        "2026-11-20",
+        "--debit",
+        "0.90",
+        "--exit-deadline",
+        "2026-10-23",
+        "--intent-id",
+        "canary-p1",
+    ]
+    _cli(["--dir", str(desk), "pause"])
+    capsys.readouterr()
+    assert _cli(request) == 2
+    assert "entries_paused" in capsys.readouterr().err
+    assert not (desk / "requests" / "canary-p1.json").exists()
+    _cli(["--dir", str(desk), "resume-entries"])
+    assert _cli(request) == 0 and (desk / "requests" / "canary-p1.json").exists()
+
+
+def test_pause_refuses_an_over_long_reason_and_writes_nothing(tmp_path, capsys):
+    rc = _cli(["--dir", str(tmp_path), "pause", "--reason", "x" * 501])
+    assert rc == 2 and "refused" in capsys.readouterr().err
+    assert not (tmp_path / "PAUSE_ENTRIES").exists()
+
+
+def test_status_shows_pause_halt_reconciliation_and_risk_snapshot_age(tmp_path):
+    from tests.unit import owner_facts
+    from tree_options.trex import pause
+    from tree_options.trex.contracts import Blocker
+
+    paths = DeskPaths(tmp_path)
+    supervised = SupervisedPaths(tmp_path / "supervised")
+    supervised.prepare()
+    owner_facts.write_snapshot(tmp_path, T0, age_s=42)
+    owner_facts.write_reconciliation(tmp_path, T0, age_s=9)
+    owner_facts.write_monitor(tmp_path, T0, age_s=2)
+    pause.pause_entries(tmp_path, actor="alex", reason="lunch", now=T0)
+    paths.halt().touch()
+
+    report = collect_status(paths, supervised, now=T0)
+    assert report["entries_paused"] is True
+    assert report["pause"]["actor"] == "alex" and report["pause"]["reason"] == "lunch"
+    assert report["halt"] is True
+    assert report["kill_files"] == ["HALT"], "PAUSE_ENTRIES is reported on its own"
+    facts = report["owner_facts"]
+    assert facts["risk_snapshot"]["age_s"] == 42
+    assert facts["reconciliation"]["age_s"] == 9
+    assert facts["reconciliation"]["status"] == "clean"
+    assert facts["exit_owner"]["ready"] is True
+    assert report["entry_blockers"] == [Blocker.ENTRIES_PAUSED.value, "halt"]
+
+
+def test_status_on_a_bare_dir_names_every_missing_fact(tmp_path):
+    from tree_options.trex import admission
+    from tree_options.trex.contracts import Blocker
+
+    supervised = SupervisedPaths(tmp_path / "supervised")
+    supervised.prepare()
+    report = collect_status(DeskPaths(tmp_path), supervised, now=T0)
+    assert report["entries_paused"] is False and report["pause"] is None
+    assert report["halt"] is False
+    assert report["owner_facts"]["risk_snapshot"]["state"] == "absent"
+    assert report["entry_blockers"] == [
+        Blocker.RISK_SNAPSHOT_STALE.value,
+        Blocker.RECONCILIATION_REQUIRED.value,
+        admission.EXIT_OWNER_NOT_READY,
+    ]
+
+
+def test_cli_status_prints_the_pause(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
+    _cli(["--dir", str(tmp_path), "pause", "--reason", "r"])
+    capsys.readouterr()
+    assert _cli(["--dir", str(tmp_path), "status"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["entries_paused"] is True and doc["halt"] is False
+    assert "entries_paused" in doc["entry_blockers"]
+
+
 def test_status_reads_the_desk_state(tmp_path):
     paths = DeskPaths(tmp_path)
     paths.root.mkdir(parents=True, exist_ok=True)

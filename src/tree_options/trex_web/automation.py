@@ -8,6 +8,17 @@ operator's own systemctl use is not logged here).
 
 The systemctl runner is injectable so tests never touch the real
 session bus.
+
+The entries-only pause (``PAUSE_ENTRIES``, ``trex.pause``) has its own
+functions for the web command backend: ``pause_entries_action`` /
+``resume_entries_action`` (actor and reason supplied by the caller), and
+``apply_entries_command`` for a validated ``pause_entries`` /
+``resume_entries`` ``trex-command/1``. They are audited by ``trex.pause``
+(``pause-entries.jsonl``, with the actor), never by ``automation.jsonl``.
+The cockpit's ``resume`` kill-file verb keeps its meaning (HALT and
+FLATTEN) and never lifts the pause. Contracts default 10: a pause may be
+applied by whichever process receives it; whether a RESUME is applied by
+the backend or queued for the desk process is the command backend's rule.
 """
 
 from __future__ import annotations
@@ -15,11 +26,18 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tree_options.trex import pause
 from tree_options.trex.clock import ET
+from tree_options.trex.contracts.commands import (
+    AnyCommand,
+    PauseEntriesCommand,
+    ResumeEntriesCommand,
+)
+from tree_options.trex.contracts.vocabulary import Blocker
 from tree_options.trex.desk_cli import HALT_FLATTEN_WARNING
 
 #: the desk's own timers -> their oneshot services (the whole surface)
@@ -108,6 +126,7 @@ def automation_status(
     return {
         "schema": "desk-automation/1",
         "kill_files": sorted(f for f in KILL_FILES if (run_dir / f).exists()),
+        "entries_paused": pause.is_paused(run_dir),
         "timers": timers,
     }
 
@@ -154,3 +173,83 @@ def kill_file_action(run_dir: Path, action: str) -> dict[str, Any]:
     if verb == "flatten" and (run_dir / "HALT").exists():
         doc["warning"] = HALT_FLATTEN_WARNING
     return doc
+
+
+# ------------------------------------------------------- entries-only pause
+
+
+def _entries_doc(run_dir: Path, outcome: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entries_paused": outcome["entries_paused"],
+        "changed": outcome["changed"],
+        "kill_files": sorted(f for f in KILL_FILES if (run_dir / f).exists()),
+        "pause": pause.pause_record(run_dir),
+    }
+
+
+def pause_entries_action(
+    run_dir: Path,
+    *,
+    actor: str,
+    reason: str = "",
+    command_key: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Place ``PAUSE_ENTRIES`` (new entries refused; exits continue)."""
+    outcome = pause.pause_entries(
+        run_dir,
+        actor=actor,
+        reason=reason,
+        now=now or datetime.now(UTC),
+        command_key=command_key,
+    )
+    return _entries_doc(run_dir, outcome)
+
+
+def resume_entries_action(
+    run_dir: Path,
+    *,
+    actor: str,
+    reason: str = "",
+    command_key: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Remove ``PAUSE_ENTRIES`` (HALT and FLATTEN untouched)."""
+    outcome = pause.resume_entries(
+        run_dir,
+        actor=actor,
+        reason=reason,
+        now=now or datetime.now(UTC),
+        command_key=command_key,
+    )
+    return _entries_doc(run_dir, outcome)
+
+
+def apply_entries_command(
+    run_dir: Path, command: AnyCommand, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Apply a validated ``pause_entries`` / ``resume_entries`` command.
+
+    The audit actor is ``<ingress>:<sub>`` of the command's verified
+    ``issued_by``; the audit carries the idempotency key. A command is
+    applied only inside ``[issued_at, expires_at)`` (``command_expired``
+    otherwise); any other kind is not an entries command (ValueError)."""
+    if not isinstance(command, PauseEntriesCommand | ResumeEntriesCommand):
+        raise ValueError(f"not an entries-pause command: {command.kind}")
+    at = now or datetime.now(UTC)
+    if at.tzinfo is None or at.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    if (at - command.issued_at).total_seconds() < 0 or (
+        at - command.expires_at
+    ).total_seconds() >= 0:
+        raise ValueError(Blocker.COMMAND_EXPIRED.value)
+    action = (
+        pause_entries_action if isinstance(command, PauseEntriesCommand) else resume_entries_action
+    )
+    return action(
+        run_dir,
+        actor=f"{command.issued_by.ingress}:{command.issued_by.sub}",
+        reason=command.args.reason,
+        command_key=command.idempotency_key,
+        now=at,
+    )
