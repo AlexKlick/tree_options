@@ -1,5 +1,5 @@
 [Unit]
-Description=Options desk: nightly challenge-digest watch (post-game checks, journal only)
+Description=Options desk: nightly challenge-digest watch (post-game checks, journal + verdict file)
 Documentation=file:///home/alexk/documents/tree_options/docs/desk/DESK-LAB.md
 
 [Service]
@@ -23,10 +23,17 @@ WorkingDirectory=/home/alexk/documents/tree_options
 # (4) model_failures across the digest is zero (warned, never failed).
 # SHIPS UNINSTALLED: nothing here is installed into ~/.config/systemd or any
 # other unit path; the operator installs it (or not) by hand.
-# No notifications, no network, no writes: journald is the whole surface —
-# the ops loop reads `journalctl --user -u desk-digest-watch.service`.
+# No notifications, no network. The ops loop reads
+# `journalctl --user -u desk-digest-watch.service`, but journald here keeps
+# less than a day (vendor SystemMaxUse=1000M), so each run also writes its
+# verdict atomically to $STATE_DIRECTORY/<game-stamp>.json and latest.json.
+# StateDirectory= is the script's only write and stays writable under
+# ProtectHome=read-only; for this user unit it resolves to
+# ~/.local/state/trex/ops-verdicts/desk-digest-watch (the path manual runs
+# fall back to as well).
 # exit 0 = every check passed (warnings allowed); exit 1 = a check failed
 # and every failure already has its own journal line.
+StateDirectory=trex/ops-verdicts/desk-digest-watch
 ExecStart=/home/alexk/documents/tree_options/.venv/bin/python scripts/desk_digest_watch.py
 TimeoutStartSec=120
 MemoryHigh=128M

@@ -1,8 +1,19 @@
 #!/usr/bin/env python
-"""Nightly challenge-digest watcher — journalctl-visible truth, nothing else.
+"""Nightly challenge-digest watcher: journalctl-visible truth plus a durable verdict.
 
-Read-only. No notifications, no network, no writes: the ops loop reads this
-job's journal. Runs at 19:30 America/Denver (deploy/desk/desk-digest-watch.timer),
+Read-only on the desk store. No notifications, no network. The ops loop
+reads this job's journal, and because journald on this host keeps less
+than a day, every run ALSO writes its verdict (the journal lines plus the
+parsed result) atomically to ``<state>/<game-stamp>.json`` and
+``<state>/latest.json``; that is the only write. ``<state>`` is
+``--state-dir`` if given, else ``$STATE_DIRECTORY`` (the unit's
+``StateDirectory=``, writable under ``ProtectHome=read-only``), else, for
+manual runs, ``$XDG_STATE_HOME`` (or ``~/.local/state``) plus
+``trex/ops-verdicts/desk-digest-watch``: the same place. The game stamp is the slot judged
+(tonight's cutoff, ``YYYYMMDDTHHMMSSZ``), never the digest found, and
+``latest.json`` never moves back to an older slot (a ``--now`` replay).
+A failed verdict write is one stderr WARN line; the exit code stays the
+checks' own. Runs at 19:30 America/Denver (deploy/desk/desk-digest-watch.timer),
 half an hour after the 19:00 Denver challenge game, and answers four questions
 about the game that should have just landed under ``<DESK_STORE>/evaluations/
 challenge/``:
@@ -33,15 +44,19 @@ Usage:
   python scripts/desk_digest_watch.py            # DESK_STORE env or default
   python scripts/desk_digest_watch.py --store /path/to/desk-store
   python scripts/desk_digest_watch.py --now 2026-10-02T01:30:00+00:00
+  python scripts/desk_digest_watch.py --state-dir /tmp/verdicts
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from pathlib import Path
@@ -61,6 +76,15 @@ DENVER = ZoneInfo("America/Denver")
 GAME_HOUR_ET = time(21, 0)
 #: digest directory names are UTC stamps written by the challenge run
 STAMP_RE = re.compile(r"^(\d{8}T\d{6}Z)(?:-\d+)?$")
+STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+#: the unit's StateDirectory= (a user unit resolves it under $XDG_STATE_HOME)
+STATE_SUBDIR = "trex/ops-verdicts/desk-digest-watch"
+LATEST = "latest.json"
+VERDICT_SCHEMA = "desk-digest-watch.verdict/1"
+IN_FLIGHT_LINE = (
+    "desk-digest-watch: WARN game still in flight "
+    "(desk-challenge.service active); digest pending - not a failure"
+)
 
 
 @dataclass(frozen=True)
@@ -102,7 +126,7 @@ def _stamp_utc(name: str) -> datetime | None:
     match = STAMP_RE.match(name)
     if not match:
         return None
-    return datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    return datetime.strptime(match.group(1), STAMP_FORMAT).replace(tzinfo=UTC)
 
 
 def _model_failures(document: dict) -> int:
@@ -227,6 +251,87 @@ def check_challenge_digest(store_root: Path, now: datetime) -> WatchResult:
     )
 
 
+def verdict_dir(environ: Mapping[str, str] | None = None) -> Path:
+    """Where verdicts go: systemd's ``$STATE_DIRECTORY`` (first entry when
+    the unit lists several), else the same path a user unit's
+    ``StateDirectory=`` resolves to, so manual runs land beside timer runs."""
+    env = os.environ if environ is None else environ
+    state = env.get("STATE_DIRECTORY", "").split(":")[0].strip()
+    if state:
+        return Path(state)
+    xdg = env.get("XDG_STATE_HOME", "").strip()
+    root = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / ".local" / "state"
+    return root / STATE_SUBDIR
+
+
+def verdict_document(
+    result: WatchResult,
+    *,
+    store: Path,
+    now: datetime,
+    in_flight: bool,
+    exit_code: int,
+    journal_lines: list[str],
+) -> dict:
+    """The durable record of one run: what the journal said, plus the
+    parsed checks (kept even when an in-flight game downgraded them)."""
+    cutoff = game_cutoff_utc(now)
+    return {
+        "schema": VERDICT_SCHEMA,
+        "game_stamp": cutoff.strftime(STAMP_FORMAT),
+        "cutoff_utc": cutoff.isoformat(),
+        "checked_at": now.astimezone(UTC).isoformat(),
+        "store": str(store),
+        "verdict": "in_flight" if in_flight else ("fail" if result.failures else "ok"),
+        "exit_code": exit_code,
+        "digest_id": result.digest_id,
+        "digest_status": result.digest_status,
+        "model_failures": result.model_failures,
+        "standings_fresh": result.standings_fresh,
+        "failures": list(result.failures),
+        "warnings": list(result.warnings),
+        "journal_lines": list(journal_lines),
+    }
+
+
+def _write_json_atomic(path: Path, document: dict) -> None:
+    """Write via a sibling temp file and ``os.replace``: a reader sees the
+    old file or the new one, never a torn one; a failed write leaves no
+    temp behind."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(document, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def _latest_stamp(path: Path) -> str:
+    try:
+        stamp = json.loads(path.read_text()).get("game_stamp")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return stamp if isinstance(stamp, str) else ""
+
+
+def write_verdict(directory: Path, document: dict) -> Path:
+    """``<directory>/<game-stamp>.json``, then ``latest.json`` unless it
+    already holds a newer slot (stamps are fixed-width UTC, so they sort)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = document["game_stamp"]
+    target = directory / f"{stamp}.json"
+    _write_json_atomic(target, document)
+    latest = directory / LATEST
+    if _latest_stamp(latest) <= stamp:
+        _write_json_atomic(latest, document)
+    return target
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -241,6 +346,15 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="treat this instant as now, ISO-8601 with timezone (default: current time)",
     )
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=None,
+        help=(
+            "where the verdict files go (default: $STATE_DIRECTORY, else "
+            f"$XDG_STATE_HOME or ~/.local/state, plus {STATE_SUBDIR})"
+        ),
+    )
     args = parser.parse_args(argv)
     store = args.store if args.store else paths.store_root()
     now = args.now if args.now else datetime.now(UTC)
@@ -253,15 +367,28 @@ def main(argv: list[str] | None = None) -> int:
     # service is still running, downgrade to a single warning and exit 0 —
     # the next night's watcher (or the ops loop's own read) judges the
     # finished digest.
-    if result.exit_code != 0 and _challenge_service_running():
-        print(
-            "desk-digest-watch: WARN game still in flight "
-            "(desk-challenge.service active); digest pending - not a failure"
-        )
-        return 0
-    for line in result.lines:
-        print(f"desk-digest-watch: {line}")
-    return result.exit_code
+    in_flight = result.exit_code != 0 and _challenge_service_running()
+    if in_flight:
+        lines, exit_code = [IN_FLIGHT_LINE], 0
+    else:
+        lines = [f"desk-digest-watch: {line}" for line in result.lines]
+        exit_code = result.exit_code
+    for line in lines:
+        print(line)
+    directory = args.state_dir if args.state_dir else verdict_dir()
+    document = verdict_document(
+        result,
+        store=store,
+        now=now,
+        in_flight=in_flight,
+        exit_code=exit_code,
+        journal_lines=lines,
+    )
+    try:
+        write_verdict(directory, document)
+    except OSError as error:
+        print(f"desk-digest-watch: WARN verdict-unwritten: {directory}: {error}", file=sys.stderr)
+    return exit_code
 
 
 def _challenge_service_running() -> bool:
