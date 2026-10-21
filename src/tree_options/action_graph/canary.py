@@ -3,6 +3,12 @@
 This is a pure screening function. It cannot issue a mandate, consume a permit,
 reserve risk, or send an order. The eventual broker owner must independently
 recheck these facts at the send boundary.
+
+Wave 2 adds the equity arm (``review_equity_entry``): one whole-share,
+long-only, cash-only stock entry, screened with the frozen contract defaults
+and the contract's own equity risk arithmetic (integer cents). The option
+screen (``review_canary_package``) is unchanged; the per-session entry cap
+(``entry_session_blockers``) is shared by both asset kinds.
 """
 
 from __future__ import annotations
@@ -10,11 +16,22 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 from hashlib import sha256
 
 from tree_options.action_graph.capital import CapitalProfile, _money
 from tree_options.action_graph.proposal import canonical_bytes
+from tree_options.trex.contracts.defaults import (
+    EQUITY_GAP_RESERVE_BPS,
+    EQUITY_SYMBOL_ALLOWLIST,
+    MAX_ENTRIES_PER_SESSION,
+)
+from tree_options.trex.contracts.effects import (
+    SupervisedEquityEffect,
+    equity_max_loss_cents,
+    equity_notional_cents,
+)
+from tree_options.trex.contracts.vocabulary import Blocker
 from tree_options.trex.plan import LegStructure
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -183,4 +200,142 @@ def review_canary_package(
         != facts.intent_sha256
     ):
         blockers.append("intent_hash_mismatch")
+    return tuple(blockers)
+
+
+# -- Wave 2: the equity arm and the shared session cap ----------------------
+
+
+def entry_session_blockers(
+    entries_this_session: int | None, max_entries: int = MAX_ENTRIES_PER_SESSION
+) -> tuple[str, ...]:
+    """The per-session entry cap, both asset kinds combined.
+
+    ``entries_this_session`` counts the entries already sent this NYSE
+    session; an unknown (None) or impossible (negative) count blocks."""
+    if (
+        entries_this_session is None
+        or entries_this_session < 0
+        or entries_this_session >= max_entries
+    ):
+        return (Blocker.SESSION_ENTRY_LIMIT_REACHED.value,)
+    return ()
+
+
+def _optional_cents(value: int | None, name: str) -> None:
+    # Integer cents only: a float, a bool or a Decimal is a caller defect.
+    if value is not None and type(value) is not int:
+        raise ValueError(f"{name} must be integer cents")
+
+
+def _cap_cents(value: Decimal) -> int:
+    """A profile limit (Decimal USD) as whole cents, rounded toward zero so a
+    sub-cent limit never grows."""
+    return int((value * 100).to_integral_value(rounding=ROUND_FLOOR))
+
+
+@dataclass(frozen=True)
+class EquityEntryFacts:
+    """Observed facts for one equity entry; money in integer cents.
+
+    ``market_data_type`` is what IBKR reported for the quote (``realtime``,
+    ``delayed``, ``frozen`` or ``unknown``); ``settled_cash_cents`` is the
+    account's settled cash (negative = borrowing); the loss figures come
+    from a fresh risk snapshot. None means not observed, and blocks.
+    """
+
+    mandate_account_id: str
+    checked_at: datetime
+    market_data_type: str | None
+    quote_observed_at: datetime | None
+    settled_cash_cents: int | None
+    open_loss_cents: int | None
+    day_realized_loss_cents: int | None
+    entries_this_session: int | None
+    owner_healthy: bool
+    protective_exit_ready: bool
+
+    def __post_init__(self) -> None:
+        if not self.mandate_account_id:
+            raise ValueError("mandate account required")
+        if not isinstance(self.checked_at, datetime):
+            raise ValueError("checked_at required")
+        for name in ("checked_at", "quote_observed_at"):
+            value = getattr(self, name)
+            if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+                raise ValueError(f"{name} must be timezone-aware")
+        for name in (
+            "settled_cash_cents",
+            "open_loss_cents",
+            "day_realized_loss_cents",
+            "entries_this_session",
+        ):
+            _optional_cents(getattr(self, name), name)
+        for name in ("open_loss_cents", "day_realized_loss_cents"):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
+
+def review_equity_entry(
+    profile: CapitalProfile,
+    effect: SupervisedEquityEffect,
+    facts: EquityEntryFacts,
+    *,
+    symbol_allowlist: frozenset[str] = EQUITY_SYMBOL_ALLOWLIST,
+    gap_reserve_bps: int = EQUITY_GAP_RESERVE_BPS,
+    max_entries_per_session: int = MAX_ENTRIES_PER_SESSION,
+) -> tuple[str, ...]:
+    """Blockers for one whole-share, long-only, cash-only stock entry.
+
+    Pure: never an authorization. The loss held against the profile caps
+    is the contract's ``equity_max_loss_cents`` (the stop loss, or the gap
+    reserve when larger: the desk manages the stop, no broker stop rests).
+    """
+    blockers: list[str] = []
+    if not profile.complete_for_review:
+        blockers.append("profile_limits_missing")
+    if effect.account_id != facts.mandate_account_id:
+        blockers.append("effect_account_not_mandate_account")
+    if effect.symbol not in symbol_allowlist:
+        blockers.append(Blocker.EQUITY_SYMBOL_NOT_QUALIFIED.value)
+    if effect.side != "BUY" or type(effect.quantity) is not int or effect.quantity < 1:
+        blockers.append("equity_not_whole_share_long")
+    if facts.market_data_type != "realtime":
+        blockers.append(Blocker.EQUITY_QUOTE_NOT_REALTIME.value)
+    if facts.quote_observed_at is None:
+        blockers.append("quote_stale_or_future")
+    else:
+        age = (facts.checked_at - facts.quote_observed_at).total_seconds()
+        if age < 0 or age > QUOTE_MAX_AGE_S:
+            blockers.append("quote_stale_or_future")
+    if not facts.owner_healthy:
+        blockers.append("broker_owner_unhealthy")
+    if not facts.protective_exit_ready:
+        blockers.append("protective_exit_unavailable")
+    notional = equity_notional_cents(effect)
+    cash = facts.settled_cash_cents
+    # Cash only (no margin): settled cash must cover the whole notional.
+    if cash is None or cash < 0 or notional > cash:
+        blockers.append(Blocker.INSUFFICIENT_CASH.value)
+    if notional > _cap_cents(profile.intended_capital):
+        blockers.append("equity_notional_exceeds_intended_capital")
+    loss = equity_max_loss_cents(effect, gap_reserve_bps)
+    if loss > _cap_cents(profile.intended_capital):
+        blockers.append("trade_exceeds_intended_capital")
+    if profile.max_loss_per_trade is not None and loss > _cap_cents(profile.max_loss_per_trade):
+        blockers.append("trade_loss_cap_exceeded")
+    if facts.open_loss_cents is None:
+        blockers.append("open_exposure_unknown")
+    elif profile.max_open_loss is not None and facts.open_loss_cents + loss > _cap_cents(
+        profile.max_open_loss
+    ):
+        blockers.append("open_loss_cap_exceeded")
+    if facts.day_realized_loss_cents is None:
+        blockers.append("daily_loss_unknown")
+    elif profile.max_daily_loss is not None and facts.day_realized_loss_cents + loss > _cap_cents(
+        profile.max_daily_loss
+    ):
+        blockers.append("daily_loss_cap_exceeded")
+    blockers.extend(entry_session_blockers(facts.entries_this_session, max_entries_per_session))
     return tuple(blockers)

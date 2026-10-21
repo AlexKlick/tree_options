@@ -33,6 +33,13 @@ Each is a runtime fact the runtime supplies.
 
 Any broker view that cannot be read yields ``facts=None`` and a
 ``broker_view_unreadable:<view>`` blocker: nothing is defaulted.
+
+Wave 2 entry screening is kind-aware (``collect_entry_screening``): an
+option effect gets the canary screen above, unchanged, plus the shared
+per-session entry cap and the product's debit-only rule; an equity effect
+gets ``action_graph.canary.review_equity_entry`` over SUPPLIED facts (the
+quote the stock wire read, the books' risk snapshot), screened by
+``collect_equity_screening`` with its own evidence digest.
 """
 
 from __future__ import annotations
@@ -46,11 +53,26 @@ from typing import Any
 
 from tree_options.action_graph.canary import (
     CanaryFacts,
+    EquityEntryFacts,
+    entry_session_blockers,
     package_intent_sha256,
     review_canary_package,
+    review_equity_entry,
 )
 from tree_options.action_graph.capital import CapitalProfile
 from tree_options.action_graph.proposal import canonical_bytes
+from tree_options.trex.contracts.defaults import (
+    EQUITY_GAP_RESERVE_BPS,
+    EQUITY_SYMBOL_ALLOWLIST,
+    MAX_ENTRIES_PER_SESSION,
+)
+from tree_options.trex.contracts.effects import (
+    SupervisedEquityEffect,
+    equity_max_loss_cents,
+    equity_notional_cents,
+)
+from tree_options.trex.contracts.proposals import Quote
+from tree_options.trex.contracts.risk import RiskSnapshot, risk_snapshot_blockers
 from tree_options.trex.supervised_ibkr import (
     SUPERVISED_REF_PREFIX,
     IbkrSupervisedBroker,
@@ -58,6 +80,9 @@ from tree_options.trex.supervised_ibkr import (
 )
 
 SCREENING_SCHEMA = "supervised-canary-screening/2"
+EQUITY_SCREENING_SCHEMA = "supervised-equity-screening/1"
+#: the product opens debit packages only (credit spreads are out of scope)
+CREDIT_OPEN_BLOCKER = "credit_open_not_supported_v1"
 RULINGS = {
     "assignment_exposure": "2026-09-28 1a: width x 100 x quantity",
     "flat_book_scope": "2026-09-28 3b: the canary's own underlying only",
@@ -257,3 +282,161 @@ def _unreadable(
     unique = tuple(dict.fromkeys([*blockers, f"broker_view_unreadable:{view}"]))
     evidence["blockers"] = list(unique)
     return CanaryScreening(blockers=unique, facts=None, evidence=evidence)
+
+
+# ------------------------------------------------- Wave 2: equity screening
+
+
+@dataclass(frozen=True)
+class EquityScreeningInputs:
+    """Facts an equity screening is given, never fetched or defaulted here.
+
+    ``quote``: the NBBO the stock wire read, with the market data type IBKR
+    reported; ``risk``: the books' latest risk snapshot (settled cash and the
+    reconciled open and day loss); the owner health and exit readiness are
+    runtime facts as for options.
+    """
+
+    quote: Quote | None
+    risk: RiskSnapshot | None
+    owner_healthy: bool
+    protective_exit_ready: bool
+
+
+@dataclass(frozen=True)
+class EquityScreening:
+    """Blockers for one equity effect, the facts they came from, and their digest."""
+
+    blockers: tuple[str, ...]
+    facts: EquityEntryFacts
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def clear(self) -> bool:
+        return not self.blockers
+
+    @property
+    def screening_sha256(self) -> str:
+        return hashlib.sha256(canonical_bytes(self.evidence)).hexdigest()
+
+
+def _now(clock: Callable[[], datetime] | None) -> datetime:
+    now = (clock or (lambda: datetime.now(UTC)))()
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("clock must return timezone-aware datetimes")
+    return now.astimezone(UTC)
+
+
+def collect_equity_screening(
+    effect: SupervisedEquityEffect,
+    *,
+    profile: CapitalProfile,
+    mandate_account_id: str,
+    inputs: EquityScreeningInputs,
+    entries_this_session: int | None,
+    clock: Callable[[], datetime] | None = None,
+) -> EquityScreening:
+    """Screen one equity entry over supplied facts (pure apart from ``clock``).
+
+    A risk snapshot that is absent, unavailable, stale or for another
+    account gives no cash or loss evidence: its blocker is listed first and
+    the cash and loss checks then fail closed as unknown.
+    """
+    now = _now(clock)
+    risk_blockers: list[str] = [b.value for b in risk_snapshot_blockers(inputs.risk, now)]
+    risk = inputs.risk
+    if risk is not None and not risk_blockers and risk.account_id != effect.account_id:
+        risk_blockers.append("risk_snapshot_account_mismatch")
+    usable = risk if not risk_blockers else None
+    quote = inputs.quote
+    facts = EquityEntryFacts(
+        mandate_account_id=mandate_account_id,
+        checked_at=now,
+        market_data_type=None if quote is None else quote.market_data_type,
+        quote_observed_at=None if quote is None else quote.as_of,
+        settled_cash_cents=None if usable is None else usable.cash_cents,
+        open_loss_cents=None if usable is None else usable.open_loss_cents,
+        day_realized_loss_cents=None if usable is None else usable.day_realized_loss_cents,
+        entries_this_session=entries_this_session,
+        owner_healthy=inputs.owner_healthy,
+        protective_exit_ready=inputs.protective_exit_ready,
+    )
+    blockers = tuple(dict.fromkeys([*risk_blockers, *review_equity_entry(profile, effect, facts)]))
+    evidence: dict[str, Any] = {
+        "schema": EQUITY_SCREENING_SCHEMA,
+        "intent_id": effect.intent_id,
+        "account_id": effect.account_id,
+        "mandate_account_id": mandate_account_id,
+        "symbol": effect.symbol,
+        "con_id": effect.con_id,
+        "quantity": effect.quantity,
+        "limit_cents": effect.limit_cents,
+        "stop_price_cents": effect.exit_policy.stop_price_cents,
+        "checked_at": now.isoformat(),
+        "quote": None if quote is None else quote.model_dump(mode="json"),
+        "risk_snapshot": None if risk is None else risk.model_dump(mode="json", by_alias=True),
+        "notional_cents": equity_notional_cents(effect),
+        "max_loss_cents": equity_max_loss_cents(effect),
+        "gap_reserve_bps": EQUITY_GAP_RESERVE_BPS,
+        "symbol_allowlist": sorted(EQUITY_SYMBOL_ALLOWLIST),
+        "entries_this_session": entries_this_session,
+        "max_entries_per_session": MAX_ENTRIES_PER_SESSION,
+        "owner_healthy": inputs.owner_healthy,
+        "protective_exit_ready": inputs.protective_exit_ready,
+        "profile": {"id": profile.profile_id, "revision": profile.revision},
+        "blockers": list(blockers),
+    }
+    return EquityScreening(blockers=blockers, facts=facts, evidence=evidence)
+
+
+def collect_entry_screening(
+    effect: SupervisedEffect | SupervisedEquityEffect,
+    *,
+    profile: CapitalProfile,
+    mandate_account_id: str,
+    entries_this_session: int | None,
+    broker: IbkrSupervisedBroker | None = None,
+    option_inputs: OperatorCanaryInputs | None = None,
+    equity_inputs: EquityScreeningInputs | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> CanaryScreening | EquityScreening:
+    """Kind-aware entry screening for the product path.
+
+    Options: the canary screen (``collect_canary_screening``) unchanged, plus
+    the debit-only rule and the shared session cap. Equities:
+    ``collect_equity_screening``. Missing inputs for the effect's kind are a
+    caller defect (``ValueError``), never a silent pass.
+    """
+    if isinstance(effect, SupervisedEquityEffect):
+        if equity_inputs is None:
+            raise ValueError("an equity entry needs equity_inputs")
+        return collect_equity_screening(
+            effect,
+            profile=profile,
+            mandate_account_id=mandate_account_id,
+            inputs=equity_inputs,
+            entries_this_session=entries_this_session,
+            clock=clock,
+        )
+    if broker is None or option_inputs is None:
+        raise ValueError("an option entry needs the broker session and option_inputs")
+    base = collect_canary_screening(
+        broker,
+        effect,
+        profile=profile,
+        mandate_account_id=mandate_account_id,
+        inputs=option_inputs,
+        clock=clock,
+    )
+    extra: list[str] = []
+    if effect.structure.is_credit:
+        extra.append(CREDIT_OPEN_BLOCKER)
+    extra.extend(entry_session_blockers(entries_this_session))
+    blockers = tuple(dict.fromkeys([*base.blockers, *extra]))
+    evidence = {
+        **base.evidence,
+        "entries_this_session": entries_this_session,
+        "max_entries_per_session": MAX_ENTRIES_PER_SESSION,
+        "blockers": list(blockers),
+    }
+    return CanaryScreening(blockers=blockers, facts=base.facts, evidence=evidence)

@@ -10,6 +10,7 @@ import pytest
 
 from tree_options.trex.grant_policy import (
     DEFAULT_BASE,
+    LEGACY_AGENT_STRATEGIES,
     WINDOWS_SCHEMA,
     QuotaWindow,
     daily_grant,
@@ -17,6 +18,7 @@ from tree_options.trex.grant_policy import (
     load_windows,
     windows_path,
 )
+from tree_options.trex.supervised import SupervisedRefused
 
 
 def _window(name: str, actual: str, planned: str | None, **kw) -> QuotaWindow:
@@ -151,3 +153,51 @@ def test_apply_without_epoch_or_digest_refuses(tmp_path, monkeypatch, capsys):
     rc = _cli(["--apply"])
     assert rc == 2
     assert "--apply needs" in capsys.readouterr().err
+
+
+# ------------------------------------- product strategies are approval-driven
+
+#: the Wave 2 equity fixture's strategy, and an arbitrary new one: neither is
+#: the legacy agent canary, so each entry needs the owner's approval
+PRODUCT_STRATEGIES = ["equity-pilot/1", "momentum_12_1/v1"]
+
+
+@pytest.mark.parametrize("strategy", PRODUCT_STRATEGIES)
+def test_daily_budgets_refuse_product_strategies(strategy):
+    with pytest.raises(SupervisedRefused) as caught:
+        daily_grant((_window("zai", "94.0", "51.9"),), strategy=strategy)
+    assert caught.value.reason == "product_strategy_requires_approval"
+    assert caught.value.detail == strategy
+    with pytest.raises(SupervisedRefused) as command:
+        grant_command(
+            daily_grant(()),
+            account="DUT143714",
+            owner_epoch="desk83-x",
+            strategy=strategy,
+            profile_digest="a" * 64,
+            ttl_seconds=43200,
+            granted_by="alex",
+        )
+    assert command.value.reason == "product_strategy_requires_approval"
+
+
+def test_the_legacy_agent_canary_keeps_its_budget():
+    assert "operational-canary/1" in LEGACY_AGENT_STRATEGIES
+    plan = daily_grant((_window("zai", "94.0", "51.9"),), strategy="operational-canary/1")
+    assert plan.total_orders == 2
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_cli_refuses_a_product_strategy_and_grants_nothing(tmp_path, monkeypatch, capsys, apply):
+    monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
+    from tree_options.trex.grant_policy import _cli
+
+    argv = ["--windows", str(tmp_path / "absent.json"), "--strategy", "equity-pilot/1"]
+    if apply:
+        argv += ["--apply", "--owner-epoch", "desk83-x", "--profile-digest", "a" * 64]
+    rc = _cli(argv)
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "product_strategy_requires_approval" in captured.err
+    assert captured.out == ""  # no runnable grant command is printed
+    assert not (tmp_path / "supervised" / "mandate.json").exists()
