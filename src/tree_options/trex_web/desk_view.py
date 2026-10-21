@@ -8,12 +8,13 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from tree_options.desk import book as desk_book
@@ -24,6 +25,7 @@ from tree_options.desk.evidence import EvidenceError
 from tree_options.desk.lab_scoreboard import aggregate, best_advisory
 from tree_options.desk.trade_floor import project_replay
 from tree_options.trex.clock import now_et, session_calendar
+from tree_options.trex.contracts import CommandAuthority
 from tree_options.trex.desk_cli import collect_status
 from tree_options.trex.desk_runtime import DeskPaths
 from tree_options.trex.supervised import SupervisedPaths
@@ -32,6 +34,7 @@ from tree_options.trex_web.automation import (
     automation_status,
     kill_file_action,
 )
+from tree_options.trex_web.commands_view import LoopbackCommandAuthority, command_actor_guard
 
 _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
@@ -135,8 +138,29 @@ def attach(
     challenge_dir: Path | None = None,
     plans_root: Path | None = None,
     state_root: Path | None = None,
+    authority: CommandAuthority | None = None,
+    run_dir: Callable[[], Path] | None = None,
+    supervised_dir: Callable[[], Path] | None = None,
 ) -> None:
+    """Mount the desk routes.
+
+    The two POST routes (automation, kill files) run only for an actor the
+    ``authority`` verified (default: ``LoopbackCommandAuthority``); a
+    refused request is a 403 before any effect. ``run_dir`` /
+    ``supervised_dir`` resolve the desk's directories per request (default:
+    their env-driven ``default()``)."""
     snapshot_path = os.environ.get("TREX_DESK_READ_SNAPSHOT")
+    operator = Depends(command_actor_guard(authority or LoopbackCommandAuthority()))
+
+    def desk_paths() -> DeskPaths:
+        return DeskPaths(run_dir()) if run_dir is not None else DeskPaths.default()
+
+    def supervised_paths() -> SupervisedPaths:
+        return (
+            SupervisedPaths(supervised_dir())
+            if supervised_dir is not None
+            else SupervisedPaths.default()
+        )
 
     def published_view(view: str) -> JSONResponse:
         from tree_options.desk.read_snapshot import read
@@ -424,10 +448,10 @@ def attach(
         not a flat account)."""
         try:
             now = now_et()
-            desk_paths = DeskPaths.default()
-            doc = collect_status(desk_paths, SupervisedPaths.default(), now=now, events=20)
+            paths = desk_paths()
+            doc = collect_status(paths, supervised_paths(), now=now, events=20)
             doc["account_exposure"] = account_block(
-                desk_paths, plans_root=plans_root, state_root=state_root, as_of=now.date()
+                paths, plans_root=plans_root, state_root=state_root, as_of=now.date()
             )
         except (*_ERRORS, OSError, ValueError, KeyError, TypeError):
             return _unavailable()
@@ -437,37 +461,39 @@ def attach(
     def automation() -> JSONResponse:
         """Timer settings + kill-file states for the desk's own units."""
         try:
-            doc = automation_status(DeskPaths.default().root)
+            doc = automation_status(desk_paths().root)
         except (OSError, RuntimeError):
             return _unavailable()
         return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/desk/automation/{key}/{action}")
+    @app.post("/api/desk/automation/{key}/{action}", dependencies=[operator])
     def automation_control(key: str, action: str) -> JSONResponse:
         """Enable/disable a whitelisted desk timer, or run its service now.
 
-        The unit whitelist is the whole surface: an unknown key or action
-        is a 404/422, never a shell. Every action is audited to
-        automation.jsonl (actor: cockpit)."""
+        Only for a verified operator (403 before any effect otherwise). The
+        unit whitelist is the whole surface: an unknown key or action is a
+        404/422, never a shell. Every action is audited to automation.jsonl
+        (actor: cockpit)."""
         if action not in ("enable", "disable", "run"):
             return JSONResponse({"error": "unknown_action"}, status_code=422)
         try:
-            doc = automation_action(DeskPaths.default().root, key, action)
+            doc = automation_action(desk_paths().root, key, action)
         except KeyError:
             return JSONResponse({"error": "unknown_unit"}, status_code=404)
         except (OSError, RuntimeError):
             return _unavailable()
         return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 
-    @app.post("/api/desk/supervised/{action}")
+    @app.post("/api/desk/supervised/{action}", dependencies=[operator])
     def supervised_control(action: str) -> JSONResponse:
         """HALT / FLATTEN / resume for the supervised desk (the desk_cli
         verbs, surfaced; the running desk observes the files on its next
-        tick - nothing here contacts the broker)."""
+        tick - nothing here contacts the broker). Only for a verified
+        operator: a refused request is a 403 and touches no file."""
         if action not in ("halt", "flatten", "resume"):
             return JSONResponse({"error": "unknown_action"}, status_code=422)
         try:
-            doc = kill_file_action(DeskPaths.default().root, action)
+            doc = kill_file_action(desk_paths().root, action)
         except OSError:
             return _unavailable()
         return JSONResponse(doc, headers={"Cache-Control": "no-store"})

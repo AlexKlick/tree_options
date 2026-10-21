@@ -8,6 +8,8 @@ import re
 import socket
 import time
 import uuid
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from tree_options.trex.clock import now_et
+from tree_options.trex.contracts import CommandAuthority
 from tree_options.trex.discovery.artifact import write_request, write_scan_request
 from tree_options.trex_web.discovery_view import discovery_payload
 from tree_options.trex_web.payoff import (
@@ -414,12 +417,22 @@ def create_app(
     desk_store_dir: str | None = None,
     market_cache_dir: str | None = None,
     desk_state_dir: str | None = None,
+    desk_run_dir: str | None = None,
+    supervised_dir: str | None = None,
+    command_authority: CommandAuthority | None = None,
+    command_clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
     ``static_dir`` overrides the built-SPA directory (default: the
     package's ``static/``). The mount is created only when the directory
     exists, so the pytest gate and fresh clones never need a node build.
+
+    ``desk_run_dir`` / ``supervised_dir`` pin the supervised desk's run dir
+    and authority dir (default: ``TREX_DESK_RUN_DIR`` / ``TREX_SUPERVISED_DIR``
+    read per request). ``command_authority`` verifies every mutating desk
+    request (default: ``LoopbackCommandAuthority``; the family-signed one
+    plugs in here). ``command_clock`` is the commands' and books' clock.
     """
     state_root = _resolve_state_root(state_dir)
     plans_root = _resolve_plans_root(plans_dir)
@@ -476,7 +489,32 @@ def create_app(
         openapi_url=None,
     )
 
+    from tree_options.trex.desk_runtime import DeskPaths
+    from tree_options.trex.supervised import SupervisedPaths
+    from tree_options.trex_web.commands_view import LoopbackCommandAuthority
+    from tree_options.trex_web.commands_view import attach as attach_commands
     from tree_options.trex_web.desk_view import attach as attach_desk_evidence
+    from tree_options.trex_web.portfolio_view import attach as attach_portfolio
+
+    run_dir_pin = Path(desk_run_dir).expanduser() if desk_run_dir else None
+    supervised_pin = Path(supervised_dir).expanduser() if supervised_dir else None
+
+    def resolve_run_dir() -> Path:
+        return run_dir_pin if run_dir_pin is not None else DeskPaths.default().root
+
+    def resolve_supervised_dir() -> Path:
+        return supervised_pin if supervised_pin is not None else SupervisedPaths.default().root
+
+    authority = command_authority if command_authority is not None else LoopbackCommandAuthority()
+    clock = command_clock if command_clock is not None else now_et
+    attach_commands(
+        app,
+        authority=authority,
+        run_dir=resolve_run_dir,
+        supervised_dir=resolve_supervised_dir,
+        clock=clock,
+    )
+    attach_portfolio(app, run_dir=resolve_run_dir, clock=clock)
 
     attach_desk_evidence(
         app,
@@ -489,6 +527,9 @@ def create_app(
         challenge_dir=desk_store_root / "evaluations" / "challenge",
         plans_root=plans_root,
         state_root=state_root,
+        authority=authority,
+        run_dir=resolve_run_dir,
+        supervised_dir=resolve_supervised_dir,
     )
 
     # Research lane routes: RL-1 catalog + comparisons + evidence
