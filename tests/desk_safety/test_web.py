@@ -498,14 +498,25 @@ def _automation_world(world, monkeypatch, state=None):
         "automation_status",
         lambda root: automation_mod.automation_status(root, systemctl=fake),
     )
-    monkeypatch.setattr(
-        desk_view_mod,
-        "automation_action",
-        lambda root, key, action: automation_mod.automation_action(
-            root, key, action, systemctl=fake
-        ),
-    )
+
+    # a POST must never reach the host's systemctl: any process spawn is
+    # recorded on the fake and fails loudly instead of running
+    def no_process(args, *rest, **kwargs):
+        fake.calls.append(["subprocess", *list(args)])
+        raise AssertionError("the web must not spawn systemctl")
+
+    monkeypatch.setattr(automation_mod.subprocess, "run", no_process)
     return run_dir, fake
+
+
+def _queued(run_dir):
+    """The commands the web queued for the owner (kind per file)."""
+    folder = run_dir / "commands"
+    return sorted(
+        json.loads(p.read_text())["kind"]
+        for p in folder.glob("*.json")
+        if not p.name.endswith(".result.json")
+    )
 
 
 def test_automation_status_lists_whitelisted_timers_and_kill_files(world, monkeypatch):
@@ -529,52 +540,52 @@ def test_automation_status_lists_whitelisted_timers_and_kill_files(world, monkey
     assert doc["kill_files"] == []
 
 
-def test_automation_actions_are_whitelisted_and_audited(world, monkeypatch):
+def test_automation_actions_are_authenticated_and_never_applied(world, monkeypatch):
+    """Timer control has no trex-command/1 kind, so the web cannot queue it
+    for the owner; it refuses after authentication and runs nothing."""
     run_dir, fake = _automation_world(world, monkeypatch)
     # unauthenticated (not the local operator): 403, no systemctl call
     assert client(world).post("/api/desk/automation/desk-lab/disable").status_code == 403
-    assert fake.calls == []
     c = operator_client(world, monkeypatch)
-    assert c.post("/api/desk/automation/desk-lab/disable").status_code == 200
-    assert ["disable", "--now", "desk-lab.timer"] in fake.calls
-    assert c.post("/api/desk/automation/desk-lab/run").status_code == 200
-    assert ["start", "desk-lab.service"] in fake.calls
-    # unknown unit / unknown action: refused, no systemctl call for them
-    before = len(fake.calls)
+    for action in ("enable", "disable", "run"):
+        response = c.post(f"/api/desk/automation/desk-lab/{action}")
+        assert response.status_code == 501
+        assert response.json()["error"] == "automation_not_queueable"
+    # unknown unit / unknown action keep their validation answers
     assert c.post("/api/desk/automation/trex-monitor/disable").status_code == 404
     assert c.post("/api/desk/automation/desk-lab/restart").status_code == 422
-    assert len(fake.calls) == before
-    audit = [json.loads(line) for line in (run_dir / "automation.jsonl").read_text().splitlines()]
-    assert [a["action"] for a in audit] == ["disable", "run"]
-    assert all(a["actor"] == "cockpit" for a in audit)
+    assert fake.calls == []
+    assert list(run_dir.iterdir()) == []  # no audit line, no command
 
 
-def test_supervised_control_toggles_kill_files(world, monkeypatch):
+def test_supervised_control_queues_commands_and_writes_no_kill_file(world, monkeypatch):
     run_dir, _ = _automation_world(world, monkeypatch)
-    # unauthenticated (not the local operator): 403, no kill file
+    # unauthenticated (not the local operator): 403, nothing written
     assert client(world).post("/api/desk/supervised/halt").status_code == 403
-    assert not (run_dir / "HALT").exists()
+    assert list(run_dir.iterdir()) == []
     c = operator_client(world, monkeypatch)
-    assert c.post("/api/desk/supervised/halt").json()["kill_files"] == ["HALT"]
-    assert (run_dir / "HALT").exists()
-    assert c.post("/api/desk/supervised/flatten").json()["kill_files"] == ["FLATTEN", "HALT"]
-    assert c.post("/api/desk/supervised/resume").json()["kill_files"] == []
-    assert not (run_dir / "HALT").exists()
+    for action in ("halt", "flatten", "resume"):
+        response = c.post(f"/api/desk/supervised/{action}")
+        assert response.status_code == 202
+        assert response.json()["kill_files"] == []  # nothing applied by the web
+    assert _queued(run_dir) == ["flatten", "halt", "resume_all"]
+    assert sorted(p.name for p in run_dir.iterdir()) == ["commands"]
     assert c.post("/api/desk/supervised/arm").status_code == 422
 
 
 def test_flatten_under_halt_carries_the_desk_cli_warning(world, monkeypatch, capsys):
-    """The cockpit touches kill files directly, so it must not be quieter
-    than desk_cli about the footgun: a FLATTEN beside a HALT closes nothing
-    until resume. The response carries desk_cli's wording verbatim (oracle:
-    the CLI's own stderr on the same run dir)."""
+    """A FLATTEN beside a HALT closes nothing until resume, so the cockpit
+    must not be quieter than desk_cli about it. The queued flatten's response
+    carries desk_cli's wording verbatim (oracle: the CLI's own stderr on the
+    same run dir); the web itself still writes no kill file."""
     from tree_options.trex.desk_cli import _cli
 
     run_dir, _ = _automation_world(world, monkeypatch)
+    (run_dir / "HALT").write_text("")  # placed by the owner
     c = operator_client(world, monkeypatch)
-    c.post("/api/desk/supervised/halt")
     doc = c.post("/api/desk/supervised/flatten").json()
-    assert doc["kill_files"] == ["FLATTEN", "HALT"]
+    assert doc["kill_files"] == ["HALT"] and doc["kind"] == "flatten"
+    assert not (run_dir / "FLATTEN").exists()
 
     # the oracle: desk_cli flatten over the SAME run dir, HALT present
     assert _cli(["--dir", str(run_dir), "flatten"]) == 0
@@ -584,10 +595,11 @@ def test_flatten_under_halt_carries_the_desk_cli_warning(world, monkeypatch, cap
     assert "HALT" in doc["warning"] and "resume" in doc["warning"]
 
     # flatten with no HALT: no warning field at all (additive only)
-    c.post("/api/desk/supervised/resume")
-    doc = c.post("/api/desk/supervised/flatten").json()
-    assert doc["kill_files"] == ["FLATTEN"] and "warning" not in doc
+    for name in ("HALT", "FLATTEN"):
+        (run_dir / name).unlink()
+    assert "warning" not in c.post("/api/desk/supervised/flatten").json()
     # halt/resume responses never carry the flatten warning
+    (run_dir / "HALT").write_text("")
     assert "warning" not in c.post("/api/desk/supervised/halt").json()
     assert "warning" not in c.post("/api/desk/supervised/resume").json()
 

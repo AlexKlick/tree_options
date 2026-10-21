@@ -1,23 +1,35 @@
 """Web command backend (Wave 2 lane G): authenticated, idempotent, broker-free.
 
-Routes:
+Coordinator decision 2026-10-21: the desk OWNER process applies every
+command; the web authenticates, validates and QUEUES ``trex-command/1``
+documents into ``<run dir>/commands`` and never writes a kill file. Every
+effecting route lives here:
 
 - ``POST /api/commands``: one ``trex-command/1``. The client authors
   ``idempotency_key``, ``kind``, ``args``, ``issued_at``, ``expires_at``;
   the raw request is verified by a ``CommandAuthority`` FIRST (no actor, no
   effect: 403 and nothing written), then the backend stamps ``issued_by``
-  and records it through ``CommandStore`` (``commands/`` of the desk run
-  dir) for the desk owner to consume. Answers the ``trex-command-result/1``
-  document: 202 ``accepted``, 200 ``applied``/``duplicate``, 409
-  ``refused`` (``command_body_mismatch``, ``command_expired``).
-- ``GET /api/commands/{key}``: the stored (latest) result.
+  and records it through ``CommandStore`` for the owner to consume.
+  Answers the ``trex-command-result/1`` document: 202 ``accepted``, 200
+  ``duplicate`` (``result`` names the stored outcome), 409 ``refused``
+  (``command_body_mismatch``, or the one validity rule of
+  ``command_store.command_window_blocker``: ``command_not_yet_valid``,
+  ``command_expired``).
+- ``POST /api/desk/supervised/{halt,flatten,resume}`` (legacy cockpit
+  verbs): authenticated the same way, then translated into the matching
+  kind (``halt``, ``flatten``, ``resume_all``) issued by the verified actor
+  and queued; 202 with the command key. ``resume`` meant HALT and FLATTEN
+  only, so while entries are paused (the file, or a queued
+  ``pause_entries``) it is refused instead of widened to ``resume_all``.
+- ``POST /api/desk/automation/{key}/{action}`` (timer control): there is
+  no ``trex-command/1`` kind for it, so after authentication and
+  validation it is refused (501) and nothing runs.
+- ``GET /api/commands/{key}``: the stored (latest) result; the owner moves
+  it on to ``applied``/``refused``/``failed``.
 - ``GET /api/proposals``: the owner's ``trex-entry-proposal/1`` files with
   the hashes an approval repeats and their state.
 
-Nothing here contacts a broker or imports a broker library. Only
-``pause_entries`` and ``halt`` (the safety direction, contract default 10)
-are applied in-process, by writing their kill file; every other kind is
-applied by the desk process alone.
+Nothing here contacts a broker or imports a broker library.
 
 The authority is pluggable (``create_app(command_authority=...)``). The
 default ``LoopbackCommandAuthority`` applies ``workspace_guard``'s rules to
@@ -32,6 +44,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -40,11 +53,13 @@ from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import JsonValue, ValidationError
+from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
+from tree_options.time.sessions import shift_instant
+from tree_options.trex import pause
 from tree_options.trex.contracts import (
     Actor,
     AnyCommand,
@@ -62,28 +77,47 @@ from tree_options.trex.contracts import (
     proposal_bytes,
     sha256_hex,
 )
-from tree_options.trex.contracts.layout import HALT, PAUSE_ENTRIES
-from tree_options.trex_web.command_store import CommandStore, CommandStoreUnavailable, DirectApply
+from tree_options.trex.contracts.commands import CommandKind
+from tree_options.trex.contracts.defaults import COMMAND_MAX_TTL_S
+from tree_options.trex.contracts.layout import HALT
+from tree_options.trex.desk_cli import HALT_FLATTEN_WARNING
+from tree_options.trex_web.automation import AUTOMATION_UNITS, KILL_FILES
+from tree_options.trex_web.command_store import (
+    CommandStore,
+    CommandStoreUnavailable,
+    Submission,
+)
 from tree_options.trex_web.workspace_guard import controls_enabled
 
 __all__ = [
+    "AUTOMATION_PATH",
     "COMMANDS_PATH",
+    "LEGACY_KINDS",
+    "LEGACY_SUPERVISED_PATH",
     "LOOPBACK_SUB",
-    "SAFETY_KILL_FILES",
     "LoopbackCommandAuthority",
     "attach",
     "command_actor_guard",
-    "kill_file_apply",
     "proposals_payload",
     "raw_command_request",
     "read_bounded_body",
 ]
 
 COMMANDS_PATH: Final = "/api/commands"
+#: The cockpit's legacy kill-file verbs, now translated and queued.
+LEGACY_SUPERVISED_PATH: Final = "/api/desk/supervised/{action}"
+#: The cockpit's timer controls: no command kind, refused after validation.
+AUTOMATION_PATH: Final = "/api/desk/automation/{key}/{action}"
+#: legacy verb -> the ``trex-command/1`` kind it queues (``resume_all`` is
+#: the contract's superset of the desk_cli resume, default 11)
+LEGACY_KINDS: Final[dict[str, CommandKind]] = {
+    "halt": "halt",
+    "flatten": "flatten",
+    "resume": "resume_all",
+}
+AUTOMATION_ACTIONS: Final = ("enable", "disable", "run")
 #: A command document is small; anything bigger is refused before parsing.
 MAX_COMMAND_BYTES: Final = 64 * 1024
-#: ``issued_at`` may lead the backend clock by this much (client clock skew).
-MAX_CLOCK_SKEW_S: Final = 60
 #: The principal a loopback operator request is recorded as.
 LOOPBACK_SUB: Final = "loopback-operator"
 #: Headers a proxy adds: a request carrying one is never plain loopback.
@@ -96,10 +130,8 @@ FORWARDED_HEADERS: Final = (
 )
 #: The family portal's signed actor (verified by the Wave 3 family authority).
 FAMILY_ACTOR_HEADER: Final = "x-family-actor"
-#: The kinds the web may apply itself, and the kill file each one writes.
-SAFETY_KILL_FILES: Final[dict[str, str]] = {"pause_entries": PAUSE_ENTRIES, "halt": HALT}
-#: HTTP status per ``trex-command-result/1`` status.
-STATUS_CODES: Final = {"accepted": 202, "applied": 200, "duplicate": 200, "refused": 409}
+#: HTTP status per ``trex-command-result/1`` status an intake can answer.
+STATUS_CODES: Final = {"accepted": 202, "duplicate": 200, "refused": 409}
 MAX_PROPOSALS: Final = 100
 MAX_PROPOSAL_BYTES: Final = 256 * 1024
 NO_STORE: Final = {"Cache-Control": "no-store"}
@@ -281,24 +313,48 @@ def _validation_errors(error: ValidationError) -> list[dict[str, Any]]:
     ][:10]
 
 
-# -- the in-process safety apply (thin adapter until lane A ships its own) -------
+# -- queueing --------------------------------------------------------------------------
 
 
-def kill_file_apply(run_dir: Path) -> DirectApply:
-    """Apply ``pause_entries``/``halt`` by writing its kill file in ``run_dir``.
+async def _queue(
+    store: CommandStore, command: AnyCommand, now: datetime
+) -> Submission | JSONResponse:
+    """``store.submit`` off the event loop; a store fault is a 503 response."""
+    try:
+        return await run_in_threadpool(store.submit, command, now=now)
+    except CommandStoreUnavailable as error:
+        return _error(503, "command_store_unavailable", reason=error.reason)
+    except OSError:
+        return _error(503, "command_store_unavailable", reason="commands_dir_unwritable")
 
-    Thin adapter owned by this lane: lane A's pause/halt functions are not
-    on this base yet. Writing the file is idempotent; an ``OSError`` (the
-    unit may write only ``commands/``) leaves the command queued instead.
-    """
 
-    def apply(command: AnyCommand) -> dict[str, JsonValue]:
-        name = SAFETY_KILL_FILES[command.kind]
-        path = run_dir / name
-        path.touch()
-        return {"kill_file": name, "present": path.is_file()}
+def legacy_command(kind: CommandKind, action: str, actor: Actor, now: datetime) -> AnyCommand:
+    """The ``trex-command/1`` a legacy cockpit verb stands for: a fresh key,
+    issued now by the verified ``actor``, living the contract's full TTL."""
+    return parse_command(
+        {
+            "schema": "trex-command/1",
+            "idempotency_key": str(uuid.uuid4()),
+            "kind": kind,
+            "args": {"reason": f"legacy cockpit verb {action}"},
+            "issued_at": now,
+            "expires_at": shift_instant(now, COMMAND_MAX_TTL_S),
+            "issued_by": model_document(actor),
+        }
+    )
 
-    return apply
+
+def _standing_kill_files(run_dir: Path) -> list[str]:
+    """HALT/FLATTEN as they stand (read only; the owner writes them)."""
+    return sorted(name for name in KILL_FILES if os.path.lexists(run_dir / name))
+
+
+def _entries_pause_pending(run_dir: Path) -> bool:
+    """True while ``PAUSE_ENTRIES`` stands or a ``pause_entries`` command
+    waits for the owner (``CommandStoreUnavailable`` when unknowable)."""
+    if pause.is_paused(run_dir):
+        return True
+    return "pause_entries" in CommandStore(run_dir).pending_kinds()
 
 
 # -- proposals ---------------------------------------------------------------------
@@ -428,6 +484,7 @@ def attach(
     clock: Clock,
 ) -> None:
     """Mount the command routes; ``run_dir``/``supervised_dir`` resolve per request."""
+    operator = Depends(command_actor_guard(authority))
 
     @app.post(COMMANDS_PATH)
     async def post_command(request: Request) -> JSONResponse:
@@ -451,24 +508,81 @@ def attach(
             command = parse_command({**document, "issued_by": model_document(actor)})
         except ValidationError as error:
             return _error(422, "invalid_command", errors=_validation_errors(error))
-        now = clock()
-        if (command.issued_at - now).total_seconds() > MAX_CLOCK_SKEW_S:
-            return _error(422, "command_not_yet_valid")
-        root = run_dir()
-        direct = kill_file_apply(root) if command.kind in SAFETY_KILL_FILES else None
-        try:
-            submission = await run_in_threadpool(
-                CommandStore(root).submit, command, now=now, direct_apply=direct
-            )
-        except CommandStoreUnavailable as error:
-            return _error(503, "command_store_unavailable", reason=error.reason)
-        except OSError:
-            return _error(503, "command_store_unavailable", reason="commands_dir_unwritable")
+        # the validity window is judged by the store (one rule, every kind)
+        submission = await _queue(CommandStore(run_dir()), command, clock())
+        if isinstance(submission, JSONResponse):
+            return submission
         result = submission.result
         return JSONResponse(
             model_document(result),
             status_code=STATUS_CODES.get(result.status, 500),
             headers=NO_STORE,
+        )
+
+    @app.post(LEGACY_SUPERVISED_PATH)
+    async def legacy_supervised(action: str, actor: Actor = operator) -> JSONResponse:
+        """HALT / FLATTEN / resume from the cockpit, as queued commands.
+
+        Only for a verified actor (403 before anything else). The running
+        desk owner applies the command on its next tick; this writes only
+        ``commands/`` and answers 202 with the command key."""
+        kind = LEGACY_KINDS.get(action)
+        if kind is None:
+            return _error(422, "unknown_action")
+        root = run_dir()
+        if kind == "resume_all":
+            try:
+                paused = await run_in_threadpool(_entries_pause_pending, root)
+            except CommandStoreUnavailable as error:
+                return _error(503, "command_store_unavailable", reason=error.reason)
+            if paused:
+                return _error(
+                    409,
+                    "legacy_resume_would_lift_entries_pause",
+                    detail=(
+                        "the cockpit resume lifts HALT and FLATTEN only; entries are paused, "
+                        "so queue resume_all (lifts everything) or resume_entries explicitly "
+                        "through POST /api/commands"
+                    ),
+                )
+        now = clock()
+        command = legacy_command(kind, action, actor, now)
+        submission = await _queue(CommandStore(root), command, now)
+        if isinstance(submission, JSONResponse):
+            return submission
+        result = submission.result
+        key = command.idempotency_key
+        doc: dict[str, Any] = {
+            "schema": "trex-legacy-command/1",
+            "command_key": key,
+            "kind": kind,
+            "result_url": f"{COMMANDS_PATH}/{key}",
+            "queued": model_document(result),
+            "kill_files": _standing_kill_files(root),
+            "execution_enabled": False,
+        }
+        if kind == "flatten" and os.path.lexists(root / HALT):
+            doc["warning"] = HALT_FLATTEN_WARNING
+        return JSONResponse(doc, status_code=STATUS_CODES.get(result.status, 500), headers=NO_STORE)
+
+    @app.post(AUTOMATION_PATH, dependencies=[operator])
+    def legacy_automation(key: str, action: str) -> JSONResponse:
+        """Timer control: validated for a verified actor, then refused.
+
+        ``trex-command/1`` has no kind for it, so it cannot be queued for
+        the owner, and the web applies nothing itself: no systemctl call,
+        no audit line."""
+        if action not in AUTOMATION_ACTIONS:
+            return _error(422, "unknown_action")
+        if key not in AUTOMATION_UNITS:
+            return _error(404, "unknown_unit")
+        return _error(
+            501,
+            "automation_not_queueable",
+            detail=(
+                "timer control has no trex-command/1 kind; the web applies no command "
+                "itself. Use systemctl --user on the host."
+            ),
         )
 
     @app.get(COMMANDS_PATH + "/{key}")

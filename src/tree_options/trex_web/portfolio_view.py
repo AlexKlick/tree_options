@@ -3,16 +3,19 @@
 Read-only and broker-free. Every figure comes from the books lane's
 projections under ``<desk run dir>/ledger`` (``Wave2RunDir``):
 
-- ``holdings.json``: ``Holding`` rows, as ``{"holdings": [...], ...}`` or a
-  bare list (the file shape is the books lane's; see open issues);
+- ``holdings.json``: the books lane's ``trex-holdings/1`` document, parsed
+  by its own model (``trex.ledger.HoldingsDocument``; coordinator decision
+  2026-10-21: every reader uses it). Any other shape (a bare list, a dict
+  without the schema, a float, an extra field) is ``holdings_invalid``;
 - ``risk-snapshot.json``: ``trex-risk-snapshot/1`` (cash, risk, outside
   positions);
 - ``reconciliation.json``: ``trex-reconciliation/1``.
 
 An absent, unreadable or invalid file is ``unavailable`` with a reason and
 null figures, never a zero; one invalid holding makes the whole list
-unavailable (a partial list would undercount). A stale snapshot keeps its
-figures and says ``stale``. Entry blockers come from the contract's own
+unavailable (a partial list would undercount), and so does a projection
+whose rows name another account than the document. A stale snapshot keeps
+its figures and says ``stale``. Entry blockers come from the contract's own
 blocker functions plus ``PAUSE_ENTRIES``; exits are blocked by ``HALT``
 only (the pause never blocks an exit).
 """
@@ -41,6 +44,7 @@ from tree_options.trex.contracts import (
     risk_snapshot_blockers,
 )
 from tree_options.trex.contracts.layout import FLATTEN, HALT, PAUSE_ENTRIES
+from tree_options.trex.ledger import HOLDINGS_SCHEMA, HoldingsDocument
 
 __all__ = ["PORTFOLIO_SCHEMA", "attach", "portfolio_payload"]
 
@@ -87,22 +91,43 @@ def _read_model[M: BaseModel](path: Path, model: type[M], label: str) -> _Read[M
         return _Read(None, f"{label}_invalid")
 
 
-def _holdings(path: Path) -> tuple[dict[str, Any], set[str]]:
+def _holdings_unavailable(reason: str) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "account_id": None,
+        "as_of": None,
+        "age_s": None,
+        "ledger_cash_micros": None,
+        "rows": None,
+    }
+
+
+def _holdings(path: Path, now: datetime) -> tuple[dict[str, Any], set[str]]:
+    """The ``trex-holdings/1`` block, and every account the document names."""
     document, reason = _load_json(path, "holdings")
-    unavailable: dict[str, Any] = {"status": "unavailable", "reason": reason, "rows": None}
     if reason is not None:
-        return unavailable, set()
-    rows = document.get("holdings") if isinstance(document, dict) else document
-    if not isinstance(rows, list):
-        return {**unavailable, "reason": "holdings_invalid"}, set()
+        return _holdings_unavailable(reason), set()
+    # the model defaults ``schema``; a reader requires the books lane to say it
+    if not isinstance(document, dict) or document.get("schema") != HOLDINGS_SCHEMA:
+        return _holdings_unavailable("holdings_invalid"), set()
     try:
-        holdings = [Holding.model_validate(row) for row in rows]
+        projection = HoldingsDocument.model_validate(document)
     except ValidationError:
-        return {**unavailable, "reason": "holdings_invalid"}, set()
-    accounts = {h.account_id for h in holdings}
-    if isinstance(document, dict) and isinstance(document.get("account_id"), str):
-        accounts.add(document["account_id"])
-    block = {"status": "ok", "reason": None, "rows": [model_document(h) for h in holdings]}
+        return _holdings_unavailable("holdings_invalid"), set()
+    holdings: tuple[Holding, ...] = projection.holdings
+    accounts = {projection.account_id, *(h.account_id for h in holdings)}
+    if len(accounts) > 1:
+        return _holdings_unavailable("holdings_account_mismatch"), accounts
+    block = {
+        "status": "ok",
+        "reason": None,
+        "account_id": projection.account_id,
+        "as_of": _iso(projection.as_of),
+        "age_s": _age_s(projection.as_of, now),
+        "ledger_cash_micros": projection.cash_micros,
+        "rows": [model_document(h) for h in holdings],
+    }
     return block, accounts
 
 
@@ -185,7 +210,7 @@ def _reconciliation_block(read: _Read[Reconciliation], now: datetime) -> dict[st
 def portfolio_payload(run_dir: Path, now: datetime) -> dict[str, Any]:
     """The ``trex-portfolio/1`` document (see the module docstring)."""
     layout = Wave2RunDir(run_dir)
-    holdings, accounts = _holdings(layout.holdings())
+    holdings, accounts = _holdings(layout.holdings(), now)
     risk_read = _read_model(layout.risk_snapshot(), RiskSnapshot, "risk_snapshot")
     rec_read = _read_model(layout.reconciliation(), Reconciliation, "reconciliation")
     cash, risk, outside = _risk_blocks(risk_read, now)

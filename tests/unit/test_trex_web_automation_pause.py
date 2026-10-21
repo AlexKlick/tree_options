@@ -1,7 +1,8 @@
 """The cockpit automation surface's entries-only pause functions.
 
-These are what the web command backend (lane G) calls for
-``pause_entries`` / ``resume_entries`` commands; no HTTP routing here.
+These are what the desk OWNER process calls to apply a queued
+``pause_entries`` / ``resume_entries`` command (the web only queues it);
+no HTTP routing here.
 Oracles: the run dir's files and the frozen command fixture.
 """
 
@@ -93,15 +94,26 @@ def test_other_command_kinds_are_not_entries_commands(tmp_path, kind):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_an_expired_command_is_not_applied(tmp_path):
-    """A command applies only inside [issued_at, expires_at]."""
+def test_a_command_outside_its_window_is_not_applied(tmp_path):
+    """The one validity rule (the web's intake uses the same): a command
+    applies while issued_at <= now + 60 s and now < expires_at."""
     command = parse_command(contract_fixture("command_pause_entries.json"))
-    for refused in (command.expires_at, shift_instant(command.issued_at, -1)):
-        with pytest.raises(ValueError, match="command_expired"):
+    refusals = {
+        command.expires_at: "command_expired",
+        shift_instant(command.expires_at, 3600): "command_expired",
+        shift_instant(command.issued_at, -61): "command_not_yet_valid",
+    }
+    for refused, reason in refusals.items():
+        with pytest.raises(ValueError, match=reason):
             automation.apply_entries_command(tmp_path, command, now=refused)
     assert not pause.is_paused(tmp_path)
-    last = shift_instant(command.expires_at, -1)
-    assert automation.apply_entries_command(tmp_path, command, now=last)["entries_paused"]
+    assert not (tmp_path / pause.PAUSE_AUDIT_FILE).exists()
+    for applied in (
+        shift_instant(command.issued_at, -60),  # client clock 60 s ahead: tolerated
+        command.issued_at,
+        shift_instant(command.expires_at, -1),
+    ):
+        assert automation.apply_entries_command(tmp_path, command, now=applied)["entries_paused"]
 
 
 def test_automation_status_reports_the_pause(tmp_path):

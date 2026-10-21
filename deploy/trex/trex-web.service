@@ -24,17 +24,28 @@ RestartSec=5
 #   mkdir -p ~/.local/state/trex-research/run-anon
 #   mkdir -p ~/.local/state/trex/desk-paper/commands
 #
-# Desk commands (Wave 2, POST /api/commands): the web may write ONLY
+# Desk commands (Wave 2; coordinator decision 2026-10-21): the desk OWNER
+# (trex-desk) applies EVERY command, pause_entries and halt included. The web
+# only authenticates, validates and queues, so it may write ONLY
 # <desk run dir>/commands = ~/.local/state/trex/desk-paper/commands (each
 # command <key>.json, its <key>.result.json and the store's .lock). It never
-# writes the run dir itself (kill files, specs, ledger, proposals), the
-# supervised authority dir, or anything a broker reads; the desk owner
-# (trex-desk) claims and applies the queued commands. Any drop-in that grants
-# the whole run dir must be narrowed to this path. Consequences of the
-# narrow grant, by design: pause_entries/halt commands are QUEUED (accepted)
-# for the owner instead of written in-process, and the legacy
-# POST /api/desk/supervised/{halt,flatten,resume} and
-# POST /api/desk/automation/* routes answer 503.
+# writes the run dir itself (kill files PAUSE_ENTRIES/HALT/FLATTEN, specs,
+# ledger, proposals, automation.jsonl), the supervised authority dir, or
+# anything a broker reads. Routes, all behind the command authority:
+#   POST /api/commands                     queue a trex-command/1 (202)
+#   POST /api/desk/supervised/{halt,flatten,resume}
+#                                          queue halt/flatten/resume_all (202)
+#   POST /api/desk/automation/*            refused (501): no command kind
+#   GET  /api/commands/<key>               the owner's latest result
+#
+# CUTOVER NOTE: the INSTALLED drop-in
+#   ~/.config/systemd/user/trex-web.service.d/automation.conf
+# still grants ReadWritePaths=<the whole run dir> (it was written for the
+# old in-process kill files and automation.jsonl audit). Nothing in the web
+# writes there any more: at the next cutover narrow that drop-in to
+# ReadWritePaths=%h/.local/state/trex/desk-paper/commands (or drop the
+# ReadWritePaths line, since this unit already grants it). Its AF_UNIX grant
+# is now needed only by the read-only GET /api/desk/automation timer status.
 # Every mutating desk route requires the command authority: the loopback
 # operator only (loopback peer + Host, exact same-origin Origin, no
 # forwarding header), and only when opted in with

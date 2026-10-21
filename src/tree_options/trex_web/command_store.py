@@ -1,31 +1,35 @@
 """Durable, idempotent intake of ``trex-command/1`` for the web backend (lane G).
 
-The web writes ONLY under ``<desk run dir>/commands`` (layout C2.6): the
-command ``<key>.json`` (canonical bytes, written once) and its result
-``<key>.result.json``. Consuming a command (claim-and-rename) and moving
-its result on (``applied``/``refused``/``failed``) are the desk owner's
-job; the web never executes a broker action.
+Coordinator decision 2026-10-21: EVERY command kind, ``pause_entries`` and
+``halt`` included, is applied by the desk owner process. The web only
+authenticates, validates and queues. It writes ONLY under
+``<desk run dir>/commands`` (layout C2.6): the command ``<key>.json``
+(canonical bytes, written once) and its result ``<key>.result.json``.
+Consuming a command (claim-and-rename) and moving its result on
+(``applied``/``refused``/``failed``) are the owner's job; the web never
+writes a kill file and never executes a broker action.
+
+The one validity rule for every kind (``command_window_blocker``) lives
+here so the web's intake and the owner's apply cannot disagree: a command
+is valid while ``issued_at <= now + MAX_CLOCK_SKEW_S`` and
+``now < expires_at``.
 
 Protocol per idempotency key, under the exclusive ``commands/.lock``:
 
 1. A stored result for the key: the same ``command_body_sha256`` answers
    ``duplicate`` naming the stored (latest) outcome; a different one is
    ``refused`` ``command_body_mismatch``. Nothing is rewritten.
-2. Expired (``now >= expires_at``): ``refused`` ``command_expired``. The
-   result is written, so the key is spent; the command is never queued.
-3. The command is staged as ``.<key>.json.staged``; a direct safety apply
-   (``pause_entries``/``halt``, contract default 10) runs if the caller
-   passed one; then the result (``applied``, or ``accepted``) is written
-   atomically.
+2. Outside its validity window (``command_window_blocker``): ``refused``
+   with that reason. The result is written, so the key is spent; the
+   command is never queued.
+3. The command is staged as ``.<key>.json.staged``, then the ``accepted``
+   result is written atomically.
 4. The staged file is renamed to ``<key>.json``. Only now can the owner see
    it, so the owner's later result can never be overwritten by ours. A
    crash between 3 and 4 leaves the staged file; the next submission of
-   the key publishes it (rename: the staged and the visible file never
-   coexist, so a claimed command is never re-queued).
-
-A direct apply that fails with ``OSError`` (the unit's sandbox lets the
-web write only ``commands/``) degrades to ``accepted``: the command is
-queued and the owner applies it.
+   the key publishes it while the stored result is still ``accepted``
+   (rename: the staged and the visible file never coexist, so a claimed
+   command is never re-queued).
 """
 
 from __future__ import annotations
@@ -34,12 +38,12 @@ import fcntl
 import json
 import os
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from pydantic import JsonValue, ValidationError
 
@@ -53,14 +57,16 @@ from tree_options.trex.contracts import (
     model_document,
     parse_command,
 )
-from tree_options.trex.contracts.commands import CommandStatus
+from tree_options.trex.contracts.commands import CommandKind, CommandStatus
 
 __all__ = [
+    "COMMAND_NOT_YET_VALID",
     "LOCK_NAME",
+    "MAX_CLOCK_SKEW_S",
     "CommandStore",
     "CommandStoreUnavailable",
-    "DirectApply",
     "Submission",
+    "command_window_blocker",
 ]
 
 #: The advisory lock every submission holds (inside ``commands/``: the one
@@ -70,12 +76,34 @@ LOCK_NAME = ".lock"
 STAGED_SUFFIX = ".json.staged"
 #: Neither a command nor a result is ever this large; a bigger file is not ours.
 MAX_STORED_BYTES = 256 * 1024
-#: Outcomes whose command is (or must be) queued for the owner.
-QUEUED_STATUSES = frozenset({"accepted", "applied"})
+#: The only stored outcome whose command the web itself still has to queue.
+QUEUED_STATUS: Final = "accepted"
+#: ``issued_at`` may lead the clock by this much (client clock skew).
+MAX_CLOCK_SKEW_S: Final = 60
+#: Refusal reason for a command issued further ahead than the skew allows.
+#: A plain string until lane K adds it to ``contracts.vocabulary.Blocker``.
+COMMAND_NOT_YET_VALID: Final = "command_not_yet_valid"
+#: Bounds the scan of queued commands (``pending_kinds``).
+MAX_PENDING_SCAN = 512
 
-#: Applies a command's effect in-process and returns its facts; raises
-#: ``OSError`` when it cannot (the command is then only queued).
-DirectApply = Callable[[AnyCommand], dict[str, JsonValue]]
+
+def command_window_blocker(command: AnyCommand, now: datetime) -> str | None:
+    """Why ``command`` may not be taken at ``now`` (None: it may).
+
+    THE validity rule for every kind, used by the web's intake and by the
+    owner's apply alike: ``command_not_yet_valid`` while ``issued_at`` is
+    more than ``MAX_CLOCK_SKEW_S`` ahead of ``now``; ``command_expired``
+    from ``expires_at`` on. Both processes read the same host clock, and
+    ``now`` only grows, so a command the web accepted can only stop being
+    valid by expiring, never by the owner reading the window differently.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    if (command.issued_at - now).total_seconds() > MAX_CLOCK_SKEW_S:
+        return COMMAND_NOT_YET_VALID
+    if (now - command.expires_at).total_seconds() >= 0:
+        return Blocker.COMMAND_EXPIRED.value
+    return None
 
 
 class CommandStoreUnavailable(RuntimeError):
@@ -149,11 +177,34 @@ class CommandStore:
         except ValidationError as error:
             raise CommandStoreUnavailable("command_result_invalid", key) from error
 
+    def pending_kinds(self) -> frozenset[CommandKind]:
+        """The kinds of the commands queued and not yet claimed by the owner
+        (a visible ``<key>.json``). A file that cannot be read as a command
+        makes the answer unknowable: ``CommandStoreUnavailable``."""
+        folder = self.layout.commands()
+        if not folder.is_dir():
+            return frozenset()
+        kinds: set[CommandKind] = set()
+        names = sorted(
+            p.name
+            for p in folder.glob("*.json")
+            if not p.name.endswith(".result.json") and not p.name.startswith(".")
+        )
+        if len(names) > MAX_PENDING_SCAN:
+            raise CommandStoreUnavailable("command_queue_too_long", str(len(names)))
+        for name in names:
+            raw = _read_bounded(folder / name)
+            if raw is None:
+                continue  # claimed by the owner while we listed
+            try:
+                kinds.add(parse_command(_json_object(raw)).kind)
+            except (ValueError, ValidationError) as error:
+                raise CommandStoreUnavailable("queued_command_invalid", name) from error
+        return frozenset(kinds)
+
     # -- the one write path ----------------------------------------------------
 
-    def submit(
-        self, command: AnyCommand, *, now: datetime, direct_apply: DirectApply | None = None
-    ) -> Submission:
+    def submit(self, command: AnyCommand, *, now: datetime) -> Submission:
         """Record ``command`` (see the module docstring for the protocol)."""
         key = command.idempotency_key
         body_sha = command_body_sha256(command)
@@ -188,20 +239,27 @@ class CommandStore:
                     ),
                     written=False,
                 )
-            if now >= command.expires_at:
+            blocker = command_window_blocker(command, now)
+            if blocker is not None:
                 self._staged(key).unlink(missing_ok=True)
+                document = model_document(command)
                 refused = _result(
                     command,
                     body_sha,
                     now,
                     "refused",
-                    reason=Blocker.COMMAND_EXPIRED,
-                    detail=f"expired at {model_document(command)['expires_at']}",
+                    reason=blocker,
+                    detail=(
+                        f"issued_at {document['issued_at']} is more than "
+                        f"{MAX_CLOCK_SKEW_S}s ahead of the desk clock"
+                        if blocker == COMMAND_NOT_YET_VALID
+                        else f"expired at {document['expires_at']}"
+                    ),
                 )
                 _write_atomic(self.layout.command_result(key), model_bytes(refused))
                 _fsync_dir(self.layout.commands())
                 return Submission(refused, written=True)
-            return Submission(self._queue(command, body_sha, now, direct_apply), written=True)
+            return Submission(self._queue(command, body_sha, now), written=True)
 
     # -- internals -------------------------------------------------------------
 
@@ -217,27 +275,11 @@ class CommandStore:
         finally:
             os.close(fd)  # closing the descriptor releases the flock
 
-    def _queue(
-        self,
-        command: AnyCommand,
-        body_sha: str,
-        now: datetime,
-        direct_apply: DirectApply | None,
-    ) -> CommandResult:
+    def _queue(self, command: AnyCommand, body_sha: str, now: datetime) -> CommandResult:
         key = command.idempotency_key
         staged = self._staged(key)
         _write_atomic(staged, model_bytes(command))
-        status: CommandStatus = "accepted"
-        facts: dict[str, JsonValue] | None = None
-        detail = ""
-        if direct_apply is not None:
-            try:
-                facts = direct_apply(command)
-                status = "applied"
-            except OSError as error:
-                why = error.strerror or type(error).__name__
-                detail = f"direct apply unavailable ({why}); queued for the desk owner"
-        result = _result(command, body_sha, now, status, detail=detail, result=facts)
+        result = _result(command, body_sha, now, "accepted")
         _write_atomic(self.layout.command_result(key), model_bytes(result))
         os.replace(staged, self.layout.command(key))
         _fsync_dir(self.layout.commands())
@@ -249,8 +291,10 @@ class CommandStore:
         raw = _read_bounded(staged)
         if raw is None:
             return
-        if stored.status not in QUEUED_STATUSES:
-            staged.unlink(missing_ok=True)  # debris of an attempt that never got a result
+        if stored.status != QUEUED_STATUS:
+            # debris: the attempt never got its own result, or the owner has
+            # already moved the result on (publishing would re-queue it)
+            staged.unlink(missing_ok=True)
             return
         try:
             command = parse_command(_json_object(raw))
