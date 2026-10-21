@@ -29,23 +29,40 @@ uses its own clientId (``SUPERVISED_CLIENT_ID``), distinct from the legacy
 monitor (71) and entry runner (72), discovery (74) and ``IbkrTrex``'s
 default (77). The E5 desk runtime shares it: one process sends supervised
 entries and owns their exits.
+
+Wave 2 equities (``supervised-equity-effect/1``, ``contracts.effects``):
+``preflight`` and ``submit`` route a payload naming that schema to the
+equity path; every other payload takes the option path unchanged. The STK
+order is built by ``equity_order`` from the decoded, canonical effect
+bytes only (conId, SMART, USD, LMT, DAY, ``outsideRth`` False, whole
+shares, explicit paper account, ``trex:sup:<intent_id>``). The equity
+preflight adds the symbol allowlist (before any broker call), the conId
+pin, a REALTIME quote (``equity_quote_not_realtime`` otherwise) and
+cash-only cover from settled cash. Margin is never consulted: IBKR paper
+what-if margins are all zeros (``supervised_canary``).
 """
 
 from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, model_validator
 
 from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.execution import BrokerAcknowledgement, OrderReject, SubmitAttempt
 from tree_options.schemas.common import IdStr, StrictModel
-from tree_options.trex.ibkr import GATEWAY_PAPER_PORT, ORDER_REF_PREFIX, IbkrTrex
+from tree_options.trex.ibkr import (
+    GATEWAY_PAPER_PORT,
+    ORDER_REF_PREFIX,
+    IbkrTrex,
+    StockConIdMismatch,
+    StockNotQualified,
+)
 from tree_options.trex.plan import LegStructure
 from tree_options.trex.supervised import (
     Acknowledged,
@@ -58,10 +75,23 @@ from tree_options.trex.supervised import (
     Uncertain,
 )
 
+if TYPE_CHECKING:
+    from tree_options.trex.contracts.effects import SupervisedEquityEffect
+
 EFFECT_SCHEMA = "supervised-effect/1"
+#: ``contracts.effects.EQUITY_EFFECT_SCHEMA``; defined here because the
+#: contracts package imports this module (a test pins the two equal)
+EQUITY_EFFECT_SCHEMA = "supervised-equity-effect/1"
 SUPERVISED_REF_PREFIX = ORDER_REF_PREFIX + "sup:"
 SUPERVISED_CLIENT_ID = 83
 PAPER_ACCOUNT_PREFIX = "D"
+
+#: equity preflight blockers outside the frozen ``contracts.vocabulary``
+EQUITY_CON_ID_MISMATCH = "equity_con_id_mismatch"
+EQUITY_QUOTE_INCOMPLETE = "equity_quote_incomplete"
+ACCOUNT_VALUES_UNREADABLE = "broker_view_unreadable:account_values"
+OPEN_ORDERS_UNREADABLE = "broker_view_unreadable:open_orders"
+CASH_COMMITMENT_UNBOUNDED = "cash_commitment_unbounded"
 
 #: statuses meaning the broker holds the order (an acknowledgement)
 ACK_STATES = frozenset({"PreSubmitted", "Submitted", "Filled"})
@@ -117,6 +147,74 @@ def decode_effect(payload: bytes) -> SupervisedEffect:
     return effect
 
 
+def _claims_equity(payload: bytes) -> bool:
+    """True when a payload names the equity schema; any other payload (junk
+    included) keeps the option path exactly as before."""
+    try:
+        document = json.loads(payload)
+    except ValueError:
+        return False
+    return isinstance(document, dict) and document.get("schema") == EQUITY_EFFECT_SCHEMA
+
+
+def decode_equity_effect(payload: bytes) -> SupervisedEquityEffect:
+    """Parse and validate an equity effect, refusing any non-canonical
+    encoding (``contracts.effects.decode_effect_v1``)."""
+    from tree_options.trex.contracts.effects import SupervisedEquityEffect, decode_effect_v1
+
+    effect = decode_effect_v1(payload)
+    if not isinstance(effect, SupervisedEquityEffect):
+        raise ValueError("not an equity effect")
+    return effect
+
+
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _equity_wire_ok(effect: SupervisedEquityEffect) -> bool:
+    """The C2.1 wire shape, re-checked on the object the order is built
+    from (a model copied with ``update`` skips validation)."""
+    return (
+        effect.side == "BUY"
+        and _positive_int(effect.quantity)
+        and _positive_int(effect.limit_cents)
+        and _positive_int(effect.con_id)
+        and effect.tif == "DAY"
+        and effect.outside_rth is False
+        and effect.exchange == "SMART"
+        and effect.currency == "USD"
+        and effect.account_id.startswith(PAPER_ACCOUNT_PREFIX)
+        and effect.order_ref == supervised_order_ref(effect.intent_id)
+    )
+
+
+def equity_order(effect: SupervisedEquityEffect) -> tuple[Any, Any]:
+    """(Stock, LimitOrder) of the one STK order an equity effect authorizes.
+
+    Every wire field is a hashed effect field: the pinned conId, symbol,
+    exchange, currency, BUY, whole shares, the limit (cents; ib_async takes
+    dollars as a float, converted from the exact decimal), DAY,
+    ``outsideRth``, the explicit paper account and the supervised tag.
+    Refuses (ValueError) an effect off that shape before anything exists."""
+    from ib_async import LimitOrder, Stock
+
+    if not _equity_wire_ok(effect):
+        raise ValueError("equity effect is off the Wave 2 wire shape")
+    contract = Stock(effect.symbol, effect.exchange, effect.currency, conId=effect.con_id)
+    order = LimitOrder(
+        effect.side,
+        effect.quantity,
+        float(Decimal(effect.limit_cents) / 100),
+        tif=effect.tif,
+        outsideRth=effect.outside_rth,
+        account=effect.account_id,
+        orderRef=effect.order_ref,
+        transmit=True,
+    )
+    return contract, order
+
+
 def _utc(clock: Callable[[], datetime]) -> datetime:
     now = clock()
     if now.tzinfo is None or now.utcoffset() is None:
@@ -149,11 +247,24 @@ class IbkrSupervisedBroker:
         clock: Callable[[], datetime] | None = None,
         ack_timeout_s: float = ACK_TIMEOUT_S,
         poll_s: float = ACK_POLL_S,
+        equity_allowlist: Iterable[str] | None = None,
     ) -> None:
         self.ib = ib
         self.clock = clock or (lambda: datetime.now(UTC))
         self.ack_timeout_s = ack_timeout_s
         self.poll_s = poll_s
+        self._equity_allowlist = None if equity_allowlist is None else frozenset(equity_allowlist)
+
+    @property
+    def equity_allowlist(self) -> frozenset[str]:
+        """Symbols the equity path may trade (default
+        ``contracts.defaults.EQUITY_SYMBOL_ALLOWLIST``: SPY only, the one
+        symbol IBKR paper quotes in real time)."""
+        if self._equity_allowlist is not None:
+            return self._equity_allowlist
+        from tree_options.trex.contracts.defaults import EQUITY_SYMBOL_ALLOWLIST
+
+        return frozenset(EQUITY_SYMBOL_ALLOWLIST)
 
     # -- guards --------------------------------------------------------------
 
@@ -190,7 +301,12 @@ class IbkrSupervisedBroker:
         the error CLASS only: the message can carry provider or account
         text. An error raised once the session reads disconnected is a lost
         gateway, not an unbuildable order: it propagates, and the desk loop
-        records ``gateway_lost`` and exits 6 at once."""
+        records ``gateway_lost`` and exits 6 at once.
+
+        A payload naming ``supervised-equity-effect/1`` takes the equity
+        preflight (``_equity_preflight``)."""
+        if _claims_equity(effect_payload):
+            return self._equity_preflight(effect_payload)
         try:
             effect = decode_effect(effect_payload)
         except ValueError as error:
@@ -209,6 +325,71 @@ class IbkrSupervisedBroker:
             blockers.append("package_quote_incomplete")
         return blockers
 
+    def _equity_preflight(self, payload: bytes) -> list[str]:
+        """Blockers of an equity effect; never places anything. In order:
+        encoding, session guards, the allowlist (before any broker call),
+        qualification with the effect's conId pinned, then BOTH a quote
+        blocker (none two-sided: ``equity_quote_incomplete``; not realtime:
+        ``equity_quote_not_realtime``) and a cash blocker (cash-only:
+        settled cash net of working stock buys must cover quantity x limit,
+        else ``insufficient_cash``). Names only, as for options; an error
+        raised once the session reads disconnected propagates."""
+        from tree_options.trex.contracts.effects import equity_notional_cents
+        from tree_options.trex.contracts.vocabulary import Blocker
+
+        try:
+            effect = decode_equity_effect(payload)
+        except ValueError as error:
+            return [f"effect_invalid:{type(error).__name__}"]
+        blockers = self.paper_blockers(effect.account_id)
+        if blockers:
+            return blockers
+        if effect.symbol not in self.equity_allowlist:
+            return [Blocker.EQUITY_SYMBOL_NOT_QUALIFIED.value]
+        try:
+            self.ib.prepare_stock(effect.symbol, effect.con_id)
+        except StockConIdMismatch:
+            return [EQUITY_CON_ID_MISMATCH]
+        except (ValueError, RuntimeError) as error:
+            if not self._session_up():
+                raise
+            if isinstance(error, StockNotQualified):
+                return [Blocker.EQUITY_SYMBOL_NOT_QUALIFIED.value]
+            return [f"order_unbuildable:{type(error).__name__}"]
+        quote = self.ib.equity_quote(effect.symbol)
+        if quote is None:
+            blockers.append(EQUITY_QUOTE_INCOMPLETE)
+        elif not quote.realtime:
+            blockers.append(Blocker.EQUITY_QUOTE_NOT_REALTIME.value)
+        blockers.extend(self._cash_blockers(effect.account_id, equity_notional_cents(effect)))
+        return blockers
+
+    def _cash_blockers(self, account_id: str, notional_cents: int) -> list[str]:
+        """Cash-only cover (no margin): settled cash, net of what working
+        stock buys commit, must cover the entry's notional. An unreadable
+        view blocks by name; a lost session propagates."""
+        from tree_options.trex.contracts.vocabulary import Blocker
+
+        try:
+            settled = self.ib.settled_cash_cents(account_id)
+        except Exception:  # unreadable account values prove nothing
+            if not self._session_up():
+                raise
+            settled = None
+        if settled is None:
+            return [ACCOUNT_VALUES_UNREADABLE]
+        try:
+            committed = self.ib.working_stock_buy_cents(account_id)
+        except Exception:  # unreadable open orders prove nothing
+            if not self._session_up():
+                raise
+            return [OPEN_ORDERS_UNREADABLE]
+        if committed is None:
+            return [CASH_COMMITMENT_UNBOUNDED]
+        if settled - committed < notional_cents:
+            return [Blocker.INSUFFICIENT_CASH.value]
+        return []
+
     # -- SupervisedBroker ----------------------------------------------------
 
     def submit(self, attempt: SubmitAttempt, effect_payload: bytes) -> SubmissionOutcome:
@@ -219,8 +400,11 @@ class IbkrSupervisedBroker:
         held until reconciliation confirms (after its settle window) that
         nothing reached the broker. Nothing here fabricates a broker fact.
         An error's detail is its CLASS only: it is kept in the outbox's
-        terminal receipt and the request's result.
+        terminal receipt and the request's result. An equity payload takes
+        ``_equity_submit``.
         """
+        if _claims_equity(effect_payload):
+            return self._equity_submit(attempt, effect_payload)
         try:
             effect = decode_effect(effect_payload)
         except ValueError as error:
@@ -244,6 +428,39 @@ class IbkrSupervisedBroker:
             return Uncertain("not_sent:order_unbuildable", type(error).__name__)
         order.orderRef = effect.order_ref
         order.account = effect.account_id
+        trade = self.ib._ib.placeOrder(contract, order)
+        return self._await_ack(attempt, trade)
+
+    def _equity_submit(self, attempt: SubmitAttempt, payload: bytes) -> SubmissionOutcome:
+        """Place the permitted STK order (``equity_order`` over the decoded
+        bytes), or say why not, exactly as ``submit`` does for options:
+        every local refusal is ``Uncertain`` with a ``not_sent:`` reason and
+        an error CLASS for detail. Quote and cash were preflight's (before
+        the permit); the session guards, the allowlist, the duplicate-tag
+        check and the conId pin are repeated here."""
+        from tree_options.trex.contracts.vocabulary import Blocker
+
+        try:
+            effect = decode_equity_effect(payload)
+        except ValueError as error:
+            return Uncertain("not_sent:effect_invalid", type(error).__name__)
+        if effect.intent_id != attempt.intent_id:
+            return Uncertain("not_sent:intent_mismatch", effect.intent_id)
+        blockers = self.paper_blockers(effect.account_id)
+        if blockers:
+            return Uncertain("not_sent:session", ",".join(blockers))
+        if effect.symbol not in self.equity_allowlist:
+            return Uncertain(f"not_sent:{Blocker.EQUITY_SYMBOL_NOT_QUALIFIED.value}")
+        existing = self._tagged(effect.order_ref)
+        if existing is None:
+            return Uncertain("not_sent:duplicate_check_unreadable")
+        if existing:
+            return Uncertain("not_sent:tag_already_at_broker", effect.order_ref)
+        try:
+            self.ib.prepare_stock(effect.symbol, effect.con_id, settle_s=0)
+            contract, order = equity_order(effect)
+        except (ValueError, RuntimeError) as error:
+            return Uncertain("not_sent:order_unbuildable", type(error).__name__)
         trade = self.ib._ib.placeOrder(contract, order)
         return self._await_ack(attempt, trade)
 
