@@ -9,6 +9,8 @@ Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
 Environment=TREX_DESK_STATE=@DESK_STATE@
 Environment=DESK_STORE=@DESK_STORE@
 Environment=PYTHONDONTWRITEBYTECODE=1
+# Same gate as every unit that runs release code (--run also verifies in process).
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
 ExecStart=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.trex.premarket --run
 # Exit 3 is degraded readiness, deliberately not treated as success.
 UMask=0077

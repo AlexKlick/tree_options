@@ -5,7 +5,14 @@ activate new entries, or qualify paper/live trading. Complete the Phase 0 custod
 and canary gates before changing installed services. Preserve the previous release
 and all state roots. Do not run these commands in a service-owned checkout.
 
-1. Commit the intended candidate in an isolated worktree. Keep source clean.
+1. Commit the intended candidate, then check it out as a detached linked worktree
+   outside the serving checkout, for example
+   `git -C ~/documents/tree_options worktree add --detach <release>/source <sha>`.
+   Keep source clean. Seal refuses a branch checkout
+   (`release_source_not_detached`), because it moves with its branch. It also
+   refuses the main worktree of the repository's git common dir, or any path
+   inside it (`release_source_in_main_worktree`). That main worktree is the
+   serving checkout, and a standalone clone is its own main worktree.
 2. Run the existing local `scripts/desk_safety_gate.sh` through `host-test` with
    the shared `~/.local/state/trex-desk-gate.lock`. Capture the complete transcript.
    The separate M0 gate and mutation campaign retain their own acceptance rules.
@@ -25,7 +32,12 @@ and all state roots. Do not run these commands in a service-owned checkout.
    Use absolute paths; keep `read_snapshot` inside the evidence owner's
    `desk_state` directory, but outside `evidence/`. Keep `premarket_runs` outside
    replaceable releases. `previous_release` names the previous manifest file
-   (null only when no compatible previous manifest exists). The initial session
+   (null only when no compatible previous manifest exists). Seal requires that
+   file and records its hash as `previous_release_sha256`. Verification checks
+   only that the recorded hash is well formed, so removing the previous release
+   later never fails a live gate. The inventory still counts the previous release
+   directory as referenced (`previous_release_of`), because it is the rollback
+   target. The initial session
    remains 2026-10-01; the trigger remains 08:00 America/New_York weekdays with
    the runner's NYSE calendar guard.
 5. Seal and render from the release's private Python environment:
@@ -47,15 +59,21 @@ head and tree, both dependency locks, all frontend files, QSL and experiment pub
 experiment-source configuration hash. `supported_commands` lists every command a
 rendered unit may run, now including `tree_options.desk shadows` and
 `tree_options.desk desk-enter`. A manifest sealed before that change will not
-verify under the new code; reseal it rather than editing it.
+verify under the new code; reseal it rather than editing it. The same holds for
+a manifest with a `previous_release` but no `previous_release_sha256`
+(`previous_release_hash_invalid`).
 The manifest is identity evidence, not a successful test receipt. Keep the full
 validation logs and source identity alongside it outside replaceable directories.
 
 Render is pure: it verifies the manifest, resolves every template, and checks
 that every unit command line runs `-m <command>` from `supported_commands`
-(`release_template_command_unbound` otherwise). Nothing is written unless every
-template passes, and it never calls `systemctl`. Installing is a separate,
-owner-coordinated step.
+(`release_template_command_unbound` otherwise). Rendered units name the parent
+of `--out` as `TREX_RELEASE_DIR`, and the start gate verifies whatever
+`config.json` it finds there. Render therefore needs an absolute `--out`
+(`release_dir_unsafe_for_unit`) whose parent holds a `config.json` that is
+JSON-equal to the manifest being rendered (`release_dir_config_mismatch`).
+Nothing is written unless every check passes, and it never calls `systemctl`.
+Installing is a separate, owner-coordinated step.
 
 After custody gates close, the rendered `*.service`/`*.timer` files target the
 existing user services. Each `<unit>-release.conf` is a drop-in for one existing
@@ -85,15 +103,32 @@ enforce them):
   commands, so the old release would run first. The base `desk-qsl.service` and
   `trex-web.service` also carry an `ExecStartPre` that checks an older release.
 - The only start gate is `tree_options.trex.premarket --check` from the same
-  release (`verify_manifest`). A failed check fails the start.
+  release (`verify_manifest`). A failed check fails the start. This holds for
+  every rendered unit that runs `<source>` code, not only the drop-ins: the
+  evidence and experiment publishers (which stamp `--source-release` with the
+  release head) and the premarket runner also set `TREX_RELEASE_DIR` and run the
+  gate as their first command.
   `desk-admission-preview` gets `TimeoutStartSec=120` because its 45 s base
-  budget was sized for the preview alone.
-- Sandboxed units never launch through `host-test`/`host-work`. That wrapper
-  writes a payload under `/run/user`, which `ProtectHome=read-only` makes
-  read-only, and its transient unit would not keep the caller's sandbox. Memory
-  is capped with `Slice=host-work.slice` and `MemoryHigh`/`MemoryMax`. The two
-  publisher units borrow the desk-evidence caps; the experiment publisher's cap
-  has not been measured. Only the unsandboxed premarket runner keeps `host-test`.
+  budget was sized for the preview alone. The experiment publisher goes from 90 s
+  to 120 s for the same reason.
+- The gate also checks that it is the release it verifies: its own module file
+  must sit inside `<source>/src` (`premarket_code_outside_release`), and
+  `sys.prefix` must be `<source>/.venv` (`premarket_interpreter_outside_release`).
+- The gate only writes a report when it fails. Inside sandboxed units
+  `TREX_PREMARKET_RUNS` is read-only. A report that cannot be written is logged
+  on stderr by error class only, and the start still fails. The `--prepare`,
+  `--preview` and `--run` receipts stay mandatory.
+- Sandboxed units never launch through `host-test`/`host-work`. `host-test` is
+  `host-work run --profile test`. Before it starts anything, `host_work.py` writes
+  the job payload under `/run/user/<uid>/host-memory-guard/payloads`. Under
+  `ProtectHome=read-only` (and `ProtectSystem=strict`) that path is read-only, so
+  the wrapper fails before the workload runs. Even if the write succeeded, the
+  workload would run as a transient `systemd-run --user` unit. That unit carries
+  only the memory properties, not the caller's `ProtectHome`, `ReadWritePaths` or
+  address-family limits. Memory is capped with `Slice=host-work.slice` and
+  `MemoryHigh`/`MemoryMax`. The two publisher units borrow the desk-evidence caps;
+  the experiment publisher's cap has not been measured. Only the unsandboxed
+  premarket runner keeps `host-test`.
 - Desk drop-ins may add `ReadWritePaths` only inside the release's `desk_state`.
   The web drop-ins add none.
 - The staging drop-in pins code only. It sets no state variable and no

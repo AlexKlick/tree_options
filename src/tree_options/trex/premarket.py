@@ -25,8 +25,15 @@ def config():
 def verify(c):
     from tree_options.trex.release import verify_manifest
 
+    source = Path(c["source"])
+    # config.json names a source; this process must BE that source's code and
+    # interpreter, or a stale gate could vouch for a release it is not running.
+    if not Path(__file__).resolve().is_relative_to(source / "src"):
+        raise ValueError("premarket_code_outside_release")
+    if Path(sys.prefix).resolve() != (source / ".venv").resolve():
+        raise ValueError("premarket_interpreter_outside_release")
     verify_manifest(c)
-    return Path(c["source"])
+    return source
 
 
 def window(now, c, cal):
@@ -37,6 +44,28 @@ def window(now, c, cal):
     if not time(8) <= now.time().replace(tzinfo=None) < time(9, 30):
         return "SKIPPED_OUTSIDE_PREMARKET_WINDOW"
     return None
+
+
+def persist_check_failure(report):
+    """The gate's report is best effort: sandboxed units see RUNS read-only.
+
+    The verdict, not the report, decides the exit code, so a write failure is
+    logged by error class only (no path) and the start still fails closed.
+    """
+    try:
+        persist(report)
+    except OSError as error:
+        print(
+            json.dumps(
+                {
+                    "status": report["status"],
+                    "reason": report.get("reason"),
+                    "report_write_error_class": type(error).__name__,
+                    "orders_authorized": False,
+                }
+            ),
+            file=sys.stderr,
+        )
 
 
 def persist(report):
@@ -248,7 +277,10 @@ def main(argv=None):
     except Exception as error:
         report["error_class"] = type(error).__name__
         report["reason"] = str(error) if isinstance(error, ValueError) else "startup_failed"
-        persist(report)
+        if args.check:
+            persist_check_failure(report)
+        else:
+            persist(report)
         return 1
 
 

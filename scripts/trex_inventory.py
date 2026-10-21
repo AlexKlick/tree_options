@@ -3,8 +3,10 @@
 Maps each unit to its source (the serving checkout, a release <sha>, or an
 untracked copy), lists timers with their next fire, the state roots the units
 name, registered worktrees, unpushed branches and release directories (whether
-any unit references them). Emits JSON (schema trex-inventory/1) with --json or
-a short text table; --out also writes the JSON document to that one path.
+any unit references them, including as TREX_RELEASE_DIR, or another release's
+sealed config.json names them as its previous_release). Emits JSON (schema
+trex-inventory/1) with --json or a short text table; --out also writes the JSON
+document to that one path.
 
 Read-only by construction: every probe passes `check_read_only` (systemctl
 list/show verbs, three fixed git read shapes with --no-optional-locks) before it
@@ -42,7 +44,9 @@ SERVICE_PROPS = (
 TIMER_PROPS = "Id,Unit,ActiveState,UnitFileState,TimersCalendar,TimersMonotonic"
 EXEC_PHASES = ("ExecStartPre", "ExecStart", "ExecStartPost")
 SYSTEMCTL_VERBS = frozenset({"list-unit-files", "list-units", "list-timers", "show"})
-NOT_STATE = frozenset({"PYTHONPATH", "HOME", "PATH", "VIRTUAL_ENV", "PWD", "TMPDIR"})
+NOT_STATE = frozenset(
+    {"PYTHONPATH", "HOME", "PATH", "VIRTUAL_ENV", "PWD", "TMPDIR", "TREX_RELEASE_DIR"}
+)
 SECRET_NAME = re.compile(r"TOKEN|SECRET|PASSW|API_?KEY|CREDENTIAL|PRIVATE|AUTH|COOKIE|_KEY$", re.I)
 
 Runner = Callable[[Sequence[str]], tuple[int, str]]
@@ -243,6 +247,9 @@ def _service(props: dict[str, list[str]]) -> dict[str, Any]:
     )
     referenced = set(roots)
     referenced |= {_norm(t) for argv in exec_argv for t in argv if t.startswith("/")}
+    # The release gate reads its sealed config.json from TREX_RELEASE_DIR.
+    if env.get("TREX_RELEASE_DIR", "").startswith("/"):
+        referenced.add(_norm(env["TREX_RELEASE_DIR"]))
     state = {
         k: _norm(v)
         for k, v in sorted(env.items())
@@ -284,6 +291,16 @@ def _template_coverage(templates: Path) -> dict[str, str]:
         elif name.endswith((".service", ".timer")):
             coverage.setdefault(name, "unit")
     return coverage
+
+
+def _previous_release(release_dir: str) -> str | None:
+    """The `previous_release` manifest a release's sealed config.json names, if any."""
+    try:
+        doc = json.loads((Path(release_dir) / "config.json").read_text())
+    except (OSError, ValueError):
+        return None
+    previous = doc.get("previous_release") if isinstance(doc, dict) else None
+    return _norm(previous) if isinstance(previous, str) and previous.startswith("/") else None
 
 
 def _worktrees(text: str | None) -> list[dict[str, Any]]:
@@ -433,6 +450,14 @@ def build_inventory(paths: Paths, runner: Runner, now: datetime | None = None) -
         root = unit["source"].get("root")
         if root and root != serving and release_of(root) is None and Path(root).exists():
             candidates.append(root)
+    # A release named as another release's previous_release is its rollback
+    # target: referenced even when no unit runs it today.
+    rollback_of: dict[str, set[str]] = {}
+    for path in set(candidates):
+        previous = _previous_release(path)
+        owner = release_of(previous) if previous else None
+        if owner is not None and owner != path:
+            rollback_of.setdefault(owner, set()).add(path)
     release_dirs = []
     for path in sorted(set(candidates)):
         source_root = str(Path(path) / "source") if (Path(path) / "source").is_dir() else path
@@ -440,6 +465,7 @@ def build_inventory(paths: Paths, runner: Runner, now: datetime | None = None) -
         refs = sorted(
             u["unit"] for u in units if any(_inside(r, path) for r in u.get("_referenced", []))
         )
+        previous_of = sorted(rollback_of.get(path, ()))
         release_dirs.append(
             {
                 "path": path,
@@ -447,7 +473,8 @@ def build_inventory(paths: Paths, runner: Runner, now: datetime | None = None) -
                 "tracked": tracked,
                 "head": head,
                 "referenced_by": refs,
-                "referenced": bool(refs),
+                "previous_release_of": previous_of,
+                "referenced": bool(refs or previous_of),
             }
         )
 
