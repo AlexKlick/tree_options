@@ -32,7 +32,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tree_options.desk.cost import SpreadCostModel, UnpricedCostError  # noqa: E402
+from tree_options.desk.cost import SpreadCostModel, UnpricedCostError
 
 #: outcomes.CostModel().round_trip() -- 4 fills x $0.03 x 100 + 4 x $0.65.
 FLAT = Decimal("14.60")

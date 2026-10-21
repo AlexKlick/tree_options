@@ -39,8 +39,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import re
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
