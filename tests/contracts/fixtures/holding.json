@@ -1,0 +1,19 @@
+{
+  "account_id": "DU0000001",
+  "con_id": 756733,
+  "cost_basis_micros": 1342960000,
+  "lots": [
+    {
+      "attribution": {
+        "intent_id": "eq-spy-001",
+        "program_id": "prog-equity-pilot",
+        "sleeve_ref": "sleeve-equity-01",
+        "strategy_version": "equity-pilot/1"
+      },
+      "quantity": 2
+    }
+  ],
+  "quantity": 2,
+  "sec_type": "STK",
+  "symbol": "SPY"
+}

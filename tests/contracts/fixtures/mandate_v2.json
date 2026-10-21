@@ -1,0 +1,22 @@
+{
+  "account_id": "DU0000001",
+  "approval_id": "6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d",
+  "effect_sha256": "712eec9ac375251048e6622c7d76f18c85444fe10a704c4d007bdccde6fd9a8b",
+  "environment": "ibkr-paper",
+  "expires_at": "2026-10-22T14:07:00Z",
+  "granted_at": "2026-10-22T14:02:00Z",
+  "granted_by": {
+    "ingress": "family",
+    "request_id": "req-0001",
+    "request_sha256": "fc15cd1e37d48e0c96fd36859bbe75a6f1255cec3cc12cff5053dace8c5557b5",
+    "sub": "owner"
+  },
+  "intent_id": "eq-spy-001",
+  "max_orders": 1,
+  "owner_epoch": "owner-20261022T133000Z-4242",
+  "profile_digest": "d11e81bc8942960c211bce52582136c6852e1131625828cefe5c9b5412062d07",
+  "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48",
+  "schema": "supervised-mandate/2",
+  "send_deadline": "2026-10-22T14:10:00Z",
+  "strategy_version": "equity-pilot/1"
+}

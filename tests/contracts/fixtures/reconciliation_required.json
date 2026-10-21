@@ -1,0 +1,15 @@
+{
+  "account_id": "DU0000001",
+  "as_of": "2026-10-22T14:04:00Z",
+  "max_age_s": 120,
+  "mismatches": [
+    {
+      "broker_qty": 3,
+      "con_id": 756733,
+      "kind": "quantity_mismatch",
+      "local_qty": 2
+    }
+  ],
+  "schema": "trex-reconciliation/1",
+  "status": "reconciliation_required"
+}

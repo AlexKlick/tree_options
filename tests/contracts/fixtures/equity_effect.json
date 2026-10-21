@@ -1,0 +1,22 @@
+{
+  "account_id": "DU0000001",
+  "con_id": 756733,
+  "currency": "USD",
+  "exchange": "SMART",
+  "exit_policy": {
+    "exit_deadline_session": "2026-10-23",
+    "forced_exit_et": "15:45",
+    "stop_confirm_ticks": 3,
+    "stop_price_cents": 66500,
+    "target_price_cents": 68000
+  },
+  "intent_id": "eq-spy-001",
+  "limit_cents": 67150,
+  "order_ref": "trex:sup:eq-spy-001",
+  "outside_rth": false,
+  "quantity": 2,
+  "schema": "supervised-equity-effect/1",
+  "side": "BUY",
+  "symbol": "SPY",
+  "tif": "DAY"
+}

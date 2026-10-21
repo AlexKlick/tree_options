@@ -1,0 +1,20 @@
+{
+  "args": {
+    "effect_sha256": "712eec9ac375251048e6622c7d76f18c85444fe10a704c4d007bdccde6fd9a8b",
+    "owner_epoch": "owner-20261022T133000Z-4242",
+    "profile_digest": "d11e81bc8942960c211bce52582136c6852e1131625828cefe5c9b5412062d07",
+    "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48",
+    "proposal_sha256": "6e40adefc7ee40b33b77bb9eb389eb4c7a145f3fe6d6fc7f16900a60ff921ea7"
+  },
+  "expires_at": "2026-10-22T14:06:30Z",
+  "idempotency_key": "6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d",
+  "issued_at": "2026-10-22T14:01:30Z",
+  "issued_by": {
+    "ingress": "family",
+    "request_id": "req-0001",
+    "request_sha256": "fc15cd1e37d48e0c96fd36859bbe75a6f1255cec3cc12cff5053dace8c5557b5",
+    "sub": "owner"
+  },
+  "kind": "approve_entry",
+  "schema": "trex-command/1"
+}
