@@ -426,12 +426,40 @@ def test_a_holdings_mismatch_blocks_the_sell_and_requires_reconciliation(rig: Ri
     assert [s.order.totalQuantity for s in rig.sells()] == [2]
 
 
-def test_unexplained_extra_shares_also_block_the_sell(rig: Rig) -> None:
+def _recon(rig: Rig) -> list[dict[str, Any]]:
+    return [r for r in rig.records() if r["event"] == DeskEvent.RECONCILIATION_REQUIRED.value]
+
+
+def test_outside_shares_never_block_a_stop_exit(rig: Rig) -> None:
+    """C2.5: reconciliation and outside positions block ENTRIES only. The
+    owner's own 5 SPY sit beside the desk's 2: the confirmed stop sells
+    exactly the desk's 2, flags the excess, and the 5 stay."""
+    rig.gw.add_broker_position("SPY", 5)
+    rig.open_position()
+    rig.gw.script_fills(desk_order_ref(IID), [FillStep()])
+    _confirm_stop(rig)
+    (sell,) = rig.sells()
+    assert (sell.order.totalQuantity, sell.order.lmtPrice) == (2, 665.0)
+    assert rig.gw.wire_violations == []
+    (recon,) = _recon(rig)
+    assert (recon["why"], recon["broker_qty"], recon["book_qty"]) == ("holdings_excess", "7", 2)
+    rig.gw.sleep(1)
+    rig.rt.tick()
+    st = rig.book()[IID]
+    assert (st["status"], st["close_reason"]) == ("closed", "stop")
+    assert rig.held() == 5, "the outside shares are never sold"
+
+
+def test_outside_shares_appearing_mid_position_never_block_the_deadline_exit(rig: Rig) -> None:
     rig.open_position()
     rig.gw.add_broker_position("SPY", 5)
-    _confirm_stop(rig)
-    assert rig.sells() == []
-    assert DeskEvent.RECONCILIATION_REQUIRED.value in rig.events()
+    rig.clock.to_open(date(2026, 10, 26))  # the deadline session 10-23 passed
+    rig.gw.push_tick("SPY", 67000, 67004)
+    rig.rt.tick()
+    (sell,) = rig.sells()
+    assert sell.order.totalQuantity == 2
+    assert rig.book()[IID]["exit_reason"] == "deadline"
+    assert [r["why"] for r in _recon(rig)] == ["holdings_excess"]
 
 
 def test_a_fractional_broker_position_blocks_the_sell(rig: Rig) -> None:
@@ -507,6 +535,185 @@ def test_an_entry_filled_while_down_opens_from_todays_executions(rig: Rig) -> No
     rig.rt.tick()
     st = rig.book()[IID]
     assert (st["status"], st["filled_qty"], st["entry_fill"]) == ("open", 2, "671.5")
+
+
+def test_an_exit_filled_while_down_closes_beside_outside_shares(rig: Rig) -> None:
+    rig.gw.add_broker_position("SPY", 5)
+    rig.open_position()
+    rig.gw.script_fills(desk_order_ref(IID), [FillStep()])
+    rig.tick_bid(TARGET)
+    rig.rt.release()
+    rig.gw.sleep(1)  # the sell fills while no desk runs
+    rig.clock.restart(down_s=60)
+    rig.rt = rig._runtime()
+    placed = len(rig.gw.trades)
+    rig.rt.tick()
+    st = rig.book()[IID]
+    assert (st["status"], st["close_reason"]) == ("closed", "target")
+    assert len(rig.gw.trades) == placed, "a filled exit is never re-sent"
+    assert rig.held() == 5
+
+
+def _sell_then_restart_at_the_next_open(rig: Rig) -> Any:
+    """A stop sell that never fills; the desk is down from before the
+    close (so it never sees the DAY order expire) to the next open."""
+    rig.gw.add_broker_position("SPY", 5)
+    rig.open_position()
+    _confirm_stop(rig)
+    (first,) = rig.sells()
+    rig.rt.release()
+    rig.clock.restart(until=rig.clock.open_of(rig.clock.next_session()))
+    return first
+
+
+def test_an_expired_exit_is_resold_after_an_overnight_restart_beside_outside_shares(
+    rig: Rig,
+) -> None:
+    first = _sell_then_restart_at_the_next_open(rig)
+    rig.rt = rig._runtime()
+    rig.tick_bid(STOP - 30)
+    assert first.orderStatus.status == "Cancelled", "the DAY sell expired at the close"
+    second = rig.sells()[-1]
+    assert second is not first
+    assert (second.order.totalQuantity, second.order.lmtPrice) == (2, 664.70)
+    assert rig.book()[IID]["exit_reason"] == "stop"
+    assert rig.gw.wire_violations == []
+
+
+def test_an_outside_holding_that_moved_while_down_holds_the_resell(rig: Rig) -> None:
+    """The sell is gone and today's executions say nothing of it: 4 held
+    against the desk's 2 beside the 5 seen at the sell can be the owner
+    selling 3 of theirs, or the desk's 2 filled unseen plus the owner's 1.
+    Re-selling could sell outside shares: nothing is sent, reconciliation."""
+    first = _sell_then_restart_at_the_next_open(rig)
+    rig.gw.clear_position_faults()
+    rig.gw.add_broker_position("SPY", 2)
+    rig.rt = rig._runtime()
+    rig.tick_bid(STOP - 30)
+    assert rig.sells() == [first]
+    assert rig.book()[IID]["status"] == Status.EXIT_WORKING.value
+    assert [(r["why"], r["broker_qty"], r["book_qty"]) for r in _recon(rig)][-1] == (
+        "holdings_mismatch",
+        "4",
+        2,
+    )
+
+
+# ------------------------------------------------------------ isolation
+
+
+def _canary() -> SupervisedEffect:
+    return SupervisedEffect.model_validate(contract_fixture("option_effect_canary.json"))
+
+
+def _unqualifiable(gw: Wave2Gateway, effect: SupervisedEffect) -> None:
+    """IBKR no longer finds the structure's legs (past their expiry)."""
+    s = effect.structure
+    for leg in s.legs:
+        gw.unknown.add(
+            ("OPT", s.underlying, leg.expiry.strftime("%Y%m%d"), float(leg.strike), leg.right)
+        )
+
+
+def _failures(rig: Rig) -> list[tuple[str, str]]:
+    return [
+        (r["structure"], r["error"]) for r in rig.records() if r["event"] == "structure_tick_failed"
+    ]
+
+
+def _health(rig: Rig) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads(rig.paths.health().read_text())
+    return loaded
+
+
+def test_a_broken_option_spec_never_starves_an_equity_exit(rig: Rig) -> None:
+    rig.open_position()
+    beat = json.loads(rig.paths.book().read_text())["heartbeat"]
+    effect = _canary()
+    spec = DeskSpec(
+        intent_id=effect.intent_id,
+        account_id=effect.account_id,
+        structure=effect.structure,
+        entry_order_ref=supervised_order_ref(effect.intent_id),
+        registered_at=rig.clock(),
+    )
+    rig.paths.spec("canary-001").write_bytes(
+        canonical_bytes(spec.model_dump(mode="json", by_alias=True))
+    )
+    _unqualifiable(rig.gw, effect)
+    _confirm_stop(rig)  # every tick: the option lane fails, the equity lane still runs
+    (sell,) = rig.sells()
+    assert sell.order.totalQuantity == 2
+    assert rig.book()[IID]["status"] == Status.EXIT_WORKING.value
+    assert rig.book()["canary-001"]["status"] == Status.PLANNED.value
+    assert _failures(rig) == [("canary-001", "RuntimeError")], "one urgent record"
+    assert any("structure_tick_failed" in n[0] and n[2] == "urgent" for n in rig.notified)
+    health = _health(rig)
+    assert (health["last_error"], health["tick_failures"]) == ("RuntimeError", 3)
+    assert json.loads(rig.paths.book().read_text())["heartbeat"] == beat, (
+        "a degraded tick never refreshes the arm gate's heartbeat"
+    )
+
+
+def test_a_closed_option_spec_whose_legs_expired_never_fails_a_restarted_tick(
+    rig: Rig,
+) -> None:
+    effect = _canary()
+    rig.rt.register(effect)  # prepared while its legs still qualify
+    rig.open_position()
+    book = json.loads(rig.paths.book().read_text())
+    book["structures"]["canary-001"]["status"] = Status.CLOSED.value
+    rig.paths.book().write_text(json.dumps(book))
+    _unqualifiable(rig.gw, effect)
+    rig.rt.release()  # a new process: nothing prepared, nothing subscribed
+    rig.clock.restart(down_s=60)
+    rig.ib = IbkrTrex(client_id=SUPERVISED_CLIENT_ID)
+    rig.ib._ib = rig.gw
+    rig.rt = rig._runtime()
+    calls = len(rig.gw.qualify_calls)
+    _confirm_stop(rig)
+    (sell,) = rig.sells()
+    assert sell.order.totalQuantity == 2
+    assert (_health(rig)["last_error"], _health(rig)["tick_failures"]) == (None, 0)
+    asked = [c for call in rig.gw.qualify_calls[calls:] for c in call]
+    assert [c.secType for c in asked] == ["STK"], "a CLOSED structure is never prepared"
+
+
+def test_one_failing_equity_never_starves_another(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig.open_position(equity_effect(intent_id="eq-a"))
+    rig.open_position(equity_effect(intent_id="eq-b"))
+    real = DeskRuntime._equity_contract
+
+    def broken(self: DeskRuntime, spec: EquityDeskSpecV2) -> Any:
+        if spec.intent_id == "eq-a":
+            raise KeyError("a bug confined to one position")
+        return real(self, spec)
+
+    monkeypatch.setattr(DeskRuntime, "_equity_contract", broken)
+    _confirm_stop(rig)
+    assert [(s.order.orderRef, s.order.totalQuantity) for s in rig.sells()] == [
+        ("trex:desk:eq-b", 2)
+    ]
+    assert _failures(rig) == [("eq-a", "KeyError")]
+
+
+def test_a_connection_loss_inside_one_position_still_fails_the_tick(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lost gateway is not confined to a structure: the tick propagates
+    it (the loop's gateway_lost exit), as before."""
+    rig.open_position()
+
+    def lost(self: DeskRuntime, spec: EquityDeskSpecV2) -> Any:
+        raise ConnectionError("socket closed")
+
+    monkeypatch.setattr(DeskRuntime, "_equity_contract", lost)
+    with pytest.raises(ConnectionError):
+        rig.rt.tick()
+    assert _health(rig)["last_error"] == "ConnectionError"
+    assert _failures(rig) == []
 
 
 # ------------------------------------------------------------ exit watch

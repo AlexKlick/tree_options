@@ -73,10 +73,20 @@ desk-owned long EQUITY positions.
   the open whole shares only, repriced down (cancel, confirm, replace) when
   the bid falls below it. No resting broker stop exists.
 - **Holdings check** before ANY sell: the broker's position in the bound
-  account and conId must equal the book's open shares (every live desk
-  equity position on that contract summed). A mismatch, a fractional or
-  non-STK row sends nothing and records ``reconciliation_required`` (urgent
-  push); the next tick retries.
+  account and conId must show at least the book's open shares (every live
+  desk equity position on that contract summed); the sell is only the
+  position's own open shares. Fewer shares, a fractional or non-STK row
+  sends nothing and records ``reconciliation_required`` (urgent push); the
+  next tick retries. More shares (an outside holding) are flagged the same
+  way but never block the exit: reconciliation blocks entries only (C2.5).
+  A restart that finds the sell gone (``_equity_exit_without_trade``)
+  expects exactly the book plus the outside holding seen at the sell.
+- **Containment.** A failure confined to one structure, or to the option
+  lane's prepare/snapshot, is recorded (``structure_tick_failed``, urgent)
+  and every other structure still runs: one bad spec never starves another
+  position's exits. The degraded tick reports its error class in
+  ``monitor.json`` and does not refresh the heartbeat (no new entry arms).
+  CLOSED option structures are never prepared again.
 - **PAUSE_ENTRIES** (``contracts.layout``) cancels the unfilled remainder
   of any working entry, option or equity; it never blocks an exit. HALT is
   unchanged (no new orders, exits included). A partial entry that ends
@@ -166,6 +176,9 @@ QUOTE_FRESH_S = 60
 #: ib_async ``Ticker.marketDataType``: 1 real-time (2 frozen, 3 delayed, 4
 #: delayed-frozen); only real-time quotes drive equity exits
 REALTIME_MARKET_DATA = 1
+#: errors that mean the gateway connection went (``supervised_desk``'s
+#: DISCONNECT_ERRORS): never contained to one structure, the tick fails
+_CONNECTION_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError, OSError)
 
 
 def desk_order_ref(structure_id: str) -> str:
@@ -334,6 +347,8 @@ _NOTIFY_EVENTS: dict[str, str] = {
     DeskEvent.RECONCILIATION_REQUIRED.value: "urgent",
     "equity_contract_mismatch": "urgent",
     "equity_unqualified": "urgent",
+    # one structure's tick failed (contained): its exits are not running
+    "structure_tick_failed": "urgent",
     "backup_failed": "default",
     "entry_request": "default",
     "entry_filled": "default",
@@ -384,6 +399,8 @@ class DeskRuntime:
         self._tick_equities: dict[str, EquityDeskSpecV2] = {}
         self._quote_guarded: set[str] = set()
         self._quote_blind: dict[str, str] = {}  # symbol -> first blind instant
+        # the first contained failure's class in the last tick, else None
+        self._degraded: str | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -602,21 +619,38 @@ class DeskRuntime:
             # Re-raised: the loop propagates and the unit restarts (unchanged).
             self._write_health(type(error).__name__)
             raise
-        self._write_health(None)
+        # a structure's contained failure still counts as a failing tick
+        self._write_health(self._degraded)
 
     def _tick(self) -> None:
+        """One tick. A failure confined to one structure (or to the option
+        lane's prepare/snapshot) is contained: recorded, and every other
+        structure still runs, so one bad spec can never starve another
+        position's exits. Such a degraded tick reports its error class in
+        ``monitor.json`` and leaves the heartbeat alone (the arm gate stays
+        shut for new entries). Spec loading, the live-order view and a lost
+        gateway still fail the whole tick, as before."""
         now = self._now()
         specs, equities = self._all_specs()
         self._tick_equities = equities
         book = self._book(specs, equities)
-        if specs:
-            self.ib.prepare([s.structure for s in specs.values()])
+        failed: list[str] = []
+        active = {
+            sid: spec
+            for sid, spec in specs.items()
+            if book.structures[sid].status is not Status.CLOSED
+        }
+        ready = self._prepare_options(active, failed)
         live = {str(getattr(t.order, "orderRef", "") or ""): t for t in self.ib._ib.openTrades()}
-        snap = self._snapshot(specs, now)
         halt = self.paths.halt().exists()
         flatten = self.paths.flatten().exists()
         paused = self.paths.pause_entries().exists()
-        for sid, spec in specs.items():
+        try:
+            snap = self._snapshot(ready, now)
+        except Exception as error:
+            self._contain("options", error, failed)
+            ready = {}  # no quotes: no option structure acts this tick
+        for sid, spec in ready.items():
             st = book.structures[sid]
             if st.status is Status.CLOSED:
                 continue
@@ -624,22 +658,86 @@ class DeskRuntime:
                 self._structure_tick(
                     spec, st, snap, live, halt=halt, flatten=flatten, paused=paused, now=now
                 )
+            except Exception as error:
+                self._contain(sid, error, failed)
             finally:
                 self._save(book)
         for sid, equity in equities.items():
             st = book.structures[sid]
-            if st.status is not Status.CLOSED:
-                try:
-                    self._equity_tick(
-                        equity, st, book, live, halt=halt, flatten=flatten, paused=paused, now=now
-                    )
-                finally:
-                    self._save(book)
-            if st.status is Status.CLOSED:
-                self._equity_release(sid)
-        self._equity_watch(equities, book, now)
-        book.heartbeat = now
+            try:
+                if st.status is not Status.CLOSED:
+                    try:
+                        self._equity_tick(
+                            equity,
+                            st,
+                            book,
+                            live,
+                            halt=halt,
+                            flatten=flatten,
+                            paused=paused,
+                            now=now,
+                        )
+                    finally:
+                        self._save(book)
+                if st.status is Status.CLOSED:
+                    self._equity_release(sid)
+            except Exception as error:
+                self._contain(sid, error, failed)
+        try:
+            self._equity_watch(equities, book, now)
+        except Exception as error:
+            self._contain("equity_watch", error, failed)
+        self._degraded = failed[0] if failed else None
+        if not failed:
+            book.heartbeat = now
         self._save(book)
+
+    def _prepare_options(
+        self, active: Mapping[str, DeskSpec], failed: list[str]
+    ) -> dict[str, DeskSpec]:
+        """Qualify and subscribe the non-CLOSED option structures (a CLOSED
+        one is never prepared again: past its expiry IBKR cannot qualify its
+        legs). One batch as before; when the batch fails, each structure on
+        its own, so a structure that cannot be prepared is contained and
+        skipped this tick while the others run."""
+        if not active:
+            return {}
+        try:
+            self.ib.prepare([s.structure for s in active.values()])
+            return dict(active)
+        except Exception as error:
+            if self._connection_lost(error):
+                raise
+        ready: dict[str, DeskSpec] = {}
+        for sid, spec in active.items():
+            try:
+                if not self.ib.leg_con_ids(sid):
+                    self.ib.prepare([spec.structure])
+                ready[sid] = spec
+            except Exception as error:
+                self._contain(sid, error, failed)
+        return ready
+
+    def _connection_lost(self, error: Exception) -> bool:
+        """A connection-class error, or any error once the session reads
+        disconnected: the loop's ``gateway_lost`` (never contained)."""
+        if isinstance(error, _CONNECTION_ERRORS):
+            return True
+        try:
+            return not self.ib.connected
+        except Exception:  # an unreadable session state is not a live session
+            return True
+
+    def _contain(self, scope: str, error: Exception, failed: list[str]) -> None:
+        """Record a failure confined to ``scope`` (a structure id, or a lane)
+        and let the tick go on; a lost connection re-raises. The error
+        class only: broker errors can carry account details."""
+        if self._connection_lost(error):
+            raise error
+        name = type(error).__name__
+        failed.append(name)
+        log.error("desk tick: %s failed (%s); the other structures still ran", scope, name)
+        self._note_once(scope, "structure_tick_failed", key=name, error=name)
 
     def beat(self) -> None:
         """Heartbeat only (outside the session: no decisions, no orders).
@@ -1480,8 +1578,15 @@ class DeskRuntime:
         return total
 
     def _reconcile(
-        self, spec: EquityDeskSpecV2, *, why: str, broker_qty: Decimal, book_qty: int
+        self,
+        spec: EquityDeskSpecV2,
+        *,
+        why: str,
+        broker_qty: Decimal,
+        book_qty: int,
+        outside_qty: int = 0,
     ) -> None:
+        extra = {"outside_qty": outside_qty} if outside_qty else {}
         self._note_once(
             spec.intent_id,
             DeskEvent.RECONCILIATION_REQUIRED.value,
@@ -1491,6 +1596,7 @@ class DeskRuntime:
             con_id=spec.position.con_id,
             broker_qty=_qty_text(broker_qty),
             book_qty=book_qty,
+            **extra,
         )
 
     def _equity_held(self, spec: EquityDeskSpecV2, book_qty: int) -> int | None:
@@ -1518,15 +1624,24 @@ class DeskRuntime:
         return int(total)
 
     def _holdings_ok(self, spec: EquityDeskSpecV2, st: StructureState, book: BookState) -> bool:
-        """The holdings check every sell passes: the broker holds exactly
-        the shares the book says (never sell what is not shown held)."""
+        """The holdings check every sell passes: the broker shows at least
+        every share the book says the desk holds in the contract (never
+        sell what is not shown held). Shares beyond them are an outside
+        holding: flagged (``reconciliation_required``, ``holdings_excess``)
+        but never a block, since reconciliation stops entries only (C2.5).
+        The sell is the position's open shares, so the excess stays. The
+        excess is remembered (``exit_outside_qty``) for a restart that finds
+        the sell gone."""
         want = self._equity_book_qty(spec, st, book)
         held = self._equity_held(spec, want)
         if held is None:
             return False
-        if held != want or st.open_qty > held:
+        if held < want:
             self._reconcile(spec, why="holdings_mismatch", broker_qty=Decimal(held), book_qty=want)
             return False
+        if held > want:
+            self._reconcile(spec, why="holdings_excess", broker_qty=Decimal(held), book_qty=want)
+        st.exit_outside_qty = held - want
         return True
 
     def _equity_entry_without_trade(
@@ -1576,8 +1691,13 @@ class DeskRuntime:
         holdings check. True: the book agrees with the broker (closed now,
         or a remainder the normal flow re-sells). False: held, noted.
 
-        Shares flat beyond what today's executions explain wait for the
-        operator's ``RESOLVE-FLAT-<sid>`` file, as for options."""
+        The broker must show the book's shares plus exactly the outside
+        holding seen when the sell went out (``exit_outside_qty``): a sell
+        from an earlier session can have filled unseen (today's executions
+        do not reach it), and an outside holding that moved meanwhile could
+        hide that fill, so re-selling could sell outside shares. Shares flat
+        beyond what today's executions explain wait for the operator's
+        ``RESOLVE-FLAT-<sid>`` file, as for options."""
         sid = spec.intent_id
         evidence = self._equity_executions(spec, st.exit_order)
         if evidence is None:
@@ -1604,7 +1724,8 @@ class DeskRuntime:
         held = self._equity_held(spec, want)
         if held is None:
             return False
-        if held == want:
+        outside = st.exit_outside_qty
+        if held == want + outside:
             if st.open_qty <= 0:
                 st.to(Status.CLOSED, now)
                 st.close_reason = st.exit_reason or "flat"
@@ -1616,7 +1737,7 @@ class DeskRuntime:
                     via="evidence",
                 )
             return True
-        if st.open_qty > 0 and held == want - st.open_qty:
+        if st.open_qty > 0 and held == want + outside - st.open_qty:
             resolve = self.paths.resolve_flat(sid)
             if resolve.exists():
                 unpriced = st.open_qty
@@ -1637,7 +1758,13 @@ class DeskRuntime:
                 operator=f"verify flat at the broker, then touch {resolve.name}",
             )
             return False
-        self._reconcile(spec, why="holdings_mismatch", broker_qty=Decimal(held), book_qty=want)
+        self._reconcile(
+            spec,
+            why="holdings_mismatch",
+            broker_qty=Decimal(held),
+            book_qty=want,
+            outside_qty=outside,
+        )
         return False
 
     def _equity_close(
