@@ -45,6 +45,8 @@ import re
 import statistics
 import sys
 import time
+from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -53,7 +55,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from tree_options.desk import intraday_action_graph as iag
-from tree_options.trex.discovery.llm import LlmError, chat_json
+from tree_options.trex.discovery.llm import PROVIDERS, REQUEST_TIMEOUT, LlmError, chat_json
 from tree_options.trex.grant_policy import QuotaWindow, load_windows
 
 if TYPE_CHECKING:  # outcomes imports hindsight, which imports this module
@@ -182,6 +184,66 @@ def parse_choice(reply: dict[str, Any], valid_ids: set[str]) -> tuple[str | None
     return str(choice), note
 
 
+@dataclass(frozen=True)
+class RetryPolicy:
+    """How one board call survives a transient provider error, and when a run
+    stops asking (owner ruling 2026-10-21, default 4a; DESK-LAB.md).
+
+    - one retry per entry of ``delays_s`` (two: 5 s, then 20 s), only on a
+      transient error (``transient_reason``); anything else fails at once;
+    - after a timeout, every later attempt of the board runs with the
+      configured timeout times ``timeout_growth`` (20 s -> 40 s on zai);
+    - ``wall_cap_s`` bounds the board: a retry starts only when at least
+      ``min_attempt_s`` is left after its delay, and runs with at most the
+      time left. The first attempt keeps the provider's configured timeout;
+    - ``breaker_after`` consecutive FINAL failures in one run stop that run's
+      remaining model boards (recorded as skipped, never as failures)."""
+
+    delays_s: tuple[float, ...] = (5.0, 20.0)
+    timeout_growth: float = 2.0
+    wall_cap_s: float = 90.0
+    min_attempt_s: float = 1.0
+    breaker_after: int = 6
+
+
+#: the board-call policy every lab run (and so the challenge game) uses
+BOARD_RETRY = RetryPolicy()
+
+#: transport exception names (``chat_json`` reports ``<provider>: <name>``)
+#: that mean the provider or the path to it hiccupped, not the request
+TRANSIENT_EXCEPTIONS = frozenset(
+    {
+        "TimeoutError",
+        "URLError",
+        "ConnectionError",
+        "ConnectionResetError",
+        "ConnectionRefusedError",
+        "ConnectionAbortedError",
+        "BrokenPipeError",
+        "RemoteDisconnected",
+        "IncompleteRead",
+    }
+)
+_HTTP_RE = re.compile(r"^HTTP (\d{3})$")
+
+
+def transient_reason(error: LlmError) -> str | None:
+    """The retry reason of a transient error (``"HTTP 429"``, ``"HTTP 503"``,
+    ``"TimeoutError"``, ``"URLError"``, ...), or None when retrying cannot
+    help: any other 4xx, a parse or envelope error, a truncated reply, a
+    model mismatch, a missing key."""
+    _provider, _sep, tail = str(error).partition(": ")
+    status = _HTTP_RE.match(tail)
+    if status is not None:
+        code = int(status.group(1))
+        return tail if code == 429 or 500 <= code <= 599 else None
+    return tail if tail in TRANSIENT_EXCEPTIONS else None
+
+
+def _configured_timeout(provider: str) -> float:
+    return float(PROVIDERS.get(provider, {}).get("timeout", REQUEST_TIMEOUT))
+
+
 def ask_board(
     provider: str,
     rows: list[dict[str, Any]],
@@ -189,15 +251,50 @@ def ask_board(
     transport: Any = None,
     model: str | None = None,
     policy_prompt: str | None = None,
+    retry: RetryPolicy | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One model call; raises LlmError on failure (the caller records it)."""
+    """One board's model call; raises LlmError on the FINAL failure (the
+    caller records it). ``retry=None`` (the default, kept by the direct
+    callers in longrun and lab_overnight) makes exactly one attempt; a
+    ``RetryPolicy`` retries transient errors under its delays and wall cap.
+    ``trace``, when given, receives ``attempts``, ``retry_reasons`` (one per
+    retry made) and ``retry_stopped: "wall_cap"`` when the cap cut a retry."""
     kwargs: dict[str, Any] = {}
     if transport is not None:
         kwargs["transport"] = transport
     if model is not None:
         kwargs["model"] = model
-    reply, _used_model = chat_json(provider, board_prompt(rows, policy_prompt), **kwargs)
-    return reply
+    messages = board_prompt(rows, policy_prompt)
+    reasons: list[str] = []
+    record = trace if trace is not None else {}
+    record.update({"attempts": 1, "retry_reasons": reasons})
+    if retry is None:
+        reply, _used_model = chat_json(provider, messages, **kwargs)
+        return reply
+    configured = _configured_timeout(provider)
+    timeout = configured  # the first attempt is never shortened by the cap
+    started = clock()
+    while True:
+        try:
+            reply, _used_model = chat_json(provider, messages, timeout=timeout, **kwargs)
+            return reply
+        except LlmError as error:
+            reason = transient_reason(error)
+            if reason is None or len(reasons) >= len(retry.delays_s):
+                raise
+            delay = retry.delays_s[len(reasons)]
+            if retry.wall_cap_s - (clock() - started) - delay < retry.min_attempt_s:
+                record["retry_stopped"] = "wall_cap"
+                raise
+            reasons.append(reason)
+            sleep(delay)
+            grown = "TimeoutError" in reasons
+            base = configured * retry.timeout_growth if grown else configured
+            timeout = min(base, retry.wall_cap_s - (clock() - started))
+            record["attempts"] = len(reasons) + 1
 
 
 # ---------------------------------------------------------------- board v2
@@ -444,12 +541,25 @@ def run_lab(
     transport: Any = None,
     now: datetime | None = None,
     burn_gate: bool = True,
+    retry: RetryPolicy | None = BOARD_RETRY,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """One scored run. Model policies are quota-gated; rules policies are not.
 
     ``burn_gate=False`` is for a caller that gates the burn itself and holds
     its own hard caps (the challenge game's standing budget): the windows are
-    still recorded verbatim in the run document either way."""
+    still recorded verbatim in the run document either way.
+
+    Board calls retry transient errors under ``retry`` (``BOARD_RETRY``; None
+    is one attempt and no breaker). ``model_failures`` counts boards whose
+    FINAL attempt failed; ``model_attempts``, ``first_attempt_failures`` and
+    the ``retry_reasons`` tally keep the provider's noise visible. After
+    ``retry.breaker_after`` consecutive final failures the run asks no more
+    boards: they are listed under ``breaker`` and counted in
+    ``skipped_breaker``, never as calls or failures. These fields (and a
+    receipt's ``attempts``/``retry_reasons``) appear only when a first attempt
+    failed, so a clean run's document is byte-identical to before."""
     now = now or datetime.now(UTC)
     raw = json.loads(config.bundle.read_bytes())
     sessions = latest_sessions(raw, config.sessions)
@@ -467,23 +577,42 @@ def run_lab(
     decisions: dict[str, str | None] = {}
     receipts: list[dict[str, Any]] = []
     boards = 0
+    planned = 0  # boards the run would show: asked + skipped by the breaker
+    consecutive_failures = 0
+    breaker: dict[str, Any] | None = None
     if model:
         provider = model_provider(policy)
         for day in sessions:
-            for clock in iag.schedule_for(day):
-                if boards >= config.boards_cap:
+            for slot in iag.schedule_for(day):
+                if planned >= config.boards_cap:
                     break
-                packet = iag.decision_packet(raw, day, clock)
+                packet = iag.decision_packet(raw, day, slot)
                 rows = board_rows(packet)
                 if not rows:
                     continue
-                boards += 1
+                planned += 1
                 snapshot = packet["snapshot_id"]
-                started = time.monotonic()
-                receipt = {"snapshot": snapshot, "provider": provider, "board_rows": len(rows)}
+                if breaker is not None:
+                    breaker["skipped_snapshots"].append(snapshot)
+                    continue
+                boards += 1
+                started = clock()
+                receipt: dict[str, Any] = {
+                    "snapshot": snapshot,
+                    "provider": provider,
+                    "board_rows": len(rows),
+                }
+                trace: dict[str, Any] = {}
                 try:
                     reply = ask_board(
-                        provider, rows, transport=transport, policy_prompt=config.policy_prompt
+                        provider,
+                        rows,
+                        transport=transport,
+                        policy_prompt=config.policy_prompt,
+                        retry=retry,
+                        sleep=sleep,
+                        clock=clock,
+                        trace=trace,
                     )
                     choice, note = parse_choice(reply, {r["id"] for r in rows})
                     receipt.update(
@@ -498,11 +627,24 @@ def run_lab(
                     )
                     if choice is not None:
                         decisions[snapshot] = choice
+                    consecutive_failures = 0
                 except LlmError as error:
                     receipt.update({"ok": False, "error": str(error)[:200]})
-                receipt["latency_s"] = round(time.monotonic() - started, 3)
+                    consecutive_failures += 1
+                    if retry is not None and consecutive_failures >= retry.breaker_after:
+                        receipt["breaker_tripped"] = True
+                        breaker = {
+                            "after_consecutive_failures": retry.breaker_after,
+                            "tripped_at": snapshot,
+                            "skipped_snapshots": [],
+                        }
+                if trace.get("retry_reasons") or "retry_stopped" in trace:
+                    # sparse: a board answered on its first attempt keeps the
+                    # pre-2026-10-21 receipt bytes (the env-v1 pins)
+                    receipt.update(trace)
+                receipt["latency_s"] = round(clock() - started, 3)
                 receipts.append(receipt)
-            if boards >= config.boards_cap:
+            if planned >= config.boards_cap:
                 break
 
     if policy == FIRST_ROW_POLICY:
@@ -512,8 +654,8 @@ def run_lab(
         # the 2026-09-30 measured-cost verdict); it plays the same boards
         # so the challenge digest can pair against it per session.
         for day in sessions:
-            for clock in iag.schedule_for(day):
-                packet = iag.decision_packet(raw, day, clock)
+            for slot in iag.schedule_for(day):
+                packet = iag.decision_packet(raw, day, slot)
                 rows = board_rows(packet)
                 if rows:
                     decisions[packet["snapshot_id"]] = rows[0]["id"]
@@ -522,6 +664,22 @@ def run_lab(
         summary = iag.replay(
             raw, sessions, decisions if model else None, policy="no_trade" if model else policy
         )
+    first_attempt_failures = sum(
+        1 for r in receipts if not r.get("ok") or int(r.get("attempts", 1)) > 1
+    )
+    resilience: dict[str, Any] = {}
+    if first_attempt_failures:  # the breaker cannot trip without failures
+        # sparse: a run whose every board answered on its first attempt keeps
+        # the pre-2026-10-21 document bytes (the env-v1 pins); absent fields
+        # read as one attempt per board, no retries, no breaker
+        reasons = Counter(reason for r in receipts for reason in r.get("retry_reasons", []))
+        resilience = {
+            "model_attempts": sum(int(r.get("attempts", 1)) for r in receipts),
+            "first_attempt_failures": first_attempt_failures,
+            "retry_reasons": dict(sorted(reasons.items())),
+            "skipped_breaker": 0 if breaker is None else len(breaker["skipped_snapshots"]),
+            "breaker": breaker,
+        }
     document: dict[str, Any] = {
         "schema": LAB_SCHEMA,
         "policy": policy,
@@ -531,6 +689,7 @@ def run_lab(
         "boards_shown": boards,
         "model_calls": len(receipts),
         "model_failures": sum(1 for r in receipts if not r.get("ok")),
+        **resilience,
         "windows": [{"name": w.name, "under_using": w.under_using} for w in windows],
         "summary": summary,
         "receipts": receipts,
