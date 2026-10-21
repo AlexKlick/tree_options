@@ -820,13 +820,13 @@ class TestTimerSchedule:
             assert "PYTHONPATH=/home/alexk/documents/tree_options/src" in text, unit
 
     def test_decision_clocks_stay_pinned_to_the_cost_module(self) -> None:
-        outcomes = (
-            Path(__file__).resolve().parents[2] / "src/tree_options/desk/outcomes.py"
-        ).read_text()
-        assert 'decision_clocks_et=("10:00", "10:15", "15:15")' in outcomes, (
+        # Compare values, not source text: a source grep broke on a pure formatting change.
+        from tree_options.desk import outcomes
+
+        assert outcomes.decision_clocks_et == ("10:00", "10:15", "15:15"), (
             "outcomes.py's decision clocks moved: forward_minutes must be revisited"
         )
-        assert fm.DECISION_CLOCKS == ("10:00", "10:15", "15:15")
+        assert fm.DECISION_CLOCKS == outcomes.decision_clocks_et
 
 
 # ------------------------------------------------------------ CLI
