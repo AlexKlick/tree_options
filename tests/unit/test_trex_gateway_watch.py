@@ -885,3 +885,194 @@ class TestColdRestartPreAlert:
         )[1]
         titles = [a.title for a in back if a.kind == "notify"]
         assert titles == ["trex: IB Gateway back"]
+
+    def test_a_watched_week_sends_one_prealert_and_no_missed_notice(self) -> None:
+        """The watch up all weekend, ticking every 5 min from Saturday noon to
+        Monday noon: the normal path is exactly one pre-alert, no missed
+        notice, no watch_gap event."""
+        prior: dict[str, Any] = {}
+        details: list[str] = []
+        start = _sunday("2026-10-03", 12, 0)
+        for step in range(0, 48 * 3600 + 1, 300):
+            prior, actions = decide(self._healthy(start + step), prior, urgency=LOUD)
+            details += [a.detail for a in actions if a.kind == "notify"]
+        assert details == ["cold_restart_prealert"]
+        assert not [e for e in prior["events"] if e["kind"] == "watch_gap"]
+
+
+class TestColdRestartMissed:
+    """2026-10-18: the host was down from Sat 10-17 03:05 MDT to Sun 10-18
+    18:48 MDT, straight through the 11:00-13:00 ET pre-alert window, and the
+    cold restart went by in silence. The first tick after such a gap sends
+    ONE "missed" notice instead (never a pre-alert hours late), books the
+    restart and logs a watch_gap event. Times below are written by hand:
+    03:05 MDT = 05:05 EDT, 18:48 MDT = 20:48 EDT."""
+
+    RESTART = "2026-10-18"  # the Sunday whose 12:00 ET restart was missed
+    DOWN_FROM = _sunday("2026-10-17", 5, 5)  # Sat 05:05 ET, the last tick
+    WOKE = _sunday("2026-10-18", 20, 48)  # Sun 20:48 ET, the first tick back
+
+    def _healthy(self, now: float) -> Observation:
+        return _obs(now=now, api_ok=True, ibc=parse_ibc_log(COMPLETED))
+
+    def _last_tick(self, at: float) -> dict[str, Any]:
+        return decide(self._healthy(at), {}, urgency=LOUD)[0]
+
+    def test_the_1018_outage_gets_exactly_one_missed_notice(self) -> None:
+        prior = self._last_tick(self.DOWN_FROM)
+        state, actions = decide(self._healthy(self.WOKE), prior, urgency=LOUD)
+        notes = [a for a in actions if a.kind == "notify"]
+        assert [a.detail for a in notes] == ["cold_restart_missed"]
+        note = notes[0]
+        assert note.priority == LOUD.priority
+        assert "missed" in note.title.lower()
+        # watch was down from X to Y, and what to do about it
+        assert "Sat 05:05 ET" in note.message and "Sun 20:48 ET" in note.message
+        assert "39h 43m" in note.message  # 05:05 Sat -> 20:48 Sun, by hand
+        assert "Sun 12:00 ET" in note.message
+        assert "re-login" in note.message
+        assert "http" not in note.message
+        assert state["cold_restart_notified_for"] == self.RESTART
+        gaps = [e for e in state["events"] if e["kind"] == "watch_gap"]
+        assert len(gaps) == 1
+        assert gaps[0]["at"] == self.WOKE
+        assert (gaps[0]["from"], gaps[0]["to"]) == (self.DOWN_FROM, self.WOKE)
+
+    def test_it_is_never_a_late_prealert(self) -> None:
+        prior = self._last_tick(self.DOWN_FROM)
+        assert cold_restart_due(prior, self.WOKE) is None  # the window has closed
+        _, actions = decide(self._healthy(self.WOKE), prior, urgency=LOUD)
+        notes = [a for a in actions if a.kind == "notify"]
+        assert "cold_restart_prealert" not in [a.detail for a in notes]
+        assert not any("in 1 hour" in a.title or "just happened" in a.title for a in notes)
+
+    def test_the_next_ticks_stay_silent(self) -> None:
+        """Idempotent: booked once, the rest of the week says nothing."""
+        state, _ = decide(self._healthy(self.WOKE), self._last_tick(self.DOWN_FROM), urgency=LOUD)
+        sent = 0
+        for step in range(60, 6 * 86_400, 600):
+            state, actions = decide(self._healthy(self.WOKE + step), state, urgency=LOUD)
+            sent += sum(1 for a in actions if a.detail == "cold_restart_missed")
+        assert sent == 0
+        assert len([e for e in state["events"] if e["kind"] == "watch_gap"]) == 1
+        assert state["cold_restart_notified_for"] == self.RESTART
+
+    def test_a_watch_that_was_up_when_the_window_opened_owes_nothing(self) -> None:
+        """Last tick at 11:30 ET Sunday (the pre-alert went out), then the
+        host slept until the evening: the operator was told; no missed notice."""
+        prior: dict[str, Any] = {}
+        for at in (_sunday(self.RESTART, 10, 59), _sunday(self.RESTART, 11, 30)):
+            prior = decide(self._healthy(at), prior, urgency=LOUD)[0]
+        assert prior["cold_restart_notified_for"] == self.RESTART
+        _, actions = decide(self._healthy(self.WOKE), prior, urgency=LOUD)
+        assert [a for a in actions if a.kind == "notify"] == []
+
+    def test_waking_inside_the_lookback_keeps_the_just_happened_ping(self) -> None:
+        """The existing lookback path is unchanged: back at 12:30 ET the
+        pre-alert's "just happened" form goes out, and nothing more later."""
+        prior = self._last_tick(self.DOWN_FROM)
+        state, actions = decide(self._healthy(_sunday(self.RESTART, 12, 30)), prior, urgency=LOUD)
+        assert [a.detail for a in actions if a.kind == "notify"] == ["cold_restart_prealert"]
+        _, later = decide(self._healthy(self.WOKE), state, urgency=LOUD)
+        assert [a for a in later if a.kind == "notify"] == []
+
+    def test_the_lookback_boundary_leaves_no_silent_second(self) -> None:
+        """The pre-alert window is 11:00 up to (not including) 13:00 ET: at
+        12:59:59 a returning watch still sends the pre-alert; from 13:00:00
+        the restart is missed, not late. No instant gets neither."""
+        prior = self._last_tick(self.DOWN_FROM)
+        closes = _sunday(self.RESTART, 13, 0)
+        _, inside = decide(self._healthy(closes - 1), prior, urgency=LOUD)
+        assert [a.detail for a in inside if a.kind == "notify"] == ["cold_restart_prealert"]
+        _, closed = decide(self._healthy(closes), prior, urgency=LOUD)
+        assert [a.detail for a in closed if a.kind == "notify"] == ["cold_restart_missed"]
+
+    def test_no_prior_check_is_not_a_gap(self) -> None:
+        """A fresh ledger cannot say the watch was down: stay silent."""
+        state, actions = decide(self._healthy(self.WOKE), {}, urgency=LOUD)
+        assert [a for a in actions if a.kind == "notify"] == []
+        assert not [e for e in state["events"] if e["kind"] == "watch_gap"]
+
+    def test_a_multi_week_outage_reports_only_the_latest_restart(self) -> None:
+        prior = self._last_tick(_sunday("2026-10-03", 9, 0))
+        state, actions = decide(self._healthy(self.WOKE), prior, urgency=LOUD)
+        assert [a.detail for a in actions if a.kind == "notify"] == ["cold_restart_missed"]
+        assert state["cold_restart_notified_for"] == self.RESTART
+
+    def test_quiet_hours_hold_it_and_the_first_loud_tick_delivers(self) -> None:
+        """Back at 02:00 ET Monday (inside quiet hours): the gap is logged
+        and held, then delivered once, still naming the original gap."""
+        hush = Urgency("default", REMIND_EVERY_S, quiet=True)
+        day = Urgency("default", REMIND_EVERY_S, quiet=False)
+        back = _sunday("2026-10-19", 2, 0)
+        prior = self._last_tick(self.DOWN_FROM)
+        held, actions = decide(self._healthy(back), prior, urgency=hush)
+        assert [a for a in actions if a.kind == "notify"] == []
+        assert held["cold_restart_notified_for"] != self.RESTART
+        state, actions = decide(self._healthy(back + 60), held, urgency=hush)
+        assert [a for a in actions if a.kind == "notify"] == []
+        morning = _sunday("2026-10-19", 9, 0)
+        state, actions = decide(self._healthy(morning), state, urgency=day)
+        notes = [a for a in actions if a.kind == "notify"]
+        assert [a.detail for a in notes] == ["cold_restart_missed"]
+        assert "Mon 02:00 ET" in notes[0].message  # the gap ended at wake-up
+        assert state["cold_restart_notified_for"] == self.RESTART
+        assert len([e for e in state["events"] if e["kind"] == "watch_gap"]) == 1
+        _, again = decide(self._healthy(morning + 60), state, urgency=day)
+        assert [a for a in again if a.kind == "notify"] == []
+
+    def test_a_failed_push_stays_owed_and_retries_once_delivered(self, tmp_path: Path) -> None:
+        """Through watch_once: the transport fails, the restart is NOT
+        booked, the notice retries after the backoff, then goes quiet."""
+        path = tmp_path / "gateway.json"
+        path.write_text(json.dumps(self._last_tick(self.DOWN_FROM)))
+        sent: list[str] = []
+
+        def tick(now: float, delivered: bool) -> dict[str, Any]:
+            def notify(title: str, message: str, priority: str) -> bool:
+                sent.append(title)
+                return delivered
+
+            return watch_once(
+                path,
+                FakeDocker(COMPLETED),
+                probe=lambda: (True, "server_version=187"),
+                notify=notify,
+                now=now,
+                login_url="u",
+            )
+
+        failed = tick(self.WOKE, delivered=False)
+        assert len(sent) == 1
+        assert failed["cold_restart_notified_for"] != self.RESTART
+        tick(self.WOKE + 60, delivered=True)
+        assert len(sent) == 1  # inside the retry backoff
+        done = tick(self.WOKE + NOTIFY_RETRY_S, delivered=True)
+        assert len(sent) == 2 and "missed" in sent[-1].lower()
+        assert done["cold_restart_notified_for"] == self.RESTART
+        tick(self.WOKE + NOTIFY_RETRY_S + 60, delivered=True)
+        assert len(sent) == 2
+        saved = json.loads(path.read_text())
+        assert len([e for e in saved["events"] if e["kind"] == "watch_gap"]) == 1
+
+
+class TestLastColdRestart:
+    """The most recent Sunday 12:00 ET at or before now, DST-correct (hand
+    values; 2026-11-01 is the fall-back Sunday)."""
+
+    @pytest.mark.parametrize(
+        ("now", "expected"),
+        [
+            (datetime(2026, 10, 18, 20, 48), "2026-10-18T12:00:00-04:00"),
+            (datetime(2026, 10, 18, 12, 0), "2026-10-18T12:00:00-04:00"),
+            (datetime(2026, 10, 18, 11, 59), "2026-10-11T12:00:00-04:00"),
+            (datetime(2026, 11, 1, 11, 30), "2026-10-25T12:00:00-04:00"),
+            (datetime(2026, 11, 1, 12, 0), "2026-11-01T12:00:00-05:00"),
+            (datetime(2026, 11, 7, 23, 0), "2026-11-01T12:00:00-05:00"),
+        ],
+    )
+    def test_most_recent_sunday_noon(self, now: datetime, expected: str) -> None:
+        from tree_options.trex.gateway_watch import last_cold_restart
+
+        local = now.replace(tzinfo=ZoneInfo("America/New_York"))
+        assert last_cold_restart(local).isoformat() == expected

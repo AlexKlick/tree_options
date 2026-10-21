@@ -32,7 +32,11 @@ Each run:
    machine that was off at 11:00 still says it on its next tick). It is a
    reminder only: it starts nothing and books no restart budget. The
    "IB Gateway back" ping that follows the restart is the recovery arm
-   above, not a second pre-alert;
+   above, not a second pre-alert. A watch that slept through the whole
+   window (2026-10-18: the host was down from Saturday to Sunday evening)
+   never sends the pre-alert late; its first tick back sends ONE
+   ``cold_restart_missed`` notice naming the gap and logs a ``watch_gap``
+   event;
 6. writes ``~/.local/state/trex/gateway.json`` for the cockpit banner.
 
 Raw log lines are parsed in memory and never persisted.
@@ -93,7 +97,9 @@ COLD_RESTART_HOUR = 12
 COLD_RESTART_LEAD_S = 3600  # the pre-alert window opens 60 min ahead
 COLD_RESTART_LOOKBACK_S = 3600  # and stays open 60 min past it: a machine
 # that was off at 11:00 ET still gets the ping on its next tick instead of
-# staying silent until the next Sunday
+# staying silent until the next Sunday. Past that the pre-alert is over for
+# good; a watch that was down when the window opened owes a "missed" notice
+# instead (cold_restart_missed), never a pre-alert hours late.
 
 # Per-call deadlines. A worst-case run (every call timing out) must finish
 # inside the unit's TimeoutStartSec, or systemd can kill it between docker
@@ -320,6 +326,63 @@ def next_cold_restart(now: datetime) -> datetime:
     return candidate
 
 
+def last_cold_restart(now: datetime) -> datetime:
+    """The most recent Sunday 12:00 ET at or before ``now``: the next one
+    after the same wall-clock moment a week earlier (calendar days, so a
+    DST change inside the week cannot shift it by an hour)."""
+    local = now.astimezone(ET)
+    return next_cold_restart(local - calendar_days(7))
+
+
+@dataclass(frozen=True)
+class WatchGap:
+    """The watch was not running when a cold restart's pre-alert window
+    opened: it saw nothing from ``down_from`` (its last tick) to
+    ``down_to`` (its first tick back)."""
+
+    restart: datetime
+    down_from: float
+    down_to: float
+    new: bool  # first seen on this tick (the watch_gap event is logged once)
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "for": self.restart.date().isoformat(),
+            "from": self.down_from,
+            "to": self.down_to,
+        }
+
+
+def cold_restart_missed(prior: dict[str, Any], now: float) -> WatchGap | None:
+    """The gap owed a ``cold_restart_missed`` notice at ``now`` (epoch), or
+    None.
+
+    Owed when, for the most recent Sunday restart R: the pre-alert window
+    has closed (``now >= R + LOOKBACK``; before that, :func:`cold_restart_due`
+    owns R), R is not booked in ``cold_restart_notified_for``, and the last
+    tick before this one was older than ``R - LEAD`` (the watch was down when
+    the window opened). A fresh ledger (no ``checked_at``) proves no gap.
+    Detected once; while quiet hours or a failed push keep it owed, it rides
+    in the state as ``cold_restart_gap`` so the notice still names the
+    original gap.
+    """
+    restart = last_cold_restart(datetime.fromtimestamp(now, ET))
+    key = restart.date().isoformat()
+    if prior.get("cold_restart_notified_for") == key:
+        return None
+    if now - restart.timestamp() < COLD_RESTART_LOOKBACK_S:
+        return None  # still the pre-alert's window
+    pending = prior.get("cold_restart_gap")
+    if isinstance(pending, dict) and pending.get("for") == key:
+        down_from, down_to = _num(pending.get("from")), _num(pending.get("to"))
+        if down_from is not None and down_to is not None:
+            return WatchGap(restart, down_from, down_to, new=False)
+    last = _num(prior.get("checked_at"))
+    if last is None or last >= restart.timestamp() - COLD_RESTART_LEAD_S:
+        return None
+    return WatchGap(restart, last, now, new=True)
+
+
 def cold_restart_due(prior: dict[str, Any], now: float, *, quiet: bool = False) -> datetime | None:
     """The Sunday 12:00 ET whose pre-alert is owed at ``now`` (epoch), or
     None.
@@ -328,7 +391,8 @@ def cold_restart_due(prior: dict[str, Any], now: float, *, quiet: bool = False) 
     :data:`COLD_RESTART_LOOKBACK_S` after it -- 11:00-13:00 ET on the
     Sunday. The lookback is what makes a machine that was off at 11:00 still
     tell the operator on its next tick instead of staying silent for a week;
-    it is deliberately small, so the ping never lands hours late. The restart
+    it is deliberately small, so the ping never lands hours late (a watch
+    that slept through all of it gets :func:`cold_restart_missed`). The restart
     is looked up from ``now - LOOKBACK`` so that a tick AFTER noon still
     resolves to the Sunday that just happened rather than to the next one.
 
@@ -366,6 +430,16 @@ def _cold_restart_message(restart: datetime, now: float) -> tuple[str, str]:
         f"The gateway restarts weekly at {when}. Open positions have no exit machine "
         "until it logs back in. Nothing to do unless the API is still down 15 "
         "minutes after the restart.",
+    )
+
+
+def _cold_restart_missed_message(gap: WatchGap, status: str) -> tuple[str, str]:
+    return (
+        "trex: IB Gateway cold restart missed",
+        f"The gateway watch was down from {_et(gap.down_from)} to {_et(gap.down_to)} "
+        f"({_span(gap.down_to - gap.down_from)}) and sent no pre-alert for the weekly "
+        f"cold restart at {_et(gap.restart.timestamp())}. Please confirm the gateway "
+        f"re-login (IBKR Mobile 2FA) went through; gateway status now: {status}.",
     )
 
 
@@ -452,9 +526,34 @@ def decide(
         actions.append(Action("notify", "cold_restart_prealert", title, text, urgency.priority))
         cold_for = cold.date().isoformat()
 
+    # a restart whose whole pre-alert window the watch slept through: one
+    # "missed" notice, never a late pre-alert (see cold_restart_missed). An
+    # upcoming restart's own pre-alert supersedes last week's miss.
+    gap = cold_restart_missed(prior, obs.now) if cold is None else None
+    if gap is not None:
+        failed_at = _num(prior.get("notify_failed_at"))
+        backoff = failed_at is not None and obs.now - failed_at < NOTIFY_RETRY_S
+        if not urgency.quiet and not backoff:
+            title, text = _cold_restart_missed_message(gap, status)
+            actions.append(Action("notify", "cold_restart_missed", title, text, urgency.priority))
+            cold_for = gap.restart.date().isoformat()
+
     events: list[dict[str, Any]] = list(prior.get("events", []))[-MAX_EVENTS:]
     if prev != status:
         events.append({"at": obs.now, "kind": "status", "detail": f"{prev} -> {status}"})
+    if gap is not None and gap.new:
+        events.append(
+            {
+                "at": obs.now,
+                "kind": "watch_gap",
+                "detail": (
+                    f"watch down {_et(gap.down_from)} -> {_et(gap.down_to)}: missed the "
+                    f"{_et(gap.restart.timestamp())} cold-restart pre-alert window"
+                ),
+                "from": gap.down_from,
+                "to": gap.down_to,
+            }
+        )
     state: dict[str, Any] = {
         "status": status,
         "since": since,
@@ -475,6 +574,8 @@ def decide(
         "restart_hold_until": hold if held else None,
         "vnc_restarts": vnc_restarts,
         "cold_restart_notified_for": cold_for or prior.get("cold_restart_notified_for"),
+        # a missed notice still owed (quiet hours, failed push); cleared once booked
+        "cold_restart_gap": gap.record() if gap is not None else None,
         **notified,
         "events": events,
     }
@@ -648,6 +749,10 @@ def watch_once(
             elif kind == "notify":
                 ok = notify(action.title, action.message, action.priority)
                 settle_push(state, prior, ok, now)
+                if not ok and action.detail == "cold_restart_missed":
+                    # not delivered, not booked: cold_restart_gap keeps it
+                    # owed for the retry after NOTIFY_RETRY_S
+                    state["cold_restart_notified_for"] = prior.get("cold_restart_notified_for")
         state["events"].append(
             {"at": now, "kind": kind, "detail": detail, "ok": ok, "dry_run": dry_run}
         )

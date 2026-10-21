@@ -59,6 +59,15 @@ TONIGHT = "20261002T010000Z"
 YESTERDAY = "20261001T010000Z"
 
 
+@pytest.fixture(autouse=True)
+def verdicts(tmp_path, monkeypatch) -> Path:
+    """Every CLI run writes its verdict; keep it inside the test's tmp dir
+    (systemd hands the unit ``$STATE_DIRECTORY``; tests stand in for it)."""
+    directory = tmp_path / "ops-verdicts"
+    monkeypatch.setenv("STATE_DIRECTORY", str(directory))
+    return directory
+
+
 def _epoch(moment: datetime) -> float:
     return moment.timestamp()
 
@@ -343,3 +352,177 @@ class TestInFlightDowngrade:
         out = capsys.readouterr().out
         assert rc == 0
         assert "in flight" not in out
+
+
+# ------------------------------------------------------------ durable verdicts
+#
+# journald on this host keeps less than a day (vendor SystemMaxUse=1000M), so
+# a verdict that only reaches the journal is gone by the next morning. Each
+# run also leaves <state>/<game-stamp>.json and latest.json, where the game
+# stamp is the slot judged (tonight's 19:00 Denver cutoff, written by hand
+# as 20261002T010000Z for NOW), never the digest found: a stale digest must
+# not overwrite the night it came from.
+
+
+def _run(store: Path, now: str = "2026-10-02T01:30:00+00:00", *extra: str) -> int:
+    return watch.main(["--store", str(store), "--now", now, *extra])
+
+
+def _read(path: Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def test_ok_verdict_lands_in_the_game_stamp_file_and_latest(tmp_path, verdicts, capsys):
+    store = _build_store(tmp_path)
+    assert _run(store) == 0
+    printed = capsys.readouterr().out.splitlines()
+    night = verdicts / f"{TONIGHT}.json"
+    assert sorted(p.name for p in verdicts.iterdir()) == sorted([night.name, "latest.json"])
+    doc = _read(night)
+    assert _read(verdicts / "latest.json") == doc
+    assert doc["game_stamp"] == TONIGHT
+    assert doc["cutoff_utc"] == "2026-10-02T01:00:00+00:00"
+    assert doc["checked_at"] == "2026-10-02T01:30:00+00:00"
+    assert doc["verdict"] == "ok" and doc["exit_code"] == 0
+    assert doc["digest_id"] == TONIGHT and doc["digest_status"] == "ok"
+    assert doc["standings_fresh"] is True and doc["model_failures"] == 0
+    assert doc["failures"] == [] and doc["warnings"] == []
+    assert doc["store"] == str(store)
+    # the file mirrors the journal, line for line
+    assert doc["journal_lines"] == printed
+
+
+def test_failed_verdict_is_kept_under_tonights_slot(tmp_path, verdicts, monkeypatch, capsys):
+    monkeypatch.setattr(watch, "_challenge_service_running", lambda: False)
+    store = _build_store(tmp_path, stamp=None, standings=False)
+    assert _run(store) == 1
+    printed = capsys.readouterr().out.splitlines()
+    doc = _read(verdicts / f"{TONIGHT}.json")
+    assert doc["verdict"] == "fail" and doc["exit_code"] == 1
+    assert doc["digest_id"] is None
+    assert [f.split(":", 1)[0] for f in doc["failures"]] == ["digest-missing"]
+    assert doc["journal_lines"] == printed
+
+
+def test_stale_digest_is_judged_under_tonight_not_its_own_night(tmp_path, verdicts, monkeypatch):
+    monkeypatch.setattr(watch, "_challenge_service_running", lambda: False)
+    store = _build_store(
+        tmp_path,
+        stamp=YESTERDAY,
+        digest_mtime=datetime(2026, 10, 1, 1, 2, tzinfo=UTC),
+        standings_mtime=datetime(2026, 10, 1, 1, 3, tzinfo=UTC),
+    )
+    assert _run(store) == 1
+    assert not (verdicts / f"{YESTERDAY}.json").exists()
+    doc = _read(verdicts / f"{TONIGHT}.json")
+    assert doc["digest_id"] == YESTERDAY and doc["verdict"] == "fail"
+
+
+def test_in_flight_verdict_records_the_downgrade(tmp_path, verdicts, monkeypatch, capsys):
+    monkeypatch.setattr(watch, "_challenge_service_running", lambda: True)
+    assert _run(tmp_path / "empty-store") == 0
+    printed = capsys.readouterr().out.splitlines()
+    doc = _read(verdicts / "latest.json")
+    assert doc["verdict"] == "in_flight" and doc["exit_code"] == 0
+    assert doc["journal_lines"] == printed and len(printed) == 1
+    # what the strict watch saw is still on record for the morning read
+    assert doc["failures"][0].startswith("digest-missing:")
+
+
+def test_systemd_state_directory_wins_first_entry(tmp_path, monkeypatch):
+    first, second = tmp_path / "a", tmp_path / "b"
+    monkeypatch.setenv("STATE_DIRECTORY", f"{first}:{second}")
+    assert watch.verdict_dir() == first
+
+
+def test_manual_runs_fall_back_to_the_units_state_path(tmp_path, monkeypatch):
+    """Without systemd: $XDG_STATE_HOME, else ~/.local/state, plus the
+    unit's StateDirectory= suffix, so manual and timer runs share a home."""
+    monkeypatch.delenv("STATE_DIRECTORY", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+    assert watch.verdict_dir() == tmp_path / "xdg/trex/ops-verdicts/desk-digest-watch"
+    monkeypatch.delenv("XDG_STATE_HOME")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert watch.verdict_dir() == tmp_path / "home/.local/state/trex/ops-verdicts/desk-digest-watch"
+
+
+def test_state_dir_flag_overrides_the_environment(tmp_path, verdicts):
+    store = _build_store(tmp_path)
+    elsewhere = tmp_path / "flagged"
+    assert _run(store, "2026-10-02T01:30:00+00:00", "--state-dir", str(elsewhere)) == 0
+    assert (elsewhere / "latest.json").exists()
+    assert not verdicts.exists()
+
+
+def test_each_file_is_replaced_atomically_from_a_sibling_temp(tmp_path, verdicts, monkeypatch):
+    real_replace = os.replace
+    moves: list[tuple[Path, Path]] = []
+
+    def recording(src, dst):
+        moves.append((Path(src), Path(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(watch.os, "replace", recording)
+    assert _run(_build_store(tmp_path)) == 0
+    assert [dst.name for _, dst in moves] == [f"{TONIGHT}.json", "latest.json"]
+    for src, dst in moves:
+        assert src.parent == dst.parent == verdicts and src != dst
+    assert sorted(p.name for p in verdicts.iterdir()) == sorted([f"{TONIGHT}.json", "latest.json"])
+
+
+def test_a_failed_write_leaves_latest_intact_and_the_exit_code_alone(
+    tmp_path, verdicts, monkeypatch, capsys
+):
+    verdicts.mkdir(parents=True)
+    previous = {"game_stamp": YESTERDAY, "verdict": "ok"}
+    (verdicts / "latest.json").write_text(json.dumps(previous))
+
+    def broken(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(watch.os, "replace", broken)
+    assert _run(_build_store(tmp_path)) == 0
+    captured = capsys.readouterr()
+    # stdout (the journal surface) is exactly the usual summary line
+    assert captured.out.splitlines() == [
+        f"desk-digest-watch: summary: OK digest={TONIGHT} status=ok "
+        "model_failures=0 standings_fresh=true"
+    ]
+    assert "verdict-unwritten" in captured.err
+    assert _read(verdicts / "latest.json") == previous
+    assert [p.name for p in verdicts.iterdir()] == ["latest.json"]  # no temp left behind
+
+
+def test_replaying_an_older_night_never_regresses_latest(tmp_path, verdicts, monkeypatch):
+    monkeypatch.setattr(watch, "_challenge_service_running", lambda: False)
+    store = _build_store(tmp_path)
+    assert _run(store) == 0
+    # a manual replay of the previous evening (21:30 ET on 09-30)
+    _run(store, "2026-10-01T01:30:00+00:00")
+    assert (verdicts / f"{YESTERDAY}.json").exists()
+    assert _read(verdicts / "latest.json")["game_stamp"] == TONIGHT
+
+
+def test_repo_unit_declares_the_state_directory_the_script_falls_back_to():
+    unit = (REPO_ROOT / "deploy" / "desk" / "desk-digest-watch.service").read_text()
+    lines = [line.strip() for line in unit.splitlines()]
+    assert "StateDirectory=trex/ops-verdicts/desk-digest-watch" in lines
+    assert "ProtectHome=read-only" in lines
+    assert watch.STATE_SUBDIR == "trex/ops-verdicts/desk-digest-watch"
+
+
+def test_journald_retention_dropin_documents_the_owner_install():
+    """A documentation copy (the owner installs it with sudo); zz- sorts
+    after the vendor's pop.conf so its caps win."""
+    import configparser
+
+    path = REPO_ROOT / "deploy" / "host" / "journald" / "zz-trex-retention.conf"
+    parser = configparser.ConfigParser(strict=True)  # keys come back lowercased
+    parser.read_string(path.read_text())
+    assert parser.sections() == ["Journal"]
+    assert dict(parser["Journal"]) == {
+        "systemmaxuse": "6G",
+        "systemkeepfree": "20G",
+        "maxretentionsec": "45day",
+    }
+    assert sorted(["pop.conf", path.name])[-1] == path.name
