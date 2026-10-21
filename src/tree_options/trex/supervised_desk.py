@@ -14,9 +14,15 @@ supervised trades therefore runs HERE:
   assignment plan, and the reconciled open/day loss of the E5 book plus the
   legacy books) -> intent -> permit -> ``DeskRuntime.register`` -> ``send``.
   The outcome is ``requests/<intent_id>.result.json``; nothing is retried.
-- **The loop.** Inside the session: process the inbox, then one
-  ``DeskRuntime.tick``. Outside it: heartbeat only. A lost gateway
-  connection exits 6 (systemd restarts; the arm gate goes stale).
+- **The loop.** Inside the session: one ``DeskRuntime.tick``, then the
+  inbox. Outside it: heartbeat only. A lost gateway connection, seen at
+  the loop top or raised mid tick/inbox/sleep, is one ``gateway_lost``
+  event (error class only) and exit 6 (systemd restarts; the arm gate goes
+  stale); shutdown failures cannot mask that code.
+- **Restart.** A request the previous owner claimed but never answered
+  gets an ``interrupted`` result reporting what the supervised outbox
+  proves about its order (``order_sent`` yes / no / unknown, unknown
+  meaning reconciliation required). It is never re-sent.
 
 ``owner.json`` in the run dir names this process's owner epoch: the operator
 grants the mandate for exactly that epoch (``python -m
@@ -49,7 +55,7 @@ from pydantic import Field
 
 from tree_options.action_graph.capital import CapitalProfile
 from tree_options.action_graph.proposal import canonical_bytes
-from tree_options.execution import OrderIntent
+from tree_options.execution import ExecutionLifecycleError, OrderIntent
 from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.trex import notify
 from tree_options.trex.clock import ET, is_session
@@ -57,6 +63,7 @@ from tree_options.trex.desk_runtime import (
     DeskPaths,
     DeskRuntime,
     DividendSource,
+    RuntimeLocked,
     assignment_plan,
     exit_owner_ready,
 )
@@ -69,6 +76,7 @@ from tree_options.trex.supervised import (
     SupervisedRefused,
     active_mandate,
     issue_permit,
+    project_intent,
     record_intent,
     send,
 )
@@ -90,6 +98,13 @@ RESULT_SCHEMA = "trex-desk-entry-result/1"
 SESSION_OPEN = time(9, 30)
 SESSION_END = time(16, 15)
 EXIT_DISCONNECTED = 6
+#: what the run loop treats as a lost gateway even while the SDK still
+#: reports connected (ConnectionError and TimeoutError are OSErrors; named
+#: for the reader). Anything raised once the session reads disconnected
+#: counts too; anything else while connected is a bug and propagates.
+DISCONNECT_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError, OSError)
+#: an interrupted request whose order the outbox cannot prove either way
+_UNKNOWN: Mapping[str, str] = {"order_sent": "unknown", "note": "reconciliation_required"}
 
 
 class EntryRequest(StrictModel):
@@ -318,16 +333,116 @@ class SupervisedDesk:
                 os.rename(path, claimed)  # the claim: processed exactly once
             except FileNotFoundError:
                 continue
-            result = self._handle(claimed, path.name.removesuffix(".json"))
-            out = path.with_name(path.name.removesuffix(".json") + ".result.json")
-            tmp = out.with_name(out.name + ".tmp")
-            tmp.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n")
-            os.replace(tmp, out)
+            name = path.name.removesuffix(".json")
+            result = self._handle(claimed, name)
+            self._write_result(name, result)
             self.runtime._event(
                 "entry_request", intent=result.get("intent_id"), status=result["status"]
             )
             results.append(result)
         return results
+
+    def result_path(self, name: str) -> Path:
+        return self.requests_dir() / f"{name}.result.json"
+
+    def _write_result(self, name: str, result: Mapping[str, Any]) -> None:
+        out = self.result_path(name)
+        tmp = out.with_name(out.name + ".tmp")
+        tmp.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n")
+        os.replace(tmp, out)
+
+    def recover_interrupted_requests(self) -> list[dict[str, Any]]:
+        """Answer every request a previous owner claimed and never answered.
+
+        A claim (``<id>.claimed.json``) with no result means that owner died
+        or lost the gateway mid-request. The request is NEVER re-sent: the
+        claim stays put, and the result (status ``interrupted``) reports
+        what the supervised outbox proves about its order. Lock holder only:
+        a live owner's in-flight claim is not an orphan."""
+        if self.runtime._lock_handle is None:
+            raise RuntimeLocked("recovery requires the runtime lock")
+        recovered: list[dict[str, Any]] = []
+        inbox = self.requests_dir()
+        if not inbox.is_dir():
+            return recovered
+        for claimed in sorted(inbox.glob("*.claimed.json")):
+            name = claimed.name.removesuffix(".claimed.json")
+            if self.result_path(name).exists():
+                continue
+            # process_requests sends only under intent_id == the file name
+            result: dict[str, Any] = {
+                "schema": RESULT_SCHEMA,
+                "at": self.clock().isoformat(),
+                "request": name,
+                "intent_id": name,
+                "status": "interrupted",
+                "reason": "owner_stopped_before_result",
+                **self._outbox_report(name),
+            }
+            self._write_result(name, result)
+            self.runtime._event(
+                "entry_request",
+                intent=name,
+                status="interrupted",
+                order_sent=result["order_sent"],
+            )
+            recovered.append(result)
+        return recovered
+
+    def _outbox_report(self, intent_id: str) -> dict[str, Any]:
+        """What the supervised outbox PROVES about one intent's order.
+
+        ``order_sent`` is "no" only where ``send`` cannot have reached the
+        broker: no outbox entry, a still-pending intent (``send`` renames
+        pending -> sending durably BEFORE its broker call) or a
+        ``confirmed_not_submitted`` reconciliation. "yes" is a broker
+        receipt (acknowledged or rejected) or ``confirmed_submitted``.
+        Everything else, an unreadable outbox included, is "unknown" with
+        ``reconciliation_required``: never a guess."""
+        sup = self.supervised
+        report: dict[str, Any]
+        try:
+            if sup.reconciled(intent_id).exists():
+                doc = json.loads(sup.reconciled(intent_id).read_bytes())
+                verdict = doc.get("verdict")
+                report = {"outbox_state": "reconciled", "verdict": verdict}
+                if verdict == "confirmed_not_submitted":
+                    report["order_sent"] = "no"
+                elif verdict == "confirmed_submitted":
+                    report["order_sent"] = "yes"
+                    report["broker_order_id"] = doc.get("broker_order_id")
+                else:
+                    report.update(_UNKNOWN)
+            elif sup.terminal(intent_id).exists():
+                receipt = json.loads(sup.terminal(intent_id).read_bytes())
+                outcome = str(receipt.get("outcome"))
+                report = {"outbox_state": outcome, "receipt": receipt}
+                if outcome in ("acknowledged", "rejected"):
+                    report["order_sent"] = "yes"
+                else:
+                    report.update(_UNKNOWN)
+            elif sup.sending(intent_id).exists():
+                report = {"outbox_state": "sending", **_UNKNOWN}
+            elif sup.pending(intent_id).exists():
+                report = {"outbox_state": "pending", "order_sent": "no"}
+            else:
+                report = {"outbox_state": "absent", "order_sent": "no"}
+        except (OSError, ValueError, AttributeError):
+            report = {"outbox_state": "unreadable", **_UNKNOWN}
+        # the journal's projection, as context only: order_sent never reads it
+        try:
+            report["execution_state"] = project_intent(sup, intent_id).state.value
+        except (
+            SupervisedRefused,
+            ExecutionLifecycleError,
+            OSError,
+            ValueError,
+            AttributeError,
+            KeyError,
+            TypeError,
+        ):
+            report["execution_state"] = None
+        return report
 
     def _handle(self, claimed: Path, name: str) -> dict[str, Any]:
         now = self.clock()
@@ -469,25 +584,65 @@ def run_loop(
     stop: Callable[[], bool],
     max_ticks: int | None = None,
 ) -> int:
-    """Tick until ``stop()``; 6 when the gateway connection is lost."""
+    """Tick until ``stop()``; 6 when the gateway connection is lost.
+
+    The loss is caught where it surfaces: at the loop top, or as an error
+    out of the tick, the inbox, the beat or the sleep (``DISCONNECT_ERRORS``,
+    or anything once the session reads disconnected). Either way one
+    ``gateway_lost`` event and exit 6; any other error propagates. A
+    request claimed when the gateway went is answered at the next start
+    (``recover_interrupted_requests``), never re-sent."""
     ticks = 0
     while not stop():
-        if not desk.ib.connected:
-            desk.runtime._event("gateway_lost")
-            return EXIT_DISCONNECTED
-        now = desk.clock()
-        if in_session(now):
-            # tick FIRST: the arm gate (exit_owner_ready) reads this beat, so
-            # the first request after a restart is not refused for a stale one
-            desk.runtime.tick()
-            desk.process_requests()
-        else:
-            desk.runtime.beat()
-        ticks += 1
-        if max_ticks is not None and ticks >= max_ticks:
-            break
-        desk.ib.sleep(interval_s)
+        if not _connected(desk):
+            return _gateway_lost(desk, "loop")
+        stage = "clock"
+        try:
+            now = desk.clock()
+            if in_session(now):
+                # tick FIRST: the arm gate (exit_owner_ready) reads this beat,
+                # so the first request after a restart is not refused for a
+                # stale one
+                stage = "tick"
+                desk.runtime.tick()
+                stage = "requests"
+                desk.process_requests()
+            else:
+                stage = "beat"
+                desk.runtime.beat()
+            ticks += 1
+            if max_ticks is not None and ticks >= max_ticks:
+                break
+            stage = "sleep"
+            desk.ib.sleep(interval_s)
+        except Exception as error:
+            if isinstance(error, DISCONNECT_ERRORS) or not _connected(desk):
+                return _gateway_lost(desk, stage, error)
+            raise
     return 0
+
+
+def _connected(desk: SupervisedDesk) -> bool:
+    try:
+        return bool(desk.ib.connected)
+    except Exception:  # an unreadable session state is not a live session
+        return False
+
+
+def _gateway_lost(desk: SupervisedDesk, stage: str, error: BaseException | None = None) -> int:
+    """Record the loss and return the restart code. The error CLASS only
+    (as desk_runtime does): broker errors can carry account details. The
+    record is best-effort, so a failed write cannot turn exit 6 into a
+    crash."""
+    detail: dict[str, str] = {"stage": stage}
+    if error is not None:
+        detail["error"] = type(error).__name__
+    log.error("gateway lost (%s)", ", ".join(f"{k}={v}" for k, v in sorted(detail.items())))
+    try:
+        desk.runtime._event("gateway_lost", **detail)
+    except Exception as failure:
+        log.error("gateway_lost event not recorded: %s", type(failure).__name__)
+    return EXIT_DISCONNECTED
 
 
 def _dividend_source() -> DividendSource:
@@ -627,10 +782,7 @@ def main(argv: list[str] | None = None) -> int:
             fence.acquire()
             account_fences.append(fence)
     except Exception:
-        for fence in account_fences:
-            fence.close()
-        runtime.release()
-        ib.disconnect()
+        _shutdown(account_fences, runtime, ib)
         raise
     desk = SupervisedDesk(
         ib,
@@ -655,6 +807,12 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     try:
+        try:
+            desk.recover_interrupted_requests()
+        except Exception as error:
+            # reporting only: the exit owner must still come up. The claims
+            # stay unanswered (and are never re-sent); the next start retries.
+            log.error("interrupted-request recovery failed: %s", type(error).__name__)
         if args.qualification_receipt is not None:
             try:
                 receipt = qualify_owned_account(
@@ -671,10 +829,24 @@ def main(argv: list[str] | None = None) -> int:
                 log.warning("IBKR read-only qualification unavailable: %s", type(error).__name__)
         return run_loop(desk, interval_s=args.interval, stop=lambda: stopping)
     finally:
-        for fence in account_fences:
-            fence.close()
-        runtime.release()
-        ib.disconnect()
+        _shutdown(account_fences, runtime, ib)
+
+
+def _shutdown(fences: Sequence[Any], runtime: DeskRuntime, ib: IbkrTrex) -> None:
+    """Close the account fences, release the run dir, disconnect; each step
+    isolated, so a failure (a socket already gone, a lock file vanished)
+    neither skips the next step nor masks the loop's exit code (6 after a
+    lost gateway) or its exception. The error class only."""
+    steps: list[tuple[str, Callable[[], None]]] = [
+        *(("account fence close", fence.close) for fence in fences),
+        ("runtime release", runtime.release),
+        ("gateway disconnect", ib.disconnect),
+    ]
+    for what, step in steps:
+        try:
+            step()
+        except Exception as error:
+            log.warning("%s failed: %s", what, type(error).__name__)
 
 
 if __name__ == "__main__":

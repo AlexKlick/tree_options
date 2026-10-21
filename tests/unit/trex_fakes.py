@@ -427,7 +427,13 @@ class SupervisedGateway(FakeGateway):
     """FakeGateway plus what the supervised adapter and canary collector read:
     connection state, managed accounts, account values, the all-client
     views (open orders across clients, completed orders, executions) and
-    a scripted order-status walk advanced by each ``sleep``."""
+    a scripted order-status walk advanced by each ``sleep``.
+
+    ``drop(method, error)`` scripts a lost connection: the NEXT call of
+    ``openTrades`` / ``qualifyContracts`` / ``placeOrder`` / ``sleep``
+    raises ``error`` (one-shot) and, unless ``disconnect=False``, the
+    session reads as disconnected from then on (ib_async raises
+    ``ConnectionError`` once its socket is gone)."""
 
     def __init__(self, con_ids: dict[ContractKey, int], account: str = "DU1234567") -> None:
         super().__init__(con_ids=con_ids)
@@ -446,9 +452,30 @@ class SupervisedGateway(FakeGateway):
         self.views_error: BaseException | None = None
         self._perm = 7000
         self._walk: dict[int, list[str]] = {}
+        self.faults: dict[str, tuple[BaseException, bool]] = {}
+
+    def drop(self, method: str, error: BaseException, *, disconnect: bool = True) -> None:
+        self.faults[method] = (error, disconnect)
+
+    def _fault(self, method: str) -> None:
+        fault = self.faults.pop(method, None)
+        if fault is None:
+            return
+        error, disconnect = fault
+        if disconnect:
+            self.is_connected = False
+        raise error
 
     def isConnected(self) -> bool:
         return self.is_connected
+
+    def qualifyContracts(self, *contracts: Any) -> list[Any]:
+        self._fault("qualifyContracts")
+        return super().qualifyContracts(*contracts)
+
+    def openTrades(self) -> list[FakeTrade]:
+        self._fault("openTrades")
+        return super().openTrades()
 
     def managedAccounts(self) -> list[str]:
         return list(self.accounts)
@@ -460,6 +487,7 @@ class SupervisedGateway(FakeGateway):
         ]
 
     def placeOrder(self, contract: Any, order: Any) -> FakeTrade:
+        self._fault("placeOrder")
         trade = super().placeOrder(contract, order)
         self._perm += 1
         order.permId = self._perm
@@ -477,6 +505,7 @@ class SupervisedGateway(FakeGateway):
         )
 
     def sleep(self, seconds: float) -> None:
+        self._fault("sleep")
         super().sleep(seconds)
         for trade in self.trades:
             walk = self._walk.get(id(trade))

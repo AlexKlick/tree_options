@@ -8,7 +8,10 @@ live NVDA book's known worst case: 5 x $0.21 + 3 x $1.24 = $477.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import logging
+from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -17,11 +20,13 @@ from typing import Any
 import pytest
 
 from tests.unit.trex_fakes import SupervisedGateway, position_row
+from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.desk import book as desk_book
 from tree_options.time.sessions import shift_instant
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.clock import ET
 from tree_options.trex.desk_runtime import DeskPaths, DeskRuntime
+from tree_options.trex.desk_spec import DeskSpec
 from tree_options.trex.ibkr import IbkrTrex
 from tree_options.trex.plan import ExitRules, Leg, LegStructure
 from tree_options.trex.state import BookState, Status, StructureState
@@ -664,6 +669,51 @@ def test_open_loss_reservation_parities_with_the_desk_book_view(
         assert screen > held, f"{sid}: the screen must be the conservative one"
 
 
+# The desk lane (``_desk``) keeps a PLANNED structure past its entry date at
+# cap (planned_dormant_after_entry=False): divergence (3), the one case where
+# the book view reserves MORE than the screen.
+DESK_LANE_B = {"debit-planned-past-entry": "200.00"}
+
+
+@pytest.mark.parametrize("sid,struct,state,today,a,b,common", PARITY_CASES)
+def test_open_loss_reservation_parities_through_the_owner_spec_envelope(
+    tmp_path, sid, struct, state, today, a, b, common
+):
+    """D1 gap: the parity above calls ``_position`` directly. The rails read
+    the owner's specs through ``desk.book._desk``, which must unwrap the
+    ``trex-desk-spec/1`` envelope ``DeskRuntime.register`` writes (the same
+    canonical bytes here); a wrapper bug there drops the position or turns
+    it into a problem, and this case fails."""
+    specs = tmp_path / "specs"
+    specs.mkdir()
+    envelope = DeskSpec(
+        intent_id=f"intent-{struct.id}",
+        account_id=ACCOUNT,
+        structure=struct,
+        entry_order_ref=supervised_order_ref(f"intent-{struct.id}"),
+        registered_at=T0,
+    )
+    spec_path = specs / f"{struct.id}.json"
+    spec_path.write_bytes(canonical_bytes(envelope.model_dump(mode="json", by_alias=True)))
+    assert json.loads(spec_path.read_bytes())["schema"] == "trex-desk-spec/1"
+    book = BookState([struct.id])
+    book.structures[struct.id] = state
+    book.save(tmp_path / "book.json")
+    positions, problems = desk_book._desk(specs, tmp_path / "book.json", today)
+    assert problems == [], f"{sid}: the owner's envelope did not read"
+    held = sum((p.max_loss_usd for p in positions), Decimal(0))
+    screen = open_loss_reservation(book, {struct.id: RiskView.of(struct)}, today)
+    expected = DESK_LANE_B.get(sid, b)
+    assert screen == Decimal(a), f"{sid}: the screen moved"
+    assert held == Decimal(expected), f"{sid}: the owner-envelope book view moved"
+    if sid in DESK_LANE_B:
+        assert screen < held, f"{sid}: the desk lane holds a dormant PLANNED at cap"
+    elif common:
+        assert screen == held, f"{sid}: the two reservations disagree"
+    else:
+        assert screen > held, f"{sid}: the screen must be the conservative one"
+
+
 def test_planned_past_date_divergence_between_screen_and_desk_book():
     """The desk lane keeps a PLANNED structure at its cap even past its
     entry date (desk.book passes planned_dormant_after_entry=False), while
@@ -735,9 +785,291 @@ def test_a_lost_gateway_exits_for_a_restart(rig):
     rig.gw.is_connected = False
     # bounded: a loop that ignored the lost connection must FAIL, not hang
     assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=3) == EXIT_DISCONNECTED
+    (lost,) = _events(rig, "gateway_lost")
+    assert lost["stage"] == "loop"
 
 
 def test_owner_file_names_the_epoch_to_grant(rig):
     rig.desk.write_owner()
     doc = json.loads(rig.desk.owner_path().read_text())
     assert (doc["owner_epoch"], doc["client_id"]) == (EPOCH, SUPERVISED_CLIENT_ID)
+
+
+# ------------------------------------------- D2: the connection drops mid-loop
+
+# a provider message that can carry account details: it must never reach a
+# log line or an event (desk_runtime records the error class only)
+SECRET = "acct DU1234567 provider detail"
+
+
+def _events(rig: Rig, name: str) -> list[dict[str, Any]]:
+    path = rig.paths.events()
+    if not path.exists():
+        return []
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    return [r for r in records if r["event"] == name]
+
+
+@pytest.mark.parametrize(
+    "method, stage, error, disconnect",
+    [
+        ("openTrades", "tick", ConnectionError, True),
+        ("qualifyContracts", "requests", ConnectionError, True),
+        ("sleep", "sleep", ConnectionError, True),
+        # the SDK still reports connected: the error class alone decides
+        ("sleep", "sleep", ConnectionError, False),
+        ("openTrades", "tick", TimeoutError, False),
+        ("openTrades", "tick", OSError, False),
+        # ANY error once the session reads disconnected (ib_async raises
+        # whatever its torn-down client raises)
+        ("openTrades", "tick", AttributeError, True),
+        ("qualifyContracts", "requests", TypeError, True),
+    ],
+)
+def test_a_drop_mid_loop_exits_6_with_a_gateway_lost_record(
+    rig, caplog, method, stage, error, disconnect
+):
+    caplog.set_level(logging.DEBUG)
+    rig.ready()
+    if stage == "requests":
+        rig.request()  # (the request path pumps ib.sleep too: inbox stage only)
+    rig.gw.drop(method, error(SECRET), disconnect=disconnect)
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=3) == EXIT_DISCONNECTED
+    (lost,) = _events(rig, "gateway_lost")
+    assert (lost["stage"], lost["error"]) == (stage, error.__name__)
+    assert ("trex-desk gateway_lost", "urgent") in [(t, p) for t, _, p in rig.notified]
+    assert SECRET not in rig.paths.events().read_text(), "error class only"
+    assert SECRET not in caplog.text, "error class only"
+    assert "Traceback" not in caplog.text
+
+
+def test_a_bug_while_connected_still_propagates(rig):
+    rig.ready()
+    rig.gw.drop("openTrades", ValueError("a real bug"), disconnect=False)
+    with pytest.raises(ValueError, match="a real bug"):
+        run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=3)
+    assert _events(rig, "gateway_lost") == []
+
+
+def test_an_unwritable_gateway_lost_record_cannot_mask_exit_6(rig, monkeypatch):
+    def unwritable(*_: Any, **__: Any) -> None:
+        raise OSError("events.jsonl: no space left on device")
+
+    rig.ready()
+    rig.gw.drop("sleep", ConnectionError(SECRET))
+    monkeypatch.setattr(rig.runtime, "_event", unwritable)
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=3) == EXIT_DISCONNECTED
+
+
+# ------------------------------------- D2: a claim the dead owner never answered
+
+
+class _Killed(BaseException):
+    """The process dies here (SIGKILL, OOM): nothing after this point runs."""
+
+
+def _drop_during_preflight(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    rig.gw.drop("qualifyContracts", ConnectionError(SECRET))
+    with pytest.raises(ConnectionError):
+        rig.desk.process_requests()
+
+
+def _drop_after_the_permit(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    def register(effect: SupervisedEffect) -> Any:
+        rig.gw.is_connected = False
+        raise ConnectionError(SECRET)
+
+    monkeypatch.setattr(rig.runtime, "register", register)
+    with pytest.raises(ConnectionError):
+        rig.desk.process_requests()
+
+
+def _killed_at_the_broker_call(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    rig.gw.drop("placeOrder", _Killed())
+    with pytest.raises(_Killed):
+        rig.desk.process_requests()
+
+
+def _killed_before_the_result(outcome: str) -> Callable[[Rig, pytest.MonkeyPatch], None]:
+    """send() returned (its terminal receipt is durable); the process died
+    before the request's result file was written."""
+
+    def scenario(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+        if outcome == "uncertain":
+            rig.gw.drop("placeOrder", ConnectionError(SECRET))
+        (result,) = rig.desk.process_requests()
+        assert result["receipt"]["outcome"] == outcome
+        (rig.desk.requests_dir() / "sup-001.result.json").unlink()
+
+    return scenario
+
+
+def _reconciled_not_submitted(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    _killed_before_the_result("uncertain")(rig, monkeypatch)
+    rig.sup.reconciled("sup-001").write_text(
+        json.dumps({"intent_id": "sup-001", "verdict": "confirmed_not_submitted"})
+    )
+
+
+def _unreadable_receipt(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    _killed_before_the_result("acknowledged")(rig, monkeypatch)
+    rig.sup.terminal("sup-001").write_text("{torn")
+
+
+@pytest.mark.parametrize(
+    "scenario, outbox_state, order_sent, note",
+    [
+        (_drop_during_preflight, "absent", "no", None),
+        (_drop_after_the_permit, "pending", "no", None),
+        (_killed_at_the_broker_call, "sending", "unknown", "reconciliation_required"),
+        (_killed_before_the_result("acknowledged"), "acknowledged", "yes", None),
+        (
+            _killed_before_the_result("uncertain"),
+            "uncertain",
+            "unknown",
+            "reconciliation_required",
+        ),
+        (_reconciled_not_submitted, "reconciled", "no", None),
+        (_unreadable_receipt, "unreadable", "unknown", "reconciliation_required"),
+    ],
+)
+def test_an_orphaned_claim_gets_an_interrupted_result_and_is_never_resent(
+    rig, monkeypatch, scenario, outbox_state, order_sent, note
+):
+    rig.ready()
+    rig.request()
+    scenario(rig, monkeypatch)
+    inbox = rig.desk.requests_dir()
+    claimed = inbox / "sup-001.claimed.json"
+    assert claimed.exists() and not (inbox / "sup-001.result.json").exists(), "an orphan"
+    sends = len(rig.gw.trades)
+    # the restart: reconnected, the run-dir lock held, before the first tick
+    rig.gw.is_connected = True
+    (recovered,) = rig.desk.recover_interrupted_requests()
+    result = rig.result()
+    assert result == recovered
+    assert (result["status"], result["intent_id"], result["request"]) == (
+        "interrupted",
+        "sup-001",
+        "sup-001",
+    )
+    assert (result["outbox_state"], result["order_sent"]) == (outbox_state, order_sent)
+    assert result.get("note") == note
+    if outbox_state in ("absent", "pending"):
+        assert result["execution_state"] is None, "nothing journaled: no attempt was made"
+    if outbox_state == "sending":
+        # the journal holds the submit attempt: why the outcome is unknown
+        assert result["execution_state"] == "SUBMITTING"
+    if outbox_state == "acknowledged":
+        (trade,) = rig.gw.trades
+        assert result["receipt"]["broker_order_id"] == str(trade.order.orderId)
+    (pushed,) = [e for e in _events(rig, "entry_request") if e["status"] == "interrupted"]
+    assert (pushed["intent"], pushed["order_sent"]) == ("sup-001", order_sent)
+    # never re-sent: the claim stays, the inbox is empty, a later pass is a no-op
+    assert claimed.exists() and not (inbox / "sup-001.json").exists()
+    assert rig.desk.recover_interrupted_requests() == [], "idempotent"
+    assert rig.result() == result, "an answered claim is never rewritten"
+    assert rig.desk.process_requests() == []
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=2) == 0
+    assert len(rig.gw.trades) == sends, "zero second sends"
+
+
+def test_an_answered_claim_is_not_recovered(rig):
+    rig.ready()
+    rig.request()
+    (sent,) = rig.desk.process_requests()
+    assert rig.desk.recover_interrupted_requests() == []
+    assert rig.result() == sent
+
+
+# ---------------------------------------------------- D2: main's exit code
+
+
+class _OfflineSession(IbkrTrex):
+    """main()'s session over the fake gateway: ``connect`` opens no socket,
+    and the shutdown ``disconnect`` fails like a socket already gone."""
+
+    gateway: SupervisedGateway
+    disconnects = 0
+
+    def connect(self) -> None:
+        self._ib = self.gateway
+
+    def disconnect(self) -> None:
+        self.disconnects += 1
+        raise ConnectionError(SECRET)
+
+
+def _then_fail(real: Callable[[Any], None]) -> Callable[[Any], None]:
+    def wrapper(self: Any) -> None:
+        real(self)
+        raise OSError(SECRET)
+
+    return wrapper
+
+
+def test_main_exits_6_on_a_drop_even_when_every_cleanup_call_fails(tmp_path, monkeypatch, caplog):
+    from tree_options.trex import supervised_desk
+    from tree_options.trex.account_ownership import AccountOwnership
+
+    for var, sub in (
+        ("TREX_DESK_RUN_DIR", "desk"),
+        ("TREX_SUPERVISED_DIR", "supervised"),
+        ("TREX_ACCOUNT_OWNERS", "owners"),
+    ):
+        monkeypatch.setenv(var, str(tmp_path / sub))
+    monkeypatch.delenv("TREX_IBKR_ACCOUNT_ALIAS", raising=False)
+    paths = DeskPaths.default()
+    assert paths.root == tmp_path / "desk", "never the live owner's run dir"
+    assert SupervisedPaths.default().root == tmp_path / "supervised"
+    gw = SupervisedGateway(CON, ACCOUNT)
+    gw.drop("sleep", ConnectionError(SECRET))
+    made: list[_OfflineSession] = []
+
+    def session(**kwargs: Any) -> _OfflineSession:
+        s = _OfflineSession(**kwargs)
+        s.gateway = gw
+        made.append(s)
+        return s
+
+    monkeypatch.setattr(supervised_desk, "IbkrTrex", session)
+    monkeypatch.setattr(supervised_desk, "_dividend_source", lambda: None)
+    monkeypatch.setattr(supervised_desk.notify, "load_config", lambda *_, **__: None)
+    monkeypatch.setattr(supervised_desk.signal, "signal", lambda *_, **__: None)
+    monkeypatch.setattr(supervised_desk, "in_session", lambda now: False)
+    monkeypatch.setattr(DeskRuntime, "release", _then_fail(DeskRuntime.release))
+    monkeypatch.setattr(AccountOwnership, "close", _then_fail(AccountOwnership.close))
+    # the previous owner claimed a request and died before answering it
+    inbox = paths.root / "requests"
+    inbox.mkdir(parents=True)
+    (inbox / "sup-001.claimed.json").write_text("{}")
+    caplog.set_level(logging.DEBUG)
+
+    assert supervised_desk.main(["run", "--no-spots", "--interval", "0"]) == EXIT_DISCONNECTED
+
+    result = json.loads((inbox / "sup-001.result.json").read_text())
+    assert (result["status"], result["outbox_state"], result["order_sent"]) == (
+        "interrupted",
+        "absent",
+        "no",
+    )
+    events = [json.loads(line) for line in paths.events().read_text().splitlines()]
+    (lost,) = [e for e in events if e["event"] == "gateway_lost"]
+    assert (lost["stage"], lost["error"]) == ("sleep", "ConnectionError")
+    assert SECRET not in caplog.text and SECRET not in paths.events().read_text()
+    assert "Traceback" not in caplog.text
+    # every cleanup call still ran, each failure isolated from the next
+    fences = list((tmp_path / "owners").glob("*.lock"))
+    assert fences and all(_lock_free(f) for f in fences), "the account fence was closed"
+    assert _lock_free(paths.lock()), "the run-dir lock was released"
+    assert [s.disconnects for s in made] == [1], "the disconnect was attempted"
+
+
+def _lock_free(path: Path) -> bool:
+    with open(path, "a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return True
