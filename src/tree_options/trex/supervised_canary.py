@@ -52,9 +52,13 @@ from decimal import Decimal
 from typing import Any
 
 from tree_options.action_graph.canary import (
+    EQUITY_ENTRY_CLOSE_CUTOFF_S,
+    EQUITY_ENTRY_OPEN_DELAY_S,
     CanaryFacts,
     EquityEntryFacts,
     entry_session_blockers,
+    equity_entry_session,
+    equity_entry_window,
     package_intent_sha256,
     review_canary_package,
     review_equity_entry,
@@ -341,8 +345,14 @@ def collect_equity_screening(
     A risk snapshot that is absent, unavailable, stale or for another
     account gives no cash or loss evidence: its blocker is listed first and
     the cash and loss checks then fail closed as unknown.
+
+    Outside the regular-session entry window (``review_equity_entry``)
+    ``entry_window_closed`` blocks; the evidence records the window the
+    check instant was judged against (all None on a non-session day).
     """
     now = _now(clock)
+    session = equity_entry_session(now)
+    window = None if session is None else equity_entry_window(session)
     risk_blockers: list[str] = [b.value for b in risk_snapshot_blockers(inputs.risk, now)]
     risk = inputs.risk
     if risk is not None and not risk_blockers and risk.account_id != effect.account_id:
@@ -373,6 +383,13 @@ def collect_equity_screening(
         "limit_cents": effect.limit_cents,
         "stop_price_cents": effect.exit_policy.stop_price_cents,
         "checked_at": now.isoformat(),
+        "entry_window": {
+            "open_delay_s": EQUITY_ENTRY_OPEN_DELAY_S,
+            "close_cutoff_s": EQUITY_ENTRY_CLOSE_CUTOFF_S,
+            "session": None if session is None else session.isoformat(),
+            "start": None if window is None else window[0].isoformat(),
+            "end": None if window is None else window[1].isoformat(),
+        },
         "quote": None if quote is None else quote.model_dump(mode="json"),
         "risk_snapshot": None if risk is None else risk.model_dump(mode="json", by_alias=True),
         "notional_cents": equity_notional_cents(effect),
