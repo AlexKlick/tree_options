@@ -7747,6 +7747,146 @@ MUTANTS.extend(
 )
 
 
+# Wave 1 (2026-10-21): one or two mutants per lane, each verified killed by its lane.
+MUTANTS.extend(
+    [
+        {
+            "id": "D2-disconnect-error-class",
+            "owner": "test_a_drop_mid_loop_exits_6_with_a_gateway_lost_record",
+            "file": "src/tree_options/trex/supervised_desk.py",
+            "anchor": "if isinstance(error, DISCONNECT_ERRORS) or not _connected(desk):",
+            "replacement": "if not _connected(desk):",
+            "selectors": ["tests/unit/test_supervised_desk.py"],
+            "invariant": "a ConnectionError/TimeoutError/OSError raised mid tick/inbox/sleep exits 6 with a gateway_lost record even while the SDK still reports connected",
+        },
+        {
+            "id": "D2-interrupted-claim-never-guessed",
+            "owner": "test_an_orphaned_claim_gets_an_interrupted_result_and_is_never_resent",
+            "file": "src/tree_options/trex/supervised_desk.py",
+            "anchor": "elif sup.sending(intent_id).exists():",
+            "replacement": "elif False:",
+            "selectors": ["tests/unit/test_supervised_desk.py"],
+            "invariant": "a request interrupted after send's durable claim is reported order_sent unknown + reconciliation_required, never 'no'",
+        },
+        {
+            "id": "C01-restore-quarantines-mandate",
+            "owner": "test_restore_quarantines_authority_and_restores_the_rest",
+            "file": "src/tree_options/trex/desk_backup.py",
+            "anchor": 'and tail[0].startswith("mandate")',
+            "replacement": 'and tail[0].startswith("never-mandate")',
+            "selectors": [
+                "tests/unit/test_desk_backup.py",
+                "tests/soak/test_desk_restore_rehearsal.py",
+            ],
+            "invariant": "a restore never leaves an old mandate active",
+        },
+        {
+            "id": "C02-restore-refuses-inside-live-root",
+            "owner": "test_restore_refuses_any_destination_touching_a_live_root",
+            "file": "src/tree_options/trex/desk_backup.py",
+            "anchor": "if target == live or live in target.parents:",
+            "replacement": "if target == live:",
+            "selectors": ["tests/unit/test_desk_backup.py"],
+            "invariant": "restore never writes inside a live root",
+        },
+        {
+            "id": "L7-01-template-command-binding",
+            "owner": "test_render_refuses_template_command_outside_release_commands",
+            "file": "src/tree_options/trex/release.py",
+            "anchor": "            if command not in supported:",
+            "replacement": "            if False:",
+            "selectors": ["tests/unit/test_trex_product_release.py"],
+            "invariant": "render refuses any unit command that is not -m <supported_command> and writes nothing",
+        },
+        {
+            "id": "L7-02-inventory-read-only-verbs",
+            "owner": "test_every_probe_is_read_only",
+            "file": "scripts/trex_inventory.py",
+            "anchor": "        ok = a[2] in SYSTEMCTL_VERBS",
+            "replacement": "        ok = True",
+            "selectors": ["tests/unit/test_trex_inventory.py"],
+            "invariant": "inventory refuses every systemctl verb except list-unit-files/list-units/list-timers/show",
+        },
+        {
+            "id": "L3-capture-exit-zero-banked",
+            "owner": "test_zero_contracts_banked_exits_coverage",
+            "file": "src/tree_options/desk/forward_minutes.py",
+            "anchor": "return 0 if banked_contracts(result.session, root) else COVERAGE_EXIT",
+            "replacement": "return 0",
+            "selectors": ["tests/unit/test_desk_forward_minutes.py"],
+            "invariant": "forward-minutes exits 6 only when zero contracts banked any bars",
+        },
+        {
+            "id": "L3-per-underlying-clock-count",
+            "owner": "test_per_underlying_facts_beside_the_session_table",
+            "file": "src/tree_options/desk/forward_coverage.py",
+            "anchor": "covered_n = sum(1 for t in members if hits[t][index])",
+            "replacement": "covered_n = sum(1 for t in members if any(hits[t]))",
+            "selectors": ["tests/unit/test_desk_forward_coverage.py"],
+            "invariant": "per-underlying coverage counts a contract at clock C only when it has a bar in [C, C+15min)",
+        },
+        {
+            "id": "L4-missed-notice-booked-once",
+            "owner": "test_the_next_ticks_stay_silent",
+            "file": "src/tree_options/trex/gateway_watch.py",
+            "anchor": '    if prior.get("cold_restart_notified_for") == key:\n        return None\n    if now - restart.timestamp() < COLD_RESTART_LOOKBACK_S:',
+            "replacement": "    if now - restart.timestamp() < COLD_RESTART_LOOKBACK_S:",
+            "selectors": [
+                "tests/unit/test_trex_gateway_watch.py::TestColdRestartMissed::test_the_next_ticks_stay_silent"
+            ],
+            "invariant": "a booked cold restart (cold_restart_notified_for == R) never gets a second cold_restart_missed notice on later ticks",
+        },
+        {
+            "id": "L4-verdict-stamp-is-the-slot",
+            "owner": "test_stale_digest_is_judged_under_tonight_not_its_own_night",
+            "file": "scripts/desk_digest_watch.py",
+            "anchor": '        "game_stamp": cutoff.strftime(STAMP_FORMAT),',
+            "replacement": '        "game_stamp": result.digest_id or cutoff.strftime(STAMP_FORMAT),',
+            "selectors": [
+                "tests/unit/test_desk_digest_watch.py::test_stale_digest_is_judged_under_tonight_not_its_own_night"
+            ],
+            "invariant": "a verdict is filed under the game slot it judged (tonight's cutoff), so a stale digest never overwrites the verdict of the night it came from",
+        },
+        {
+            "id": "L5-429-not-transient",
+            "owner": "test_a_429_then_success_retries_once_and_is_not_a_failure",
+            "file": "src/tree_options/desk/lab.py",
+            "anchor": "return tail if code == 429 or 500 <= code <= 599 else None",
+            "replacement": "return tail if 500 <= code <= 599 else None",
+            "selectors": ["tests/unit/test_desk_lab.py"],
+            "invariant": "HTTP 429 is transient: retried, and not a final model failure when the retry answers",
+        },
+        {
+            "id": "L5-breaker-never-trips",
+            "owner": "test_the_breaker_trips_after_six_consecutive_final_failures",
+            "file": "src/tree_options/desk/lab.py",
+            "anchor": "if retry is not None and consecutive_failures >= retry.breaker_after:",
+            "replacement": "if False:",
+            "selectors": ["tests/unit/test_desk_lab.py"],
+            "invariant": "6 consecutive final failures stop the run's remaining model boards; they are recorded as skipped_breaker, not as failures",
+        },
+        {
+            "id": "L6-01-env-scrub",
+            "owner": "test_trex_and_desk_variables_are_dropped",
+            "file": "tests/conftest.py",
+            "anchor": "if name.startswith(_SCRUBBED_ENV_PREFIXES):",
+            "replacement": "if False:",
+            "selectors": ["tests/unit/test_host_isolation.py"],
+            "invariant": "every non-host_state test runs with all TREX_* and DESK_* variables removed",
+        },
+        {
+            "id": "L6-02-home-redirect",
+            "owner": "test_home_and_xdg_dirs_are_private_tmp_dirs",
+            "file": "tests/conftest.py",
+            "anchor": 'monkeypatch.setenv("HOME", str(home))',
+            "replacement": "pass",
+            "selectors": ["tests/unit/test_host_isolation.py"],
+            "invariant": "every non-host_state test gets a private per-test HOME under the pytest basetemp",
+        },
+    ]
+)
+
+
 # Parked with the derived-cost custody/governance suites (docs/desk/PARKED-DERIVED-COST.md).
 # Their guarded source and owning tests never landed on main, so these anchors occur 0x
 # and cannot be re-pinned; running them only reports MUTATION_DRIFT. They return to
