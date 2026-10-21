@@ -10,8 +10,10 @@ reach the broker.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
+import string
 import sys
 from datetime import date, datetime
 from decimal import Decimal
@@ -22,7 +24,7 @@ from tree_options.trex.desk_runtime import DeskPaths
 from tree_options.trex.plan import ExitRules, Leg, LegStructure, TakeProfit, validate_package_order
 from tree_options.trex.supervised import SupervisedPaths
 from tree_options.trex.supervised import status as supervised_status
-from tree_options.trex.supervised_desk import EntryRequest
+from tree_options.trex.supervised_desk import EntryRequest, request_name
 from tree_options.trex.supervised_ibkr import SupervisedEffect, supervised_order_ref
 
 DEFAULT_ACCOUNT = "DUT143714"
@@ -44,6 +46,26 @@ def _write_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text)
     os.replace(tmp, path)
+
+
+def intent_id_taken(inbox: Path, intent_id: str) -> bool:
+    """Any trace of ``intent_id`` in the desk inbox: the request, its claim
+    (an orphaned one included), its result, or a duplicate the desk set
+    aside and its refusal (``<id>.<anything>.json``). A request reusing
+    such an id would only be refused by the desk as a duplicate."""
+    if (inbox / f"{intent_id}.json").exists():
+        return True
+    return any(inbox.glob(f"{glob.escape(intent_id)}.*.json"))
+
+
+def next_intent_id(inbox: Path, entry_date: date) -> str | None:
+    """The first free ``canary-<date>-<letter>``, a to z; None when all 26
+    are taken."""
+    for letter in string.ascii_lowercase:
+        candidate = f"canary-{entry_date.isoformat()}-{letter}"
+        if not intent_id_taken(inbox, candidate):
+            return candidate
+    return None
 
 
 # ------------------------------------------------------------------ status
@@ -76,10 +98,10 @@ def collect_status(
         report["book"] = None
     inbox = paths.root / "requests"
     if inbox.is_dir():
+        # requests awaiting a claim only: never a claim, a result or a
+        # duplicate the desk set aside (the desk's own reading of the inbox)
         report["inbox"] = sorted(
-            p.name
-            for p in inbox.glob("*.json")
-            if not p.name.endswith((".result.json", ".claimed.json"))
+            p.name for p in inbox.glob("*.json") if request_name(p) is not None
         )
         results = sorted(inbox.glob("*.result.json"))
         report["last_results"] = [json.loads(p.read_bytes()) for p in results[-3:]]
@@ -311,19 +333,10 @@ def _cli(argv: list[str] | None = None) -> int:
     entry_date = args.entry_date or now.date()
     inbox = paths.requests_dir() if hasattr(paths, "requests_dir") else paths.root / "requests"
     inbox.mkdir(parents=True, exist_ok=True)
-    n = 1
-    intent_id = args.intent_id
-    while intent_id is None:
-        candidate = f"canary-{entry_date.isoformat()}-{chr(96 + n)}"
-        if (
-            not (inbox / f"{candidate}.json").exists()
-            and not (inbox / f"{candidate}.result.json").exists()
-        ):
-            intent_id = candidate
-        n += 1
-        if n > 26:
-            print("refused: no free intent id", file=sys.stderr)
-            return 2
+    intent_id = args.intent_id or next_intent_id(inbox, entry_date)
+    if intent_id is None:
+        print("refused: no free intent id", file=sys.stderr)
+        return 2
     try:
         request = compose_request(
             intent_id=intent_id,

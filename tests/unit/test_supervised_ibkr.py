@@ -186,6 +186,57 @@ def test_preflight_refuses_limit_above_the_cap():
     assert blockers and blockers[0].startswith("order_unbuildable:")
 
 
+# a provider message that can carry account details: a blocker lands in
+# requests/<iid>.result.json, so it must carry the error CLASS only
+SECRET = "acct DU1234567 provider detail"
+
+
+@pytest.mark.parametrize("error", [RuntimeError, ValueError])
+def test_preflight_blocker_carries_the_error_class_only(monkeypatch, error):
+    ib, gw = _session()
+
+    def prepare(structures: Any) -> None:
+        raise error(SECRET)
+
+    monkeypatch.setattr(ib, "prepare", prepare)
+    blockers = _broker(ib).preflight(effect_bytes(_effect()))
+    assert blockers == [f"order_unbuildable:{error.__name__}"]
+    assert SECRET not in json.dumps(blockers)
+    assert gw.trades == []
+
+
+def test_preflight_above_the_cap_names_the_class_not_the_message():
+    ib, _ = _session()
+    blockers = _broker(ib).preflight(effect_bytes(_effect(limit=Decimal("1.50"))))
+    assert blockers == ["order_unbuildable:ValueError"], "never the cap text"
+
+
+@pytest.mark.parametrize("error", [RuntimeError, ValueError])
+def test_preflight_propagates_an_error_raised_once_the_session_is_gone(error):
+    """A lost gateway is not an unbuildable order: the error propagates so
+    the desk loop records gateway_lost and exits 6 at once."""
+    ib, gw = _session()
+    gw.drop("qualifyContracts", error(SECRET), disconnect=True)
+    with pytest.raises(error):
+        _broker(ib).preflight(effect_bytes(_effect()))
+    assert gw.trades == []
+
+
+def test_submit_unbuildable_detail_carries_the_error_class_only(monkeypatch):
+    """The detail lands in the outbox's terminal receipt and the request's
+    result.json: the class only, as for preflight."""
+    ib, gw = _session()
+
+    def prepare(structures: Any) -> None:
+        raise RuntimeError(SECRET)
+
+    monkeypatch.setattr(ib, "prepare", prepare)
+    outcome = _broker(ib).submit(_attempt(), effect_bytes(_effect()))
+    assert isinstance(outcome, Uncertain)
+    assert (outcome.reason, outcome.detail) == ("not_sent:order_unbuildable", "RuntimeError")
+    assert gw.trades == []
+
+
 # ---------------------------------------------------------------- submit
 
 

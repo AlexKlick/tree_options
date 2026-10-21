@@ -22,19 +22,25 @@ runtime lock, and the supervised root is copied under its own advisory lock
 - **Restore** goes into a scratch directory, never into or around a live
   root, after the manifest verifies. Authority and consumed-command state
   (``owner.json``, every request, FLATTEN/RESOLVE-FLAT commands, the mandate
-  and expired mandates, every permit) is MOVED into ``<scratch>/archive/``:
-  an old mandate, permit, request or owner epoch can never become active
-  authority again. Restrictions (HALT files, the mandate revocation
-  tombstone) are restored as they were: fail-safe, reviewed by hand.
+  and expired mandates, every permit) is written straight into
+  ``<scratch>/archive/``: an old mandate, permit, request or owner epoch can
+  never become active authority again. Restrictions (HALT files, the
+  mandate revocation tombstone) are restored as they were: fail-safe,
+  reviewed by hand. Crash-atomic: built in a hidden partial tree with
+  ``RESTORE.json`` written last, then renamed onto the scratch path, so the
+  scratch path holds a complete restore with its receipt or nothing.
 
 CLI (no broker contact): ``python -m tree_options.trex.desk_backup
 {snapshot,verify,restore}``. ``snapshot`` refuses while an owner holds the
-run dir; touch ``BACKUP-REQUEST`` instead. Runbook: docs/product/RESTORE.md.
+run dir; touch ``BACKUP-REQUEST`` instead. Exit 2 is ``refused:`` (nothing
+written); exit 3 is a restore that ``failed:`` after it began writing.
+Runbook: docs/product/RESTORE.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -42,6 +48,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time as wall
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -71,6 +78,7 @@ LOCK_WAIT_S = 2.0
 
 _RUN, _SUP = "run", "supervised"
 _PARTIAL = ".partial-"
+_RESTORE_PARTIAL = ".restore-partial-"
 _NAME = re.compile(r"^\d{8}T\d{6}Z-")
 _STAMP_LEN = len("20261021T203000Z")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
@@ -88,6 +96,18 @@ class BackupError(RuntimeError):
 
 class RestoreRefused(BackupError):
     """The restore destination is unsafe; nothing was written."""
+
+
+class RestoreFailed(BackupError):
+    """A restore failed after it began writing; the destination was never
+    touched. ``restore_failed_cleaned``: its partial tree was removed, so
+    nothing is left anywhere. ``restore_failed_partial``: ``left`` names the
+    partial tree that could not be removed (its authority files are under
+    ``archive/`` only and it has no ``RESTORE.json``)."""
+
+    def __init__(self, reason: str, detail: str, *, left: Path | None = None) -> None:
+        super().__init__(reason, detail)
+        self.left = left
 
 
 def default_backup_root(run_dir: Path) -> Path:
@@ -394,37 +414,64 @@ def restore(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Verify ``backup``, restore it under ``into`` (``run/``, ``supervised/``)
-    and move authority/consumed-command state into ``into/archive/``.
+    with authority/consumed-command state under ``into/archive/``.
 
-    Refuses a destination that is, is inside, or contains a live root (the
-    given ones, the manifest's source roots, the backup root) or that is not
-    empty. Returns the receipt also written to ``into/RESTORE.json``."""
+    Refuses (RestoreRefused, nothing written) a destination that is, is
+    inside, or contains a live root (the given ones, the manifest's source
+    roots, the backup root) or that is not empty. The restore is built in a
+    hidden sibling ``.restore-partial-<name>-<stamp>-*`` (quarantined files
+    written straight into its ``archive/``, ``RESTORE.json`` last, all
+    fsynced), then renamed onto ``into`` in one step: ``into`` holds a
+    complete restore with its receipt, or nothing. A failure after writing
+    began is RestoreFailed (``restore_failed_cleaned``, or
+    ``restore_failed_partial`` naming a partial tree it could not remove).
+    Returns the receipt written to ``into/RESTORE.json``."""
     manifest = verify(backup)
     roots = [*live_roots, backup.resolve().parent]
     sources = manifest.get("source_roots")
     if isinstance(sources, dict):
         roots.extend(Path(str(v)) for v in sources.values())
     target = _check_destination(into, roots)
-    target.mkdir(parents=True, exist_ok=True)
+    at = now or datetime.now(UTC)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    prefix = f"{_RESTORE_PARTIAL}{target.name}-{_stamp(at)}-"
+    partial = Path(tempfile.mkdtemp(prefix=prefix, dir=target.parent))
+    try:
+        receipt = _build_restore(backup, manifest, partial, at)
+        os.rename(partial, target)  # the commit point: onto a missing or empty dir only
+    except BaseException as error:
+        shutil.rmtree(partial, ignore_errors=True)
+        if not isinstance(error, Exception):
+            raise
+        cause = error.reason if isinstance(error, BackupError) else type(error).__name__
+        if partial.exists():
+            raise RestoreFailed(
+                "restore_failed_partial", f"{partial} {cause}", left=partial
+            ) from error
+        raise RestoreFailed("restore_failed_cleaned", cause) from error
+    with contextlib.suppress(OSError):  # the rename already published it
+        _fsync_dir(target.parent)
+    return receipt
+
+
+def _build_restore(
+    backup: Path, manifest: dict[str, Any], root: Path, at: datetime
+) -> dict[str, Any]:
+    """Write a restore into ``root`` (a private partial tree): active files
+    at their paths, quarantined ones DIRECTLY under ``archive/`` (never
+    active, not even for an instant), every copy re-hashed, ``RESTORE.json``
+    last, every file and directory fsynced."""
     restored: list[str] = []
     archived: list[str] = []
     for entry in manifest["files"]:
         rel = str(entry["path"])
-        sha, _ = _copy(backup / rel, target / rel)
+        held = quarantined(rel)
+        sha, _ = _copy(backup / rel, root / ARCHIVE / rel if held else root / rel)
         if sha != entry["sha256"]:
             raise BackupError("file_mismatch", rel)  # changed after verify
-    for entry in manifest["files"]:
-        rel = str(entry["path"])
-        if quarantined(rel):
-            moved = target / ARCHIVE / rel
-            moved.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(target / rel, moved)
-            archived.append(rel)
-        else:
-            restored.append(rel)
+        (archived if held else restored).append(rel)
     for key in (_RUN, _SUP):
-        (target / key).mkdir(exist_ok=True)
-    at = now or datetime.now(UTC)
+        (root / key).mkdir(exist_ok=True)
     receipt = {
         "schema": RESTORE_SCHEMA,
         "backup": str(backup),
@@ -439,10 +486,12 @@ def restore(
             "grant a NEW mandate for that epoch; never copy an archived mandate or permit back",
         ],
     }
-    with open(target / RECEIPT, "w", encoding="utf-8") as stream:
+    with open(root / RECEIPT, "w", encoding="utf-8") as stream:
         stream.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
+    for current, _, _ in os.walk(root, topdown=False):
+        _fsync_dir(Path(current))
     return receipt
 
 
@@ -635,6 +684,9 @@ def main(argv: list[str] | None = None) -> int:
         receipt = restore(args.backup, args.into, live_roots=live)
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return 0
+    except RestoreFailed as failed:  # began writing: never reported as "refused"
+        print(f"failed: {failed.reason} {failed.detail}", file=sys.stderr)
+        return 3
     except BackupError as refused:
         print(f"refused: {refused.reason} {refused.detail}".rstrip(), file=sys.stderr)
         return 2

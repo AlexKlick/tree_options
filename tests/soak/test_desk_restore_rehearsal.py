@@ -284,6 +284,9 @@ def test_backup_restore_and_recover_from_scratch(tmp_path: Path) -> None:
     # ---- restore into scratch: authority is archived, never active ----------
     scratch = tmp_path / "scratch"
     receipt = restore(backup, scratch, now=RECOVER_AT)
+    # the receipt arrived with the tree (one rename), before any service step
+    assert json.loads((scratch / "RESTORE.json").read_text()) == receipt
+    assert not list(tmp_path.glob(".restore-partial-*")), "no partial tree left behind"
     archived = _files(scratch / "archive")
     assert {
         "run/owner.json",
