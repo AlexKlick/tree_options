@@ -20,6 +20,23 @@ def client(world):
     )
 
 
+def operator_client(world, monkeypatch):
+    """The local operator the default command authority accepts: controls
+    enabled, loopback peer and host, the exact same-origin Origin."""
+    monkeypatch.setenv("TREX_WORKSPACE_CONTROLS", "1")
+    return TestClient(
+        create_app(
+            state_dir=str(world.root / "legacy"),
+            plans_dir=str(world.root / "plans"),
+            discovery_dir=str(world.root / "discovery"),
+            desk_state_dir=str(world.root / "desk-state"),
+        ),
+        base_url="http://127.0.0.1:8090",
+        client=("127.0.0.1", 50000),
+        headers={"Origin": "http://127.0.0.1:8090"},
+    )
+
+
 def test_readiness_does_not_claim_missing_evidence_is_healthy(world):
     response = client(world).get("/api/desk/health")
     assert response.status_code == 503
@@ -514,7 +531,10 @@ def test_automation_status_lists_whitelisted_timers_and_kill_files(world, monkey
 
 def test_automation_actions_are_whitelisted_and_audited(world, monkeypatch):
     run_dir, fake = _automation_world(world, monkeypatch)
-    c = client(world)
+    # unauthenticated (not the local operator): 403, no systemctl call
+    assert client(world).post("/api/desk/automation/desk-lab/disable").status_code == 403
+    assert fake.calls == []
+    c = operator_client(world, monkeypatch)
     assert c.post("/api/desk/automation/desk-lab/disable").status_code == 200
     assert ["disable", "--now", "desk-lab.timer"] in fake.calls
     assert c.post("/api/desk/automation/desk-lab/run").status_code == 200
@@ -531,7 +551,10 @@ def test_automation_actions_are_whitelisted_and_audited(world, monkeypatch):
 
 def test_supervised_control_toggles_kill_files(world, monkeypatch):
     run_dir, _ = _automation_world(world, monkeypatch)
-    c = client(world)
+    # unauthenticated (not the local operator): 403, no kill file
+    assert client(world).post("/api/desk/supervised/halt").status_code == 403
+    assert not (run_dir / "HALT").exists()
+    c = operator_client(world, monkeypatch)
     assert c.post("/api/desk/supervised/halt").json()["kill_files"] == ["HALT"]
     assert (run_dir / "HALT").exists()
     assert c.post("/api/desk/supervised/flatten").json()["kill_files"] == ["FLATTEN", "HALT"]
@@ -548,7 +571,7 @@ def test_flatten_under_halt_carries_the_desk_cli_warning(world, monkeypatch, cap
     from tree_options.trex.desk_cli import _cli
 
     run_dir, _ = _automation_world(world, monkeypatch)
-    c = client(world)
+    c = operator_client(world, monkeypatch)
     c.post("/api/desk/supervised/halt")
     doc = c.post("/api/desk/supervised/flatten").json()
     assert doc["kill_files"] == ["FLATTEN", "HALT"]

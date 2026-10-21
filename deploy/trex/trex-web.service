@@ -1,5 +1,5 @@
 [Unit]
-Description=trex read-only HTTP status panel (loopback :8090)
+Description=trex cockpit: read-only panel + authenticated desk command intake (loopback :8090)
 Documentation=file:///home/alexk/documents/tree_options/src/tree_options/trex_web/README.md
 After=network-online.target
 Wants=network-online.target
@@ -15,17 +15,37 @@ ExecStart=/home/alexk/.local/bin/uv run --group trex-web python -m tree_options.
 Restart=on-failure
 RestartSec=5
 # Read-only operator tool: only the trex state dirs under %h/.local/state
-# are read, plus two writable directories — the discovery spool (scan
-# requests from the site) and the research lane's own workspace
-# (runstate store for /api/research/*; RL-1). Both must EXIST before the
-# unit starts (ReadWritePaths on a missing path fails the unit):
+# are read, plus three writable directories: the discovery spool (scan
+# requests from the site), the research lane's own workspace (runstate
+# store for /api/research/*; RL-1) and the supervised desk's command queue.
+# All must EXIST before the unit starts (ReadWritePaths on a missing path
+# fails the unit):
 #   mkdir -p ~/.local/state/trex-discovery/spool
 #   mkdir -p ~/.local/state/trex-research/run-anon
+#   mkdir -p ~/.local/state/trex/desk-paper/commands
+#
+# Desk commands (Wave 2, POST /api/commands): the web may write ONLY
+# <desk run dir>/commands = ~/.local/state/trex/desk-paper/commands (each
+# command <key>.json, its <key>.result.json and the store's .lock). It never
+# writes the run dir itself (kill files, specs, ledger, proposals), the
+# supervised authority dir, or anything a broker reads; the desk owner
+# (trex-desk) claims and applies the queued commands. Any drop-in that grants
+# the whole run dir must be narrowed to this path. Consequences of the
+# narrow grant, by design: pause_entries/halt commands are QUEUED (accepted)
+# for the owner instead of written in-process, and the legacy
+# POST /api/desk/supervised/{halt,flatten,resume} and
+# POST /api/desk/automation/* routes answer 503.
+# Every mutating desk route requires the command authority: the loopback
+# operator only (loopback peer + Host, exact same-origin Origin, no
+# forwarding header), and only when opted in with
+#   Environment=TREX_WORKSPACE_CONTROLS=1
+# (off by default). Requests through the family portal carry the public
+# Host/Origin and are refused (403) until the family-signed authority lands.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv /home/alexk/.local/state/trex-discovery/spool /home/alexk/.local/state/trex-research
+ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv /home/alexk/.local/state/trex-discovery/spool /home/alexk/.local/state/trex-research /home/alexk/.local/state/trex/desk-paper/commands
 RestrictAddressFamilies=AF_INET AF_INET6
 
 [Install]
