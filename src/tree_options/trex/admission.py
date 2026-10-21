@@ -27,6 +27,10 @@ no fact (its blocker applies); a reader never raises. A fact for another
 account than the one being admitted is no fact either. Every one of these
 blocks ENTRIES only, never exits (the exit lane does not read them).
 
+``entry_send_blockers`` is the kill-file part alone (``PAUSE_ENTRIES``,
+``HALT``): the live entry sender (``trex.supervised_desk``) checks it before
+it spends any authority and again after its screening.
+
 The sealed selection rule's activation is NOT an owner fact: it gates
 AUTOMATIC admission only (``desk.enter``); product entries are approved by
 the owner one at a time.
@@ -62,6 +66,7 @@ __all__ = [
     "MONITOR_FILE",
     "cash_blockers",
     "entry_blockers",
+    "entry_send_blockers",
     "exit_owner_blockers",
     "exit_owner_ready",
     "owner_fact_blockers",
@@ -221,14 +226,27 @@ def owner_fact_blockers(
     return tuple(blockers)
 
 
+def entry_send_blockers(run_dir: Path) -> tuple[str, ...]:
+    """The kill files every entry SENDER checks before it spends authority
+    (mandate, intent, permit, spec, broker order), and again just before
+    the send: ``entries_paused`` while ``PAUSE_ENTRIES`` stands, ``halt``
+    while ``HALT`` stands (``lexists``: a dangling link still stops).
+
+    No owner fact is read here, so a sender that predates the books lane
+    keeps its own screening. Exits never call this (``pause.exit_blockers``).
+    """
+    root = Path(run_dir)
+    kill = (HALTED,) if os.path.lexists(root / HALT) else ()
+    return (*pause_blockers(root), *kill)
+
+
 def entry_blockers(
     run_dir: Path, now: datetime, *, account_id: str | None = None
 ) -> tuple[str, ...]:
     """Everything that refuses an owner-approved entry right now: the
     entries-only pause, a HALT, then the owner's facts."""
     root = Path(run_dir)
-    kill = (HALTED,) if os.path.lexists(root / HALT) else ()
-    return (*pause_blockers(root), *kill, *owner_fact_blockers(root, now, account_id=account_id))
+    return (*entry_send_blockers(root), *owner_fact_blockers(root, now, account_id=account_id))
 
 
 def _iso(value: datetime) -> str:

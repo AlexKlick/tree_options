@@ -239,6 +239,24 @@ def test_entry_blockers_add_the_kill_files_to_the_facts(tmp_path):
     )
 
 
+def test_entry_send_blockers_are_the_kill_files_only(tmp_path):
+    """What every entry SENDER checks before spending authority: the pause
+    and HALT, never an owner fact (an empty run dir lacks every fact, yet
+    only the kill files appear here)."""
+    assert admission.entry_send_blockers(tmp_path) == ()
+    pause.pause_entries(tmp_path, actor="a", now=NOW)
+    assert admission.entry_send_blockers(tmp_path) == (Blocker.ENTRIES_PAUSED.value,)
+    (tmp_path / "HALT").symlink_to(tmp_path / "missing")  # dangling: still a HALT
+    assert admission.entry_send_blockers(tmp_path) == (
+        Blocker.ENTRIES_PAUSED.value,
+        admission.HALTED,
+    )
+    pause.resume_entries(tmp_path, actor="a", now=NOW)
+    assert admission.entry_send_blockers(tmp_path) == (admission.HALTED,)
+    healthy(tmp_path)
+    assert admission.entry_blockers(tmp_path, NOW) == admission.entry_send_blockers(tmp_path)
+
+
 def test_selection_rule_is_never_an_owner_fact(tmp_path):
     """Product entries are owner-approved: the sealed-rule activation gates
     AUTOMATIC admission only (desk.enter), never the owner's facts."""
