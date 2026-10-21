@@ -706,6 +706,14 @@ class TestVerify:
         doc = json.loads((chain_store["forward"] / "verify" / "2026-10-05.json").read_text())
         assert doc["ok"] is False
         assert doc["contracts"]["O:" + _occ("IWM", MONTHLY_NEAR, "C", 240)]["missing"] == ["15:15"]
+        # hand count: 14 selected contracts (8 IWM + 3 QQQ + 3 SPY), every one
+        # printing 09:30..15:13 ET: both morning clocks 14/14, 15:15 0/14
+        assert doc["per_clock"] == {
+            "10:00": {"covered": 14, "total": 14},
+            "10:15": {"covered": 14, "total": 14},
+            "15:15": {"covered": 0, "total": 14},
+        }
+        assert "10:00=14/14 10:15=14/14 15:15=0/14" in verdict.line()
 
     def test_a_contract_that_never_traded_is_reported_not_failed(self, chain_store) -> None:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
@@ -820,13 +828,14 @@ class TestTimerSchedule:
             assert "PYTHONPATH=/home/alexk/documents/tree_options/src" in text, unit
 
     def test_decision_clocks_stay_pinned_to_the_cost_module(self) -> None:
-        # Compare values, not source text: a source grep broke on a pure formatting change.
+        # a value pin, not a text grep: the wave-1 ruff format pass rewrote
+        # the literal's spacing and the old grep failed on formatting alone
         from tree_options.desk import outcomes
 
         assert outcomes.decision_clocks_et == ("10:00", "10:15", "15:15"), (
             "outcomes.py's decision clocks moved: forward_minutes must be revisited"
         )
-        assert fm.DECISION_CLOCKS == outcomes.decision_clocks_et
+        assert fm.DECISION_CLOCKS == ("10:00", "10:15", "15:15")
 
 
 # ------------------------------------------------------------ CLI
@@ -936,6 +945,177 @@ class TestCli:
     ) -> None:
         rc = run_cli(["forward-verify", "--session", str(SESSION)], now=NOW, cal=static_calendar)
         assert rc == fm.COVERAGE_EXIT
+
+
+QQQ_PICKS = {"O:" + r["occ"] for r in QQQ_ROWS}
+SPY_PICKS = {"O:" + r["occ"] for r in SPY_ROWS}
+
+
+class TestCliCaptureExit:
+    """``forward-minutes`` exits on the CAPTURE only (TREX Wave 1, l3).
+
+    Before: every session exited 6 because the strict three-clock verify
+    wants a print in the EXACT minute at 10:00/10:15/15:15 for every
+    contract, and the unit (``SuccessExitStatus=3``) went red daily. Now:
+    0 when at least one contract banked bars, 6 only when none did, 1/2/3/4/5
+    keep their meanings; the verify verdict is printed and written as
+    information, and the eight-clock coverage file is scored in the same run.
+    """
+
+    def _capture(self, chain_store, static_calendar, bodies):
+        assert (
+            run_cli(["forward-select", "--selected-on", str(SELECT_ON)], cal=static_calendar) == 0
+        )
+        wire = FakeWire(bodies)
+        rc = run_cli(
+            [
+                "forward-minutes",
+                "--session",
+                str(SESSION),
+                "--massive-cache",
+                str(chain_store["cache"]),
+                "--budget",
+                "100",
+            ],
+            forward_client=_client(wire, chain_store["cache"]),
+            now=NOW,
+            cal=static_calendar,
+        )
+        return rc, wire
+
+    @staticmethod
+    def _mixed_bodies() -> dict[str, object]:
+        # IWM prints all session; QQQ stops at 14:00 ET; SPY never trades
+        return (
+            {
+                t: {"status": "OK", "request_id": "i", "results": _session_bars(SESSION)}
+                for t in IWM_PICKS
+            }
+            | {
+                t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION, (14, 0))}
+                for t in QQQ_PICKS
+            }
+            | {t: {"status": "OK", "request_id": "s", "results": []} for t in SPY_PICKS}
+        )
+
+    def test_partial_clock_coverage_exits_zero(self, chain_store, static_calendar, capsys) -> None:
+        rc, _wire = self._capture(chain_store, static_calendar, self._mixed_bodies())
+        out = capsys.readouterr()
+        assert rc == 0  # was COVERAGE_EXIT (6): the strict verify is not ok
+        verify = json.loads((chain_store["forward"] / "verify" / "2026-10-05.json").read_text())
+        assert verify["schema"] == "desk-forward-verify/1"
+        assert verify["ok"] is False  # the strict meaning is unchanged
+        # hand count: 11 contracts with bars (8 IWM + 3 QQQ); QQQ misses 15:15
+        assert verify["per_clock"] == {
+            "10:00": {"covered": 11, "total": 11},
+            "10:15": {"covered": 11, "total": 11},
+            "15:15": {"covered": 8, "total": 11},
+        }
+        assert "forward-verify: 2026-10-05 ok=False" in out.out
+        assert "informational" in out.out
+
+    def test_the_same_run_writes_eight_clock_coverage_with_per_underlying_facts(
+        self, chain_store, static_calendar, capsys
+    ) -> None:
+        rc, _wire = self._capture(chain_store, static_calendar, self._mixed_bodies())
+        assert rc == 0
+        doc = json.loads((chain_store["forward"] / "coverage" / "2026-10-05.json").read_text())
+        assert doc["schema"] == "desk-forward-clock-coverage/1"
+        assert doc["execution_authorized"] is False
+        under = doc["underlyings"]
+        assert sorted(under) == ["IWM", "QQQ", "SPY"]
+        # hand arithmetic: IWM 8 contracts x 8 clocks all covered
+        assert under["IWM"]["contracts"] == 8
+        assert under["IWM"]["covered_points"] == 64
+        assert under["IWM"]["scheduled_points"] == 64
+        assert under["IWM"]["clocks"]["15:15"] == {"covered": 8, "total": 8, "pct": 100.0}
+        # QQQ: bars 09:30..14:00, so the six morning clocks are 3/3 and
+        # 14:30/15:15 are 0/3: 18 of 24 points = 75.0%
+        assert under["QQQ"]["clocks"]["13:45"] == {"covered": 3, "total": 3, "pct": 100.0}
+        assert under["QQQ"]["clocks"]["14:30"] == {"covered": 0, "total": 3, "pct": 0.0}
+        assert under["QQQ"]["covered_points"] == 18
+        assert under["QQQ"]["covered_points_pct"] == 75.0
+        assert under["QQQ"]["clocks_with_any_contract_covered"] == 6
+        # SPY never printed: 0 of 24, no clock observed
+        assert under["SPY"]["covered_points"] == 0
+        assert under["SPY"]["clocks_with_any_contract_covered"] == 0
+        # session-level: 64 + 18 + 0 = 82 of 14 x 8 = 112 points
+        assert doc["summary"]["covered_points"] == 82
+        assert doc["summary"]["scheduled_points"] == 112
+        out = capsys.readouterr().out
+        assert "underlying QQQ: points 18/24 covered (75.0%)" in out
+        assert "not a verdict" in out
+
+    def test_a_banked_rerun_still_reports_the_capture(self, chain_store, static_calendar) -> None:
+        rc, _ = self._capture(chain_store, static_calendar, self._mixed_bodies())
+        assert rc == 0
+        wire = FakeWire({})
+        again = run_cli(
+            ["forward-minutes", "--session", str(SESSION), "--budget", "100"],
+            forward_client=_client(wire, chain_store["cache"]),
+            now=NOW,
+            cal=static_calendar,
+        )
+        assert again == 0
+        assert wire.urls == []
+
+    def test_zero_contracts_banked_exits_coverage(
+        self, chain_store, static_calendar, capsys
+    ) -> None:
+        empty = {"status": "OK", "request_id": "e", "results": []}
+        bodies = {t: empty for t in IWM_PICKS | QQQ_PICKS | SPY_PICKS}
+        rc, _wire = self._capture(chain_store, static_calendar, bodies)
+        assert rc == fm.COVERAGE_EXIT
+        assert "no contract banked" in capsys.readouterr().err
+        # the facts are still written: every point is a gap
+        doc = json.loads((chain_store["forward"] / "coverage" / "2026-10-05.json").read_text())
+        assert doc["summary"]["covered_points"] == 0
+        assert doc["summary"]["scheduled_points"] == 112
+
+    def test_a_spent_budget_keeps_exit_five(self, chain_store, static_calendar) -> None:
+        ledger = chain_store["forward"] / "budget" / "2026-10-05.json"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text(
+            json.dumps(
+                {
+                    "schema": "desk-forward-wire-budget/1",
+                    "date": "2026-10-05",
+                    "cap": 100,
+                    "spent": 100,
+                    "entries": [],
+                    "refusals": [],
+                }
+            )
+        )
+        rc, wire = self._capture(chain_store, static_calendar, _full_bodies())
+        assert rc == fm.BUDGET_EXIT
+        assert wire.urls == []
+
+
+class TestCaptureExitCode:
+    def _bars(self, root: Path, contracts: dict) -> None:
+        target = fm.bars_path(SESSION, root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"schema": fm.BARS_SCHEMA, "contracts": contracts}))
+
+    @pytest.mark.parametrize(
+        ("status", "capture_rc", "contracts", "expected"),
+        [
+            ("written", 0, {"a": {"status": "ok", "bars": [{"t": 1}]}}, 0),
+            ("exists", 0, {"a": {"status": "ok", "bars": [{"t": 1}]}}, 0),
+            ("written", 0, {"a": {"status": "ok", "bars": []}}, fm.COVERAGE_EXIT),
+            ("exists", 0, {"a": {"status": "invalid", "bars": []}}, fm.COVERAGE_EXIT),
+            ("written", fm.BUDGET_EXIT, {"a": {"status": "budget", "bars": []}}, fm.BUDGET_EXIT),
+            ("written", 1, {"a": {"status": "invalid", "bars": []}}, 1),
+            ("stale", fm.STALE_SELECTION_EXIT, None, fm.STALE_SELECTION_EXIT),
+            ("dry-run", 0, None, 0),
+        ],
+    )
+    def test_capture_only(self, tmp_path, status, capture_rc, contracts, expected) -> None:
+        if contracts is not None:
+            self._bars(tmp_path, contracts)
+        result = fm.CaptureResult(SESSION, status, capture_rc)
+        assert fm.capture_exit_code(result, root=tmp_path) == expected
 
 
 class TestCliExitMapping:

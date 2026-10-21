@@ -43,25 +43,33 @@
         cache hits free). A daily wire guard stops on exceed and logs every
         refusal to DESK_FORWARD_DIR/budget/<date>.json. Write-once: a captured
         session is never refetched. --dry-run is cache-only (no wire, writes
-        nothing). Exit 0, 3 retryable, 4 selection stale or
-        missing (run forward-select), 5 budget stopped the capture before
-        anything landed, 6 a decision clock (10:00/10:15/15:15 ET) is
-        uncovered. Slots: Mon-Fri 17:25 ET + Mon-Sat 06:50 catch-up.
+        nothing). The same run then writes the strict forward-verify verdict
+        and the eight-clock forward-coverage facts for D, both INFORMATIONAL.
+        The exit code reports the CAPTURE only: 0 at least one contract
+        banked bars, 1 nothing usable, 2 tier boundary, 3 retryable, 4
+        selection stale or missing (run forward-select), 5 budget stopped
+        the capture before anything landed, 6 captured but no contract
+        banked a single bar. Slots: Mon-Fri 17:25 ET + Mon-Sat 06:50 catch-up.
 
     forward-verify [--session D]
-        Decision-clock coverage verdict for D's captured bars into
-        DESK_FORWARD_DIR/verify/<D>.json (no wire; idempotent). Exit codes as
-        forward-minutes' 0/6.
+        The strict three-clock check for D's captured bars (every contract
+        prints in the EXACT minute at 10:00/10:15/15:15 ET) into
+        DESK_FORWARD_DIR/verify/<D>.json with per-clock counts (no wire;
+        idempotent). Exit 0 ok, 6 not ok or no bars document.
 
-    forward-coverage [--session D]
+    forward-coverage [--session D | --since D]
         Eight-clock coverage EVIDENCE for D's captured bars (the
         RESTART-THRESHOLD C1 schedule 10:00..15:15 ET, not forward-verify's
         three outcome clocks) into DESK_FORWARD_DIR/coverage/<D>.json, no
         wire. For every clock: contracts with a bar in [C, C+15min) ET,
-        the missing named with their reason. Prints raw numbers and
-        boolean facts only -- the qualifying threshold stays the
-        operator's sealed call. Exit 0 table written, 3 no bars document
-        for D (run forward-minutes), 4 no selection in the forward store.
+        the missing named with their reason, plus per-underlying facts.
+        Prints raw numbers and boolean facts only -- the qualifying
+        threshold stays the operator's sealed call. Exit 0 table written,
+        3 no bars document for D (run forward-minutes), 4 no selection in
+        the forward store. --since D backfills every banked session on or
+        after D from the stored files alone (no client, no wire budget):
+        exit 0 all scored, 3 none banked, else the first failing session's
+        code (the rest still score).
 
     update-events [--horizon N] [--dry-run]
         Earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 only when
@@ -376,10 +384,16 @@ def _parser() -> argparse.ArgumentParser:
         "forward-coverage",
         help="eight-clock coverage evidence for a captured session (no wire; decides nothing)",
     )
-    fco.add_argument(
+    fco_target = fco.add_mutually_exclusive_group()
+    fco_target.add_argument(
         "--session",
         type=date.fromisoformat,
         help="default: the latest session whose 16:15 ET cutoff has passed",
+    )
+    fco_target.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        help="backfill: score every banked session on or after D (files only, no wire)",
     )
     from tree_options.desk import production
 
@@ -708,10 +722,21 @@ def _forward_minutes(
         return 3
     print(result.line())
     if result.status in ("written", "exists"):
+        # both are facts about the bars, never the exit code: the strict
+        # three-clock verify is not ok on nearly every real session
         verdict = forward_minutes.verify_session(session, now=now)
-        print(verdict.line())
-        return result.exit_code or verdict.exit_code
-    return result.exit_code
+        print(verdict.line() + " (informational: the exit code reports the capture)")
+        try:
+            coverage = forward_coverage.score_session(session, now=now)
+        except (forward_coverage.CoverageInputError, ValueError) as exc:
+            print(f"forward-coverage: {session} not scored ({exc})", file=sys.stderr)
+        else:
+            for line in forward_coverage.render_lines(coverage):
+                print(line)
+    code = forward_minutes.capture_exit_code(result)
+    if code == forward_minutes.COVERAGE_EXIT:
+        print(f"forward-minutes: no contract banked a bar for {session}", file=sys.stderr)
+    return code
 
 
 def _forward_verify(args: argparse.Namespace, *, clock: store.Clock, cal: ClosingCalendar) -> int:
@@ -722,8 +747,31 @@ def _forward_verify(args: argparse.Namespace, *, clock: store.Clock, cal: Closin
     return verdict.exit_code
 
 
+def _forward_coverage_backfill(since: date, *, now: datetime) -> int:
+    rows = forward_coverage.backfill(since, now=now)
+    if not rows:
+        print(
+            f"forward-coverage: no banked session on or after {since}; run forward-minutes",
+            file=sys.stderr,
+        )
+        return forward_coverage.NO_BARS_EXIT
+    for row in rows:
+        if row.doc is not None:
+            print(forward_coverage.summary_line(row.doc))
+        else:
+            print(f"forward-coverage: {row.session} {row.error}", file=sys.stderr)
+    failed = [row for row in rows if row.exit_code]
+    print(
+        f"forward-coverage: scored {len(rows) - len(failed)}/{len(rows)} banked sessions "
+        f"since {since} (no wire)"
+    )
+    return failed[0].exit_code if failed else 0
+
+
 def _forward_coverage(args: argparse.Namespace, *, clock: store.Clock, cal: ClosingCalendar) -> int:
     now = clock()
+    if args.since is not None:
+        return _forward_coverage_backfill(args.since, now=now)
     session = args.session or latest_completed_session(now, cal)
     try:
         doc = forward_coverage.score_session(session, now=now)

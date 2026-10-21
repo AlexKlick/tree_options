@@ -284,6 +284,55 @@ class TestClockCoverage:
         with pytest.raises(ValueError, match="invalid bar timestamp"):
             fc.clock_coverage(_bars_doc(SESSION_EDT, {FULL: _ok(bad_bar)}))
 
+    def test_per_underlying_facts_beside_the_session_table(self) -> None:
+        iwm_morning = "O:IWM260516C00242000"
+        contracts = {
+            FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
+            iwm_morning: _ok(_bars_at(SESSION_EDT, [(10, 5)])),
+            PARTIAL: _ok(_every_minute(SESSION_EDT, (9, 31), (14, 0))),
+            BUDGET: {"status": "budget", "bars": []},
+        }
+        doc = fc.clock_coverage(_bars_doc(SESSION_EDT, contracts))
+        under = doc["underlyings"]
+        assert sorted(under) == ["IWM", "QQQ", "SPY"]
+        iwm = under["IWM"]
+        # hand arithmetic: 2 IWM contracts; 10:00 has both, every other
+        # clock only FULL: 2 + 7 x 1 = 9 of 16 points = 56.25%
+        assert iwm["contracts"] == 2
+        assert iwm["clocks"]["10:00"] == {"covered": 2, "total": 2, "pct": 100.0}
+        for clock in SEALED_EIGHT[1:]:
+            assert iwm["clocks"][clock] == {"covered": 1, "total": 2, "pct": 50.0}
+        assert iwm["covered_points"] == 9
+        assert iwm["scheduled_points"] == 16
+        assert iwm["covered_points_pct"] == 56.25
+        assert iwm["min_clock_pct"] == 50.0
+        assert iwm["clocks_with_any_contract_covered"] == 8
+        assert iwm["all_clocks_ge_pct"] == {"50": True, "90": False}
+        qqq = under["QQQ"]
+        # hand arithmetic: one contract printing to 14:00: 6 of 8 points
+        assert qqq["contracts"] == 1
+        assert qqq["covered_points"] == 6
+        assert qqq["covered_points_pct"] == 75.0
+        assert qqq["clocks"]["14:30"] == {"covered": 0, "total": 1, "pct": 0.0}
+        assert qqq["clocks_with_any_contract_covered"] == 6
+        assert qqq["all_clocks_ge_pct"] == {"50": False, "90": False}
+        spy = under["SPY"]
+        # a budget gap is a member of its underlying's denominator too
+        assert spy["contracts"] == 1
+        assert spy["covered_points"] == 0
+        assert spy["scheduled_points"] == 8
+        assert spy["covered_points_pct"] == 0.0
+        assert spy["clocks_with_any_contract_covered"] == 0
+        # the per-underlying numbers sum to the session's: 9 + 6 + 0 of 32
+        assert doc["summary"]["covered_points"] == 15
+        assert doc["summary"]["scheduled_points"] == 32
+
+    def test_a_captured_entrys_underlying_field_wins(self) -> None:
+        # the capture copies the selection's "underlying" into every entry
+        entry = _ok(_bars_at(SESSION_EDT, [(10, 0)])) | {"underlying": "SPY"}
+        doc = fc.clock_coverage(_bars_doc(SESSION_EDT, {FULL: entry}))
+        assert list(doc["underlyings"]) == ["SPY"]
+
     def test_bad_schedules_are_refused(self) -> None:
         doc = _bars_doc(SESSION_EDT, {FULL: _ok(_bars_at(SESSION_EDT, [(10, 0)]))})
         for schedule in (
@@ -426,3 +475,149 @@ class TestCli:
         out = capsys.readouterr().out
         assert "provenance=mismatch" in out
         assert "missing_from_bars=1" in out
+
+    def test_prints_the_per_underlying_facts(self, forward_store, static_calendar, capsys) -> None:
+        _write_selection(forward_store, tickers=[FULL, PARTIAL])
+        _write_bars(
+            forward_store,
+            SESSION_EDT,
+            {
+                FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
+                PARTIAL: _ok(_every_minute(SESSION_EDT, (9, 31), (14, 0))),
+            },
+        )
+        rc = run_cli(["forward-coverage", "--session", "2026-10-05"], now=NOW, cal=static_calendar)
+        assert rc == 0
+        out = capsys.readouterr().out
+        # hand arithmetic: IWM 8/8; QQQ 6/8 with 14:30/15:15 at 0.0%
+        assert (
+            "underlying IWM: points 8/8 covered (100.0%); min clock 100.0%; "
+            "clocks with any contract covered 8/8" in out
+        )
+        assert (
+            "underlying QQQ: points 6/8 covered (75.0%); min clock 0.0%; "
+            "clocks with any contract covered 6/8" in out
+        )
+
+
+# ------------------------------------------------------------ backfill
+
+
+@pytest.fixture()
+def no_network(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every way the forward lane could reach a vendor raises and is recorded."""
+    import socket
+
+    from tree_options.data import massive_client
+
+    calls: list[str] = []
+
+    def refuse(name: str):
+        def _refuse(*_a, **_k):
+            calls.append(name)
+            raise AssertionError(f"backfill touched the network: {name}")
+
+        return _refuse
+
+    monkeypatch.setattr(socket.socket, "connect", refuse("socket.connect"))
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse("socket.connect_ex"))
+    monkeypatch.setattr(socket, "create_connection", refuse("socket.create_connection"))
+    monkeypatch.setattr(socket, "getaddrinfo", refuse("socket.getaddrinfo"))
+    monkeypatch.setattr(massive_client.MassiveClient, "get_json", refuse("MassiveClient.get_json"))
+    monkeypatch.setattr(fm, "build_client", refuse("forward_minutes.build_client"))
+    monkeypatch.setattr(fm, "client_from_environment", refuse("client_from_environment"))
+    return calls
+
+
+def _bank(root: Path, session: date) -> None:
+    _write_bars(
+        root,
+        session,
+        {
+            FULL: _ok(_every_minute(session, (9, 31), (16, 0))),
+            PARTIAL: _ok(_every_minute(session, (9, 31), (14, 0))),
+        },
+    )
+
+
+class TestBackfill:
+    SESSIONS = (date(2026, 10, 2), date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7))
+
+    def _bank_all(self, root: Path) -> None:
+        _write_selection(root, tickers=[FULL, PARTIAL])
+        for session in self.SESSIONS:
+            _bank(root, session)
+        # neither a non-date file nor a sibling directory is a banked session
+        (root / "bars" / "README.json").write_text("{}")
+        (root / "bars" / "2026-10-08.json.tmp").write_text("{}")
+
+    def test_banked_sessions_lists_the_dated_bars_on_or_after_since(self, forward_store) -> None:
+        self._bank_all(forward_store)
+        assert fc.banked_sessions(date(2026, 10, 5)) == list(self.SESSIONS[1:])
+        assert fc.banked_sessions(date(2026, 10, 8)) == []
+
+    def test_since_scores_every_banked_session_without_network(
+        self, forward_store, static_calendar, capsys, no_network
+    ) -> None:
+        self._bank_all(forward_store)
+        rc = run_cli(["forward-coverage", "--since", "2026-10-05"], now=NOW, cal=static_calendar)
+        assert rc == 0
+        assert no_network == []
+        written = sorted(p.name for p in (forward_store / "coverage").iterdir())
+        assert written == ["2026-10-05.json", "2026-10-06.json", "2026-10-07.json"]
+        for name in written:
+            doc = json.loads((forward_store / "coverage" / name).read_text())
+            # hand arithmetic: 14 of 16 points every session
+            assert doc["summary"]["covered_points"] == 14
+            assert doc["underlyings"]["QQQ"]["covered_points"] == 6
+        # files only: no wire budget ledger, no new bars, no verify verdicts
+        assert not (forward_store / "budget").exists()
+        assert not (forward_store / "verify").exists()
+        assert sorted(p.name for p in (forward_store / "bars").iterdir()) == [
+            "2026-10-02.json",
+            "2026-10-05.json",
+            "2026-10-06.json",
+            "2026-10-07.json",
+            "2026-10-08.json.tmp",
+            "README.json",
+        ]
+        out = capsys.readouterr().out
+        assert "forward-coverage: 2026-10-06 points 14/16 covered (87.5%)" in out
+        assert "IWM 8/8 (100.0%)" in out and "QQQ 6/8 (75.0%)" in out
+        assert "scored 3/3 banked sessions since 2026-10-05 (no wire)" in out
+
+    def test_backfill_returns_one_row_per_session(self, forward_store, no_network) -> None:
+        self._bank_all(forward_store)
+        rows = fc.backfill(date(2026, 10, 6), now=NOW)
+        assert [(r.session, r.exit_code) for r in rows] == [
+            (date(2026, 10, 6), 0),
+            (date(2026, 10, 7), 0),
+        ]
+        assert all(r.doc is not None and r.error == "" for r in rows)
+        assert no_network == []
+
+    def test_a_bad_session_is_reported_and_the_rest_still_score(
+        self, forward_store, static_calendar, capsys, no_network
+    ) -> None:
+        self._bank_all(forward_store)
+        _write_bars(forward_store, date(2026, 10, 6), {})  # nothing to score
+        rc = run_cli(["forward-coverage", "--since", "2026-10-05"], now=NOW, cal=static_calendar)
+        assert rc == 1
+        assert "2026-10-06" in capsys.readouterr().err
+        written = sorted(p.name for p in (forward_store / "coverage").iterdir())
+        assert written == ["2026-10-05.json", "2026-10-07.json"]
+        assert no_network == []
+
+    def test_nothing_banked_since_exits_three(self, forward_store, static_calendar, capsys) -> None:
+        self._bank_all(forward_store)
+        rc = run_cli(["forward-coverage", "--since", "2026-10-08"], now=NOW, cal=static_calendar)
+        assert rc == fc.NO_BARS_EXIT
+        assert "no banked session" in capsys.readouterr().err
+
+    def test_since_and_session_are_exclusive(self, forward_store, static_calendar) -> None:
+        rc = run_cli(
+            ["forward-coverage", "--since", "2026-10-05", "--session", "2026-10-05"],
+            now=NOW,
+            cal=static_calendar,
+        )
+        assert rc == 2

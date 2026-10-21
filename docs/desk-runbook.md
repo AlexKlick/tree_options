@@ -421,18 +421,20 @@ EOD corpus's count, the forward one grows session by session).
 
 Store: `artifacts/desk-forward-minutes/` (`DESK_FORWARD_DIR` overrides),
 a sibling of `desk-longdated-capture`; the Massive response cache is the
-shared `artifacts/massive-cache-desk`. Four subdirectories, all
+shared `artifacts/massive-cache-desk`. The capture subdirectories are
 write-once-per-key and never rewritten: `selection/<D>.json`
 (`desk-forward-selection/1`), `bars/<D>.json`
 (`desk-forward-minute-bars/1`), `budget/<date>.json`
-(`desk-forward-wire-budget/1`), `verify/<D>.json`
-(`desk-forward-verify/1`). Every document says
+(`desk-forward-wire-budget/1`). Two derived subdirectories are re-scored
+from `bars/` whenever their command runs (no wire): `verify/<D>.json`
+(`desk-forward-verify/1`) and `coverage/<D>.json`
+(`desk-forward-clock-coverage/1`). Every document says
 `execution_authorized: false`; nothing here trades.
 
 | job | when (America/New_York) | does |
 |---|---|---|
 | `desk-forward-select` | Sat 09:00 (after `desk-chain`'s Sat 06:30 recording) | re-selects the universe from the latest recorded chain so the corpus tracks it as deltas/dtes age; 3 nearest-the-money strikes per (underlying, expiry, right), capped at 60 contracts; no wire requests |
-| `desk-forward-minutes` | Mon-Fri 17:25; Mon-Sat 06:50 (catch-up) | captures the latest closed session's minute bars for the selection (1 request per contract, cache hits free), then writes the decision-clock verify verdict |
+| `desk-forward-minutes` | Mon-Fri 17:25; Mon-Sat 06:50 (catch-up) | captures the latest closed session's minute bars for the selection (1 request per contract, cache hits free), then writes the strict three-clock verify verdict and the eight-clock coverage facts (both informational) |
 
 The wire budget guard: `--budget N` (default 120 requests/day, ET date
 keyed) is checked with a headroom rule — a request starts only when the
@@ -440,11 +442,47 @@ retry budget still fits under the cap — and every refusal is logged to the
 day's ledger. A selection older than 10 calendar days (or postdating the
 session) makes the capture refuse with exit 4 before any request.
 
-Exit codes (beyond the shared 0 ok / 1 failure / 2 bad args / 3 retryable):
-4 selection stale or missing (run `forward-select`); 5 the daily budget
-stopped the capture before anything landed; 6 captured, but a decision
-clock has no bar (or no bars document at all). Only 3 is in
-`SuccessExitStatus`.
+`forward-minutes` exits on the CAPTURE only (since TREX Wave 1): 0 when at
+least one contract banked bars; beyond the shared 1 failure / 2 bad args or
+tier boundary / 3 retryable: 4 selection stale or missing (run
+`forward-select`); 5 the daily budget stopped the capture before anything
+landed; 6 the session was captured but no contract banked a single bar.
+Only 3 is in `SuccessExitStatus`. Before Wave 1 the exit also carried the
+strict verify (exit 6 unless EVERY contract printed in the exact
+10:00/10:15/15:15 minute), so the unit went red on nearly every real
+session although capture worked.
+
+The same run writes two kinds of facts, neither of which moves the exit code:
+
+- `verify/<D>.json`: the strict three-clock check, unchanged in meaning
+  (`ok` is true only when every contract that printed has a bar in each
+  exact clock minute), plus `per_clock` counts (`covered`/`total` per clock).
+  The journal line reads `forward-verify: <D> ok=False covered=N no_trade=N
+  clocks 10:00=a/b 10:15=a/b 15:15=a/b (informational: ...)`. The standalone
+  `forward-verify` command still exits 0 ok / 6 not ok.
+- `coverage/<D>.json`: the eight-clock scorer (`forward_coverage.py`, the
+  sealed RESTART-THRESHOLD C1 schedule, a bar in `[C, C+15min)` ET covers
+  clock C) with per-underlying facts under `underlyings`: per clock
+  `covered`/`total`/`pct`, pooled `covered_points`/`scheduled_points`,
+  `min_clock_pct`, `clocks_with_any_contract_covered`, and the 50%/90%
+  boolean facts. These are facts, not a verdict: how C3's "for every traded
+  underlying" clause is read (contract-clock points per underlying, or a
+  clock observed by any of the underlying's contracts) stays the owner's
+  call, and C3 pools (session, clock) points across the qualifying corpus,
+  not one session.
+
+Backfill (scores sessions banked before the same-run scoring existed; files
+only: no client is built, no wire budget is touched, nothing reaches the
+network):
+
+```bash
+cd ~/documents/tree_options
+HOME=/home/alexk PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-coverage --since 2026-10-01
+# one "forward-coverage: <D> points a/b covered (p%); ... IWM a/b (p%) QQQ ..." line per
+# banked session, then "scored n/n banked sessions since <D> (no wire)".
+# Exit 0 all scored, 3 nothing banked on or after D, else the first failing
+# session's code (the rest still score). It rewrites coverage/<D>.json only.
+```
 
 **Units are shipped DISABLED** (files only; nothing starts burning quota
 without an operator decision — the desk-lab timers stay stopped and are
@@ -475,6 +513,7 @@ cd ~/documents/tree_options
 PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-select            # today
 PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-minutes --session 2026-10-05
 PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-verify  --session 2026-10-05
+PYTHONPATH=src .venv/bin/python -m tree_options.desk forward-coverage --session 2026-10-05
 ```
 
 The live-session check (run at the next RTH session after 17:25 ET, or
@@ -482,9 +521,12 @@ read the journal the next morning):
 
 ```bash
 systemctl --user start desk-forward-minutes.service
-journalctl --user -u desk-forward-minutes -n 30   # ... ok=N ... covered=N
-head -40 ~/documents/tree_options/artifacts/desk-forward-minutes/verify/<D>.json
-# covered_contracts >= 1 and ok == true proves bars landed on 10:00/10:15/15:15 ET
+journalctl --user -u desk-forward-minutes -n 40   # ... ok=N ... then the coverage table
+jq '.per_clock' ~/documents/tree_options/artifacts/desk-forward-minutes/verify/<D>.json
+jq '.underlyings | map_values({covered_points, scheduled_points, covered_points_pct})' \
+   ~/documents/tree_options/artifacts/desk-forward-minutes/coverage/<D>.json
+# exit 0 proves at least one contract banked bars; the per-clock and
+# per-underlying numbers are the coverage evidence (facts, not a verdict)
 ```
 
 ## Playbook and conditions (Wave 2 D5; no timer yet)
