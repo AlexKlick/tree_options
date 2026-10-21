@@ -31,6 +31,16 @@ Broker facts are folded through the pure lifecycle BEFORE they are
 journaled; facts the lifecycle refuses turn the outcome uncertain rather
 than poisoning the journal.
 
+Wave 2 adds per-trade authority (``supervised-mandate/2``, C2.3): one owner
+approval (a validated ``approve_entry`` command) grants
+``mandates/<intent_id>.json`` for exactly one order of exactly one effect
+(``grant_entry_mandate``); ``issue_permit`` mints that intent's permit from
+it, consuming it under the same lock by renaming it to
+``<intent_id>.consumed.json``. An intent with a per-trade mandate never
+falls back to the v1 single mandate, and an equity effect
+(``supervised-equity-effect/1``) is only ever authorized per trade; the v1
+``mandate.json`` path is otherwise unchanged (the canary path).
+
 All instants are timezone-aware; ages and TTLs are epoch-second math
 (the repo bans naive ``timedelta`` construction outside ``time/``).
 """
@@ -43,6 +53,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Iterator, Sequence
@@ -51,7 +62,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Protocol
 
 from pydantic import Field, TypeAdapter
 
@@ -71,6 +82,13 @@ from tree_options.execution import (
 from tree_options.execution.records import StoredExecutionRecord
 from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.time.sessions import shift_instant
+
+if TYPE_CHECKING:
+    # The Wave 2 contracts import this module (``contracts.canonical``), so
+    # they are imported lazily at call time, never at module load.
+    from tree_options.trex.contracts.commands import ApproveEntryCommand
+    from tree_options.trex.contracts.mandates import SupervisedMandateV2
+    from tree_options.trex.contracts.proposals import EntryProposal
 
 MANDATE_SCHEMA = "supervised-mandate/1"
 INTENT_SCHEMA = "supervised-intent/1"
@@ -95,6 +113,16 @@ RECONCILE_SETTLE_S = 120
 #: How long a mutating call waits for the state lock before refusing.
 LOCK_WAIT_S = 10.0
 
+#: A permit minted from a ``supervised-mandate/2`` names it
+#: ``mandate2-<approval_id>``; the send boundary re-checks that mandate.
+ENTRY_MANDATE_ID_PREFIX = "mandate2-"
+
+#: Intent ids a per-trade mandate file may carry (the contracts'
+#: ``PathSafeId``). ``.consumed`` is the consumed-state suffix, so an id
+#: ending in it would name another intent's consumed file.
+_ENTRY_INTENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}")
+_CONSUMED_SUFFIX = ".consumed"
+
 Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -105,6 +133,21 @@ class SupervisedRefused(RuntimeError):
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
         self.detail = detail
+
+
+class ApprovalRefused(SupervisedRefused):
+    """A per-trade approval or permit refused with Wave 2 ``Blocker`` codes.
+
+    ``blockers`` are the C2.7 wire strings in the contract's check order;
+    ``reason`` is the first of them.
+    """
+
+    def __init__(self, blockers: Sequence[str], detail: str = "") -> None:
+        codes = tuple(str(blocker) for blocker in blockers)
+        if not codes:
+            raise ValueError("an approval refusal names at least one blocker")
+        super().__init__(codes[0], detail or ",".join(codes))
+        self.blockers = codes
 
 
 def _require_aware(value: datetime, name: str) -> datetime:
@@ -342,6 +385,33 @@ class SupervisedPaths:
     def reconcile_audit(self, intent_id: str) -> Path:
         return self.root / "journal" / f"{intent_id}.reconcile.jsonl"
 
+    # -- per-trade mandates (C2.3 / C2.6 ``Wave2SupervisedDir``) -----------
+
+    def entry_mandates(self) -> Path:
+        from tree_options.trex.contracts.layout import Wave2SupervisedDir
+
+        return Wave2SupervisedDir(self.root).mandates()
+
+    def entry_mandate(self, intent_id: str) -> Path:
+        """A granted, unconsumed ``supervised-mandate/2``."""
+        from tree_options.trex.contracts.layout import Wave2SupervisedDir
+
+        return Wave2SupervisedDir(self.root).mandate(intent_id)
+
+    def entry_mandate_consumed(self, intent_id: str) -> Path:
+        """The same mandate after its permit was minted (rename = consumption)."""
+        from tree_options.trex.contracts.layout import Wave2SupervisedDir
+
+        return Wave2SupervisedDir(self.root).mandate_consumed(intent_id)
+
+    def entry_mandate_retired(self, intent_id: str, approval_id: str) -> Path:
+        """An unconsumed mandate that can no longer mint (expired, superseded,
+        or from an earlier owner epoch); kept for the audit trail."""
+        return self.entry_mandates() / "retired" / f"{intent_id}.{approval_id}.json"
+
+    def entry_mandate_retirements(self) -> Path:
+        return self.entry_mandates() / "retired" / "retired.jsonl"
+
 
 @contextlib.contextmanager
 def _locked(paths: SupervisedPaths, *, blocking: bool = True) -> Iterator[None]:
@@ -519,6 +589,243 @@ def active_mandate(
     return mandate
 
 
+# ------------------------------------------- per-trade mandate (mandate/2)
+
+
+def entry_mandate_id(mandate: SupervisedMandateV2) -> str:
+    """The ``mandate_id`` a permit minted from ``mandate`` carries."""
+    return ENTRY_MANDATE_ID_PREFIX + mandate.approval_id
+
+
+def _entry_intent_ok(intent_id: str) -> bool:
+    """Whether ``intent_id`` can name a per-trade mandate file unambiguously."""
+    return bool(_ENTRY_INTENT_ID.fullmatch(intent_id)) and not intent_id.endswith(_CONSUMED_SUFFIX)
+
+
+def _load_entry_mandate(path: Path) -> SupervisedMandateV2:
+    from tree_options.trex.contracts.mandates import SupervisedMandateV2
+
+    return SupervisedMandateV2.model_validate(_read_model(path))
+
+
+def _permit_for_intent(paths: SupervisedPaths, intent_id: str) -> Path | None:
+    for path in sorted((paths.root / "permits").glob("*.json")):
+        if _read_model(path).get("intent_id") == intent_id:
+            return path
+    return None
+
+
+def _retire_entry_mandate(
+    paths: SupervisedPaths, mandate: SupervisedMandateV2, *, now: datetime, reason: str
+) -> None:
+    """Move an unconsumed mandate that can no longer mint out of the way."""
+    source = paths.entry_mandate(mandate.intent_id)
+    target = paths.entry_mandate_retired(mandate.intent_id, mandate.approval_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _durable_rename(source, target)
+    _fsync_dir(source.parent)
+    _append_line(
+        paths.entry_mandate_retirements(),
+        {
+            "schema": "supervised-mandate-retired/1",
+            "intent_id": mandate.intent_id,
+            "approval_id": mandate.approval_id,
+            "owner_epoch": mandate.owner_epoch,
+            "reason": reason,
+            "at": now.isoformat(),
+        },
+    )
+
+
+def _dead_reason(
+    mandate: SupervisedMandateV2, *, now: datetime, owner_epoch: str, profile_digest: str
+) -> str | None:
+    """Why a stored, unconsumed mandate can never mint a permit (None = live)."""
+    if mandate.expired_at(now):
+        return "expired"
+    if mandate.owner_epoch != owner_epoch:
+        return "owner_epoch_changed"
+    if mandate.profile_digest != profile_digest:
+        return "profile_changed"
+    return None
+
+
+def grant_entry_mandate(
+    paths: SupervisedPaths,
+    *,
+    now: datetime,
+    proposal: EntryProposal,
+    command: ApproveEntryCommand,
+    owner_epoch: str,
+    profile_digest: str,
+) -> SupervisedMandateV2:
+    """Grant the per-trade mandate one validated ``approve_entry`` buys.
+
+    ``owner_epoch`` and ``profile_digest`` are the LIVE desk's bindings. The
+    contract's pure ``approval_blockers`` decides first (``ApprovalRefused``
+    with its codes: proposal, effect, epoch and profile mismatches,
+    ``command_expired``, ``approval_expired``). Then, under the state lock:
+    HALT refuses ``effects_halted``; a consumed mandate for the intent
+    refuses ``mandate_already_consumed``; an intent that already holds a
+    permit refuses ``permit_already_issued``; a replay of the SAME approval
+    returns the stored mandate unchanged (one approval, one order); another
+    approval refuses ``entry_mandate_already_granted`` while the stored one
+    can still mint, and retires it once it cannot (expired, earlier owner
+    epoch, other profile). Nothing here contacts a broker.
+    """
+    from tree_options.trex.contracts.mandates import approval_blockers, mandate_for_approval
+    from tree_options.trex.contracts.vocabulary import Blocker
+
+    _require_aware(now, "now")
+    blockers = approval_blockers(
+        proposal, command, now=now, owner_epoch=owner_epoch, profile_digest=profile_digest
+    )
+    if blockers:
+        raise ApprovalRefused(blockers)
+    intent_id = proposal.effect.intent_id
+    if not _entry_intent_ok(intent_id):
+        raise SupervisedRefused("intent_id_not_path_safe", intent_id)
+    with _locked(paths):
+        if (paths.root / "HALT").exists():
+            raise SupervisedRefused("effects_halted")
+        if paths.entry_mandate_consumed(intent_id).exists():
+            raise ApprovalRefused((Blocker.MANDATE_ALREADY_CONSUMED,), intent_id)
+        issued = _permit_for_intent(paths, intent_id)
+        if issued is not None:
+            raise SupervisedRefused("permit_already_issued", issued.name)
+        current = paths.entry_mandate(intent_id)
+        if current.exists():
+            existing = _load_entry_mandate(current)
+            if existing.approval_id == command.idempotency_key:
+                if existing.proposal_id != proposal.proposal_id:
+                    raise ApprovalRefused((Blocker.COMMAND_BODY_MISMATCH,), intent_id)
+                return existing
+            dead = _dead_reason(
+                existing, now=now, owner_epoch=owner_epoch, profile_digest=profile_digest
+            )
+            if dead is None:
+                raise SupervisedRefused("entry_mandate_already_granted", existing.approval_id)
+            _retire_entry_mandate(paths, existing, now=now, reason=dead)
+        mandate = mandate_for_approval(proposal, command, now=now)
+        _atomic_write(current, _dump(mandate))
+        return mandate
+
+
+def invalidate_entry_mandates(
+    paths: SupervisedPaths, *, now: datetime, owner_epoch: str
+) -> list[str]:
+    """Retire every unconsumed per-trade mandate of another owner epoch.
+
+    A desk restart mints a new epoch, so its pending approvals can never
+    mint (``approval_epoch_mismatch``); this moves them out of the way and
+    returns their intent ids, for the ``approvals_invalidated`` event.
+    Consumed mandates stay as history; an unreadable file is left in place
+    (it cannot mint either: loading it refuses).
+    """
+    _require_aware(now, "now")
+    retired: list[str] = []
+    with _locked(paths):
+        directory = paths.entry_mandates()
+        if not directory.is_dir():
+            return retired
+        for path in sorted(directory.glob("*.json")):
+            if path.name.endswith(_CONSUMED_SUFFIX + ".json"):
+                continue
+            try:
+                mandate = _load_entry_mandate(path)
+            except (OSError, ValueError):
+                continue
+            if mandate.owner_epoch != owner_epoch:
+                _retire_entry_mandate(paths, mandate, now=now, reason="owner_epoch_changed")
+                retired.append(mandate.intent_id)
+    return retired
+
+
+def entry_mandates(paths: SupervisedPaths, *, now: datetime) -> list[dict[str, Any]]:
+    """Read-only inventory of per-trade mandates (never raises on a bad file).
+
+    ``state``: ``granted`` (may still mint), ``expired``, ``consumed`` (its
+    permit was minted) or ``unreadable``.
+    """
+    _require_aware(now, "now")
+    directory = paths.entry_mandates()
+    if not directory.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.json")):
+        consumed = path.name.endswith(_CONSUMED_SUFFIX + ".json")
+        stem = path.name.removesuffix(".json").removesuffix(_CONSUMED_SUFFIX if consumed else "")
+        row: dict[str, Any] = {"intent_id": stem, "file": path.name}
+        try:
+            mandate = _load_entry_mandate(path)
+        except (OSError, ValueError) as error:
+            row.update(state="unreadable", error=type(error).__name__)
+        else:
+            if consumed:
+                state = "consumed"
+            else:
+                state = "expired" if mandate.expired_at(now) else "granted"
+            row.update(
+                state=state,
+                approval_id=mandate.approval_id,
+                proposal_id=mandate.proposal_id,
+                effect_sha256=mandate.effect_sha256,
+                owner_epoch=mandate.owner_epoch,
+                strategy_version=mandate.strategy_version,
+                expires_at=mandate.expires_at.isoformat(),
+            )
+        rows.append(row)
+    return rows
+
+
+def _equity_effect_payload(effect_payload: bytes) -> bool:
+    """True for a ``supervised-equity-effect/1`` payload, which must then be
+    its canonical encoding (else ``effect_invalid``). Any other payload stays
+    opaque bytes, hashed as before."""
+    from tree_options.trex.contracts.effects import EQUITY_EFFECT_SCHEMA, decode_effect_v1
+
+    try:
+        document = json.loads(effect_payload)
+    except ValueError:
+        return False
+    if not isinstance(document, dict) or document.get("schema") != EQUITY_EFFECT_SCHEMA:
+        return False
+    try:
+        decode_effect_v1(effect_payload)
+    except ValueError as error:
+        raise SupervisedRefused("effect_invalid", type(error).__name__) from None
+    return True
+
+
+def _entry_mandate_for_permit(
+    paths: SupervisedPaths, permit: EffectPermit
+) -> SupervisedMandateV2 | None:
+    """The consumed per-trade mandate behind ``permit``; None for a v1 permit.
+
+    A permit is per-trade when its ``mandate_id`` says so OR its intent has a
+    consumed mandate/2; either way the two must agree, else it refuses."""
+    intent_id = permit.intent_id
+    consumed = paths.entry_mandate_consumed(intent_id) if _entry_intent_ok(intent_id) else None
+    per_trade = permit.mandate_id.startswith(ENTRY_MANDATE_ID_PREFIX)
+    if not per_trade and (consumed is None or not consumed.exists()):
+        return None
+    if (paths.root / "HALT").exists():
+        raise SupervisedRefused("effects_halted")
+    if consumed is None or not consumed.exists():
+        raise SupervisedRefused("mandate_absent", intent_id)
+    mandate = _load_entry_mandate(consumed)
+    if (
+        entry_mandate_id(mandate) != permit.mandate_id
+        or mandate.intent_id != intent_id
+        or mandate.effect_sha256 != permit.effect_sha256
+        or mandate.account_id != permit.account_id
+        or mandate.owner_epoch != permit.owner_epoch
+        or mandate.strategy_version != permit.strategy_version
+    ):
+        raise SupervisedRefused("mandate_binding_mismatch", permit.permit_id)
+    return mandate
+
+
 # ---------------------------------------------------------------- intent
 
 
@@ -628,12 +935,19 @@ def issue_permit(
     effect_payload: bytes,
     screening_sha256: str,
     ttl_seconds: int = MAX_PERMIT_TTL_S,
+    profile_digest: str | None = None,
 ) -> EffectPermit:
     """Spend one mandate order on a hash-bound permit, or refuse.
 
     Refusal reasons: canary blockers, a passed send deadline, an inactive
     or exhausted mandate, or a permit that already exists for the intent.
     The permit expires at the earlier of its TTL and the send deadline.
+
+    An intent with a per-trade mandate (``mandates/<intent_id>.json``) is
+    authorized by it alone (``_issue_entry_permit``), checked against the
+    LIVE ``owner_epoch`` and ``profile_digest`` and consumed exactly once;
+    an equity effect without one refuses ``mandate_absent``. Every other
+    intent takes the v1 path below, unchanged.
     """
     _require_aware(now, "now")
     if canary_blockers:
@@ -642,7 +956,28 @@ def issue_permit(
         raise SupervisedRefused("intent_deadline_passed")
     if not 1 <= ttl_seconds <= MAX_PERMIT_TTL_S:
         raise SupervisedRefused("permit_ttl_out_of_bounds")
+    equity = _equity_effect_payload(effect_payload)
     with _locked(paths):
+        intent_id = intent.intent.intent_id
+        if _entry_intent_ok(intent_id) and (
+            paths.entry_mandate(intent_id).exists()
+            or paths.entry_mandate_consumed(intent_id).exists()
+        ):
+            return _issue_entry_permit(
+                paths,
+                now=now,
+                account_id=account_id,
+                owner_epoch=owner_epoch,
+                profile_digest=profile_digest,
+                intent=intent,
+                effect_payload=effect_payload,
+                screening_sha256=screening_sha256,
+                ttl_seconds=ttl_seconds,
+            )
+        if equity:
+            raise SupervisedRefused(
+                "mandate_absent", f"{intent_id}: an equity entry needs a per-trade approval"
+            )
         # The intent's emitting source must equal the granted strategy
         # scope; a mismatch refuses here as mandate_scope_mismatch.
         mandate = active_mandate(
@@ -684,6 +1019,82 @@ def issue_permit(
         _atomic_write(paths.mandate(), _dump(spent))
         _atomic_write(paths.permit(permit_id), _dump(permit))
         return permit
+
+
+def _issue_entry_permit(
+    paths: SupervisedPaths,
+    *,
+    now: datetime,
+    account_id: str,
+    owner_epoch: str,
+    profile_digest: str | None,
+    intent: SupervisedIntent,
+    effect_payload: bytes,
+    screening_sha256: str,
+    ttl_seconds: int,
+) -> EffectPermit:
+    """Mint the one permit a per-trade mandate allows (caller holds the lock).
+
+    ``mandate_blockers`` (approval expired, epoch, profile, effect hash)
+    refuses as ``ApprovalRefused`` without consuming; a consumed mandate
+    refuses ``mandate_already_consumed``. The permit expires at the
+    earliest of its TTL, the intent's send deadline and the approval.
+    """
+    from tree_options.trex.contracts.mandates import mandate_blockers
+    from tree_options.trex.contracts.vocabulary import Blocker
+
+    intent_id = intent.intent.intent_id
+    if (paths.root / "HALT").exists():
+        raise SupervisedRefused("effects_halted")
+    pending = paths.entry_mandate(intent_id)
+    consumed = paths.entry_mandate_consumed(intent_id)
+    if consumed.exists():
+        raise ApprovalRefused((Blocker.MANDATE_ALREADY_CONSUMED,), intent_id)
+    mandate = _load_entry_mandate(pending)
+    if mandate.intent_id != intent_id:
+        raise SupervisedRefused("mandate_binding_mismatch", pending.name)
+    effect_sha = hashlib.sha256(effect_payload).hexdigest()
+    blockers = mandate_blockers(
+        mandate,
+        now=now,
+        effect_sha256=effect_sha,
+        owner_epoch=owner_epoch,
+        # an unknown live profile can never match the approved one
+        profile_digest=profile_digest or "",
+    )
+    if blockers:
+        raise ApprovalRefused(blockers, intent_id)
+    if mandate.account_id != account_id:
+        raise SupervisedRefused("mandate_account_mismatch")
+    if mandate.strategy_version != intent.intent.source:
+        raise SupervisedRefused("mandate_scope_mismatch")
+    issued = _permit_for_intent(paths, intent_id)
+    if issued is not None:
+        raise SupervisedRefused("permit_already_issued", issued.name)
+    permit_id = (
+        "permit-"
+        + hashlib.sha256(
+            canonical_bytes({"intent_id": intent_id, "effect_sha256": effect_sha})
+        ).hexdigest()[:16]
+    )
+    permit = EffectPermit(
+        permit_id=permit_id,
+        mandate_id=entry_mandate_id(mandate),
+        intent_id=intent_id,
+        package_intent_sha256=intent.package_intent_sha256,
+        effect_sha256=effect_sha,
+        account_id=account_id,
+        owner_epoch=owner_epoch,
+        strategy_version=mandate.strategy_version,
+        screening_sha256=screening_sha256,
+        issued_at=now,
+        expires_at=min(shift_instant(now, ttl_seconds), intent.send_deadline, mandate.expires_at),
+    )
+    # Consumption first (the rename IS the consumption): a crash between
+    # the two steps wastes the approval, never mints a second order.
+    _durable_rename(pending, consumed)
+    _atomic_write(paths.permit(permit_id), _dump(permit))
+    return permit
 
 
 # ----------------------------------------------------------------- send
@@ -767,15 +1178,20 @@ def send(
             raise SupervisedRefused("permit_expired", permit_id)
         if hashlib.sha256(effect_payload).hexdigest() != permit.effect_sha256:
             raise SupervisedRefused("effect_hash_mismatch", permit_id)
-        mandate = active_mandate(
-            paths,
-            now=now,
-            account_id=permit.account_id,
-            owner_epoch=permit.owner_epoch,
-            strategy_version=permit.strategy_version,
-        )
+        per_trade = _entry_mandate_for_permit(paths, permit)
+        environment: str
+        if per_trade is not None:
+            environment = per_trade.environment
+        else:
+            environment = active_mandate(
+                paths,
+                now=now,
+                account_id=permit.account_id,
+                owner_epoch=permit.owner_epoch,
+                strategy_version=permit.strategy_version,
+            ).environment
         broker_environment = getattr(broker, "execution_environment", "ibkr-paper")
-        if mandate.environment != broker_environment:
+        if environment != broker_environment:
             raise SupervisedRefused("broker_environment_mismatch")
         pending = paths.pending(permit.intent_id)
         if not pending.exists():
@@ -793,7 +1209,7 @@ def send(
         if _reached(now, intent.send_deadline):
             raise SupervisedRefused("intent_deadline_passed", permit.intent_id)
         preflight = getattr(broker, "validate_effect", None)
-        if mandate.environment == "broker_paper" and not callable(preflight):
+        if environment == "broker_paper" and not callable(preflight):
             raise SupervisedRefused("broker_paper_preflight_absent")
         if callable(preflight):
             preflight(effect_payload, intent.intent, permit)

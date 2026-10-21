@@ -9,6 +9,7 @@ permit bound to the screening digest, send through the IBKR adapter.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -36,6 +37,7 @@ from tree_options.trex.supervised_canary import (
     OperatorCanaryInputs,
     assignment_exposure,
     collect_canary_screening,
+    collect_entry_screening,
     modeled_margin,
 )
 from tree_options.trex.supervised_ibkr import (
@@ -416,3 +418,73 @@ def test_supervised_chain_rehearsal_on_fakes(tmp_path):
     assert (trade.order.orderRef, trade.order.account) == ("trex:sup:sup-001", ACCOUNT)
     assert receipt["broker_order_id"] == str(trade.order.orderId)
     assert project_intent(paths, "sup-001").state == ExecutionState.ACKNOWLEDGED
+
+
+# ------------------------------------------- kind-aware entry screening: options
+
+
+def _entry(
+    broker: IbkrSupervisedBroker, effect: SupervisedEffect | None = None, entries=0, clock=None
+):
+    return collect_entry_screening(
+        effect or _effect(),
+        profile=PROFILE,
+        mandate_account_id=ACCOUNT,
+        entries_this_session=entries,
+        broker=broker,
+        option_inputs=INPUTS,
+        clock=clock,
+    )
+
+
+def test_option_entry_screening_keeps_the_canary_screen_unchanged():
+    broker, _ = _live()
+    # one check instant for both screens, after every observation they make
+    fixed = shift_instant(datetime.now(UTC), 2)
+    canary = collect_canary_screening(
+        broker,
+        _effect(),
+        profile=PROFILE,
+        mandate_account_id=ACCOUNT,
+        inputs=INPUTS,
+        clock=lambda: fixed,
+    )
+    entry = _entry(broker, clock=lambda: fixed)
+    assert entry.blockers == canary.blockers == ()
+    assert entry.facts is not None and canary.facts is not None
+    # the fake stamps each account read with the wall clock: the only
+    # difference between two observations
+    observed = canary.facts.account_observed_at
+    assert replace(entry.facts, account_observed_at=observed) == canary.facts
+    # the canary's own evidence rides along unchanged, plus the session count
+    shared = {k: v for k, v in entry.evidence.items() if k in canary.evidence}
+    shared["account_observed_at"] = canary.evidence["account_observed_at"]
+    assert shared == canary.evidence
+    assert entry.evidence["entries_this_session"] == 0
+
+
+@pytest.mark.parametrize("entries", [3, None])
+def test_option_entries_share_the_session_cap(entries):
+    broker, _ = _live()
+    assert _entry(broker, entries=entries).blockers == ("session_entry_limit_reached",)
+
+
+def test_option_entry_screening_refuses_credit_opens():
+    broker, _ = _live()
+    credit = _effect(_vertical(kind="credit_vertical", limit="1.00"), limit=Decimal("1.10"))
+    blockers = _entry(broker, credit).blockers
+    assert "credit_open_not_supported_v1" in blockers
+    # the canary blockers are still all there
+    assert set(_screen(broker, credit).blockers) <= set(blockers)
+
+
+def test_option_entry_screening_needs_its_inputs():
+    broker, _ = _live()
+    with pytest.raises(ValueError):
+        collect_entry_screening(
+            _effect(),
+            profile=PROFILE,
+            mandate_account_id=ACCOUNT,
+            entries_this_session=0,
+            broker=broker,
+        )

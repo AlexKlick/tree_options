@@ -17,6 +17,13 @@ Wiring the controller directly is a later lane; the file shape is frozen:
 
 Unknown planned usage earns NO extra (fail closed); a dry window neither
 adds extra nor blocks the base.
+
+Wave 2 (owner plan 2026-10-14): the owner approves every product ENTRY, one
+per-trade ``supervised-mandate/2`` per approval (``supervised.
+grant_entry_mandate``). A standing daily budget would bypass that, so this
+module serves the LEGACY agent path only: it refuses any strategy outside
+``LEGACY_AGENT_STRATEGIES`` (fail closed: an unknown strategy is a product
+strategy) with ``product_strategy_requires_approval``.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import sys
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Final
 
 from tree_options.trex.desk_runtime import DeskPaths
 from tree_options.trex.supervised import (
@@ -40,6 +48,17 @@ DEFAULT_BASE = 1
 DEFAULT_CAP = 3
 #: a daily grant must survive the session and the evening, nothing more
 DEFAULT_TTL_S = 12 * 60 * 60
+#: the legacy agent path's strategy, the default of every grant here
+DEFAULT_STRATEGY = "operational-canary/1"
+#: The only strategies a standing daily grant may cover. Every other
+#: strategy is approval-driven: each entry needs the owner's approval.
+LEGACY_AGENT_STRATEGIES: Final = frozenset({DEFAULT_STRATEGY})
+
+
+def require_legacy_strategy(strategy: str) -> None:
+    """Refuse a product (approval-driven) strategy; agent budgets are legacy-only."""
+    if strategy not in LEGACY_AGENT_STRATEGIES:
+        raise SupervisedRefused("product_strategy_requires_approval", strategy)
 
 
 @dataclass(frozen=True)
@@ -75,9 +94,16 @@ class GrantPlan:
 
 
 def daily_grant(
-    windows: tuple[QuotaWindow, ...] = (), *, base: int = DEFAULT_BASE, cap: int = DEFAULT_CAP
+    windows: tuple[QuotaWindow, ...] = (),
+    *,
+    base: int = DEFAULT_BASE,
+    cap: int = DEFAULT_CAP,
+    strategy: str = DEFAULT_STRATEGY,
 ) -> GrantPlan:
-    """Base + one order per under-using window, never above ``cap``."""
+    """Base + one order per under-using window, never above ``cap``.
+
+    Only for a legacy agent strategy (``require_legacy_strategy``)."""
+    require_legacy_strategy(strategy)
     if base < 1:
         raise ValueError("base must be >= 1")
     if cap < base:
@@ -143,6 +169,7 @@ def grant_command(
     granted_by: str,
 ) -> str:
     """The exact command an operator (or authorized agent) runs."""
+    require_legacy_strategy(strategy)
     return (
         f"python -m tree_options.trex.supervised grant --account {account} "
         f"--owner-epoch {owner_epoch} --strategy {strategy} "
@@ -166,7 +193,7 @@ def _cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--cap", type=int, default=DEFAULT_CAP)
     parser.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_S)
     parser.add_argument("--account", default="DUT143714")
-    parser.add_argument("--strategy", default="operational-canary/1")
+    parser.add_argument("--strategy", default=DEFAULT_STRATEGY)
     parser.add_argument("--granted-by", default="operator-terminal")
     parser.add_argument(
         "--apply", action="store_true", help="run the grant (authorized agent sessions only)"
@@ -180,6 +207,11 @@ def _cli(argv: list[str] | None = None) -> int:
         help="required with --apply (supervised_desk profile-digest)",
     )
     args = parser.parse_args(argv)
+    try:
+        require_legacy_strategy(args.strategy)
+    except SupervisedRefused as refused:
+        print(f"refused: {refused.reason} {refused.detail}", file=sys.stderr)
+        return 2
 
     snapshot = args.windows or windows_path()
     try:
@@ -187,7 +219,7 @@ def _cli(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, KeyError) as error:
         print(f"refused: bad_snapshot {error!r}", file=sys.stderr)
         return 2
-    plan = daily_grant(windows, base=args.base, cap=args.cap)
+    plan = daily_grant(windows, base=args.base, cap=args.cap, strategy=args.strategy)
     digest = (
         args.profile_digest
         or "<digest from: python -m tree_options.trex.supervised_desk profile-digest>"
