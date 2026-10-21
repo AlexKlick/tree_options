@@ -254,8 +254,8 @@ def test_flat_model_number_is_reproduced_at_its_own_price_point() -> None:
 
 def test_the_win_is_the_shape_not_a_scalar() -> None:
     """Cheap wings cost LESS than flat, expensive bodies cost MORE."""
-    assert DERIVED_GRID[(0, 0)][1] == D("6.600") < FLAT_ROUND_TRIP   # |delta| < 0.10
-    assert DERIVED_GRID[(0, 1)][1] == D("8.600") < FLAT_ROUND_TRIP   # |delta| 0.10-0.20
+    assert DERIVED_GRID[(0, 0)][1] == D("6.600") < FLAT_ROUND_TRIP  # |delta| < 0.10
+    assert DERIVED_GRID[(0, 1)][1] == D("8.600") < FLAT_ROUND_TRIP  # |delta| 0.10-0.20
     assert DERIVED_GRID[(0, 4)][1] == D("40.600") > FLAT_ROUND_TRIP  # |delta| 0.50-0.70, ~2.8x
     # and the spread of the shape is ~6x, not the 10x of the raw quoted medians
     # (commission damps it, which is correct: commission is not moneyness-blind)
@@ -308,12 +308,12 @@ def test_legs_of_one_spread_may_sit_in_different_buckets() -> None:
 @pytest.mark.parametrize(
     "abs_delta,dte",
     [
-        ("0.700001", 14),   # deeper than the desk ever trades
+        ("0.700001", 14),  # deeper than the desk ever trades
         ("0.71", 14),
-        ("0.90", 14),       # the deep-ITM rows that poison the unfiltered mean
-        ("-0.30", 14),      # |delta| is unsigned; a negative is a caller bug
-        ("0.42", 6),        # inside the corridor but before the measured floor
-        ("0.42", 61),       # one day past the measured ceiling
+        ("0.90", 14),  # the deep-ITM rows that poison the unfiltered mean
+        ("-0.30", 14),  # |delta| is unsigned; a negative is a caller bug
+        ("0.42", 6),  # inside the corridor but before the measured floor
+        ("0.42", 61),  # one day past the measured ceiling
         ("0.42", 365),
     ],
 )
@@ -372,8 +372,9 @@ def test_provenance_refuses_blank_identifiers(field: str) -> None:
 
 def test_provenance_round_trips_the_caller_supplied_observation_verbatim() -> None:
     """The model never invents, never rewrites, never defaults a timestamp."""
-    record = prov("0.6150", 53, symbol="QQQ", session="2026-09-24",
-                  stamp="2026-09-24T18:02:11-04:00")
+    record = prov(
+        "0.6150", 53, symbol="QQQ", session="2026-09-24", stamp="2026-09-24T18:02:11-04:00"
+    )
     assert record.symbol == "QQQ"
     assert record.abs_delta == D("0.6150")
     assert record.dte == 53

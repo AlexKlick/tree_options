@@ -80,9 +80,9 @@ def test_policy_field_always_carries_both_controls(tmp_path: Path) -> None:
 def _run_doc(policy: str, by_session: dict[str, float]) -> dict:
     return {
         "policy": policy,
-        "summary": {"by_session": [
-            {"session": s, "closed_pnl": str(v)} for s, v in by_session.items()
-        ]},
+        "summary": {
+            "by_session": [{"session": s, "closed_pnl": str(v)} for s, v in by_session.items()]
+        },
     }
 
 

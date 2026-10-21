@@ -18,7 +18,16 @@ D_POST2 = "20261003T010000Z"
 D_SEAL = "20261001T162152Z"  # the registration sample's last digest
 
 
-def _run_summary(policy: str, *, pnl: int, minimum: int, boards: int, by_session: dict[str, float], calls: int = 10, fails: int = 0) -> dict:
+def _run_summary(
+    policy: str,
+    *,
+    pnl: int,
+    minimum: int,
+    boards: int,
+    by_session: dict[str, float],
+    calls: int = 10,
+    fails: int = 0,
+) -> dict:
     return {
         "schema": "desk-lab-run/1",
         "policy": policy,
@@ -30,14 +39,14 @@ def _run_summary(policy: str, *, pnl: int, minimum: int, boards: int, by_session
             "entered": boards,
             "closed_capital_proxy": str(5000 + pnl),
             "minimum_closed_capital_proxy": str(minimum),
-            "by_session": [
-                {"session": s, "closed_pnl": str(v)} for s, v in by_session.items()
-            ],
+            "by_session": [{"session": s, "closed_pnl": str(v)} for s, v in by_session.items()],
         },
     }
 
 
-def _digest(store: Path, digest_id: str, *, status: str = "ok", runs: dict[str, dict] | None = None) -> None:
+def _digest(
+    store: Path, digest_id: str, *, status: str = "ok", runs: dict[str, dict] | None = None
+) -> None:
     d = store / "evaluations" / "challenge" / digest_id / "runs"
     d.mkdir(parents=True, exist_ok=True)
     (store / "evaluations" / "challenge" / digest_id / "digest.json").write_text(
@@ -56,7 +65,9 @@ def store(tmp_path: Path) -> Path:
         s,
         D_SEAL,
         runs={
-            "gepa:winner": _run_summary("gepa:winner", pnl=999, minimum=5000, boards=99, by_session={"2026-09-01": 999.0}),
+            "gepa:winner": _run_summary(
+                "gepa:winner", pnl=999, minimum=5000, boards=99, by_session={"2026-09-01": 999.0}
+            ),
         },
     )
     # a skipped game never counts either
@@ -66,18 +77,48 @@ def store(tmp_path: Path) -> Path:
         s,
         D_POST1,
         runs={
-            "gepa:winner": _run_summary("gepa:winner", pnl=12, minimum=4600, boards=50, by_session={"2026-10-02": 10.0, "2026-10-01": -4.0}),
-            "no_trade": _run_summary("no_trade", pnl=2, minimum=5000, boards=50, by_session={"2026-10-02": 1.0, "2026-10-01": 1.0}),
-            "first_row": _run_summary("first_row", pnl=2, minimum=5000, boards=50, by_session={"2026-10-02": 1.0, "2026-10-01": 1.0}),
+            "gepa:winner": _run_summary(
+                "gepa:winner",
+                pnl=12,
+                minimum=4600,
+                boards=50,
+                by_session={"2026-10-02": 10.0, "2026-10-01": -4.0},
+            ),
+            "no_trade": _run_summary(
+                "no_trade",
+                pnl=2,
+                minimum=5000,
+                boards=50,
+                by_session={"2026-10-02": 1.0, "2026-10-01": 1.0},
+            ),
+            "first_row": _run_summary(
+                "first_row",
+                pnl=2,
+                minimum=5000,
+                boards=50,
+                by_session={"2026-10-02": 1.0, "2026-10-01": 1.0},
+            ),
         },
     )
     _digest(
         s,
         D_POST2,
         runs={
-            "gepa:winner": _run_summary("gepa:winner", pnl=5, minimum=4700, boards=49, by_session={"2026-10-04": 6.0}, calls=20, fails=1),
-            "no_trade": _run_summary("no_trade", pnl=1, minimum=5000, boards=49, by_session={"2026-10-04": 1.0}),
-            "first_row": _run_summary("first_row", pnl=1, minimum=5000, boards=49, by_session={"2026-10-04": 1.0}),
+            "gepa:winner": _run_summary(
+                "gepa:winner",
+                pnl=5,
+                minimum=4700,
+                boards=49,
+                by_session={"2026-10-04": 6.0},
+                calls=20,
+                fails=1,
+            ),
+            "no_trade": _run_summary(
+                "no_trade", pnl=1, minimum=5000, boards=49, by_session={"2026-10-04": 1.0}
+            ),
+            "first_row": _run_summary(
+                "first_row", pnl=1, minimum=5000, boards=49, by_session={"2026-10-04": 1.0}
+            ),
         },
     )
     return s
@@ -102,9 +143,7 @@ class TestAccumulate:
         assert rows["no_trade"]["closed_pnl_sum"] == "3"
         assert st["registration_sample_through"] == challenge.REGISTRATION_SAMPLE_THROUGH
 
-    def test_overlapping_bundles_sum_per_session_and_match_the_total(
-        self, tmp_path: Path
-    ) -> None:
+    def test_overlapping_bundles_sum_per_session_and_match_the_total(self, tmp_path: Path) -> None:
         # one game, two bundles (two runs of the same policy) that both hold
         # 2026-10-06: the session's paired value is the SUM of both rows, so
         # the series adds up to closed_pnl_sum (an overwrite kept 2.0 only)
@@ -113,10 +152,20 @@ class TestAccumulate:
             s,
             D_POST1,
             runs={
-                "w-bundle-a": _run_summary("gepa:w", pnl=7, minimum=5000, boards=10,
-                                           by_session={"2026-10-05": 3.0, "2026-10-06": 4.0}),
-                "w-bundle-b": _run_summary("gepa:w", pnl=5, minimum=5000, boards=10,
-                                           by_session={"2026-10-06": 2.0, "2026-10-07": 3.0}),
+                "w-bundle-a": _run_summary(
+                    "gepa:w",
+                    pnl=7,
+                    minimum=5000,
+                    boards=10,
+                    by_session={"2026-10-05": 3.0, "2026-10-06": 4.0},
+                ),
+                "w-bundle-b": _run_summary(
+                    "gepa:w",
+                    pnl=5,
+                    minimum=5000,
+                    boards=10,
+                    by_session={"2026-10-06": 2.0, "2026-10-07": 3.0},
+                ),
             },
         )
         row = challenge.accumulate_standings(s)["policies"][0]
@@ -159,12 +208,23 @@ class TestRuleCheck:
                 s,
                 f"202610{night + 2:02d}T010000Z",
                 runs={
-                    "gepa:arm": _run_summary("gepa:arm", pnl=10, minimum=5000, boards=600,
-                                             by_session=arm),
-                    "no_trade": _run_summary("no_trade", pnl=0, minimum=5000, boards=600,
-                                             by_session=dict.fromkeys(sessions, 0.0)),
-                    "first_row": _run_summary("first_row", pnl=0, minimum=5000, boards=600,
-                                              by_session=dict.fromkeys(sessions, 0.0)),
+                    "gepa:arm": _run_summary(
+                        "gepa:arm", pnl=10, minimum=5000, boards=600, by_session=arm
+                    ),
+                    "no_trade": _run_summary(
+                        "no_trade",
+                        pnl=0,
+                        minimum=5000,
+                        boards=600,
+                        by_session=dict.fromkeys(sessions, 0.0),
+                    ),
+                    "first_row": _run_summary(
+                        "first_row",
+                        pnl=0,
+                        minimum=5000,
+                        boards=600,
+                        by_session=dict.fromkeys(sessions, 0.0),
+                    ),
                 },
             )
         return challenge.accumulate_standings(s)
@@ -183,7 +243,9 @@ class TestRuleCheck:
         assert twelve["paired_vs_no_trade"]["sessions"] == 20
         assert twelve["paired_vs_no_trade"]["game_sessions"] == 240
         assert twelve["paired_vs_no_trade"]["ci95"] == one["paired_vs_no_trade"]["ci95"]
-        assert twelve["paired_vs_no_trade"]["p_one_sided"] == one["paired_vs_no_trade"]["p_one_sided"]
+        assert (
+            twelve["paired_vs_no_trade"]["p_one_sided"] == one["paired_vs_no_trade"]["p_one_sided"]
+        )
         # one average game: 10 x (+3) + 10 x (-2) = +10
         assert twelve["paired_vs_no_trade"]["diff_total"] == 10.0
         clause3 = {c["clause"]: c for c in twelve["clauses"]}[3]

@@ -59,14 +59,14 @@ D = Decimal
 # a run is not on disk.
 # --------------------------------------------------------------------------
 
+
 def _path(env: str, default: str) -> Path:
     return Path(os.environ.get(env) or default)
 
 
 RUN_DIR = _path(
     "TREX_LONGRUN_DIR",
-    "/home/alexk/documents/tree_options/artifacts/desk-store/evaluations/longrun"
-    "/20260929T094303Z",
+    "/home/alexk/documents/tree_options/artifacts/desk-store/evaluations/longrun/20260929T094303Z",
 )
 OUTCOME_TABLE = _path(
     "TREX_OUTCOME_TABLE", "/home/alexk/.local/state/trex-longrun/outcome-table-20260929-long.jsonl"
@@ -181,9 +181,9 @@ def run() -> dict[str, Any]:
     with OUTCOME_TABLE.open() as handle:
         for line in handle:
             record = json.loads(line)
-            table.setdefault(record["snapshot"], {}).setdefault(
-                record["candidate_id"], {}
-            )[record["exit_mode"]] = record
+            table.setdefault(record["snapshot"], {}).setdefault(record["candidate_id"], {})[
+                record["exit_mode"]
+            ] = record
 
     digest = json.loads((RUN_DIR / "digest.json").read_text())
     return {
@@ -218,9 +218,7 @@ def _arm_entries(arm: str, run_data: dict[str, Any]) -> list[dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
-            outcome = table.get(receipt["snapshot"], {}).get(choice, {}).get(
-                receipt["horizon"]
-            )
+            outcome = table.get(receipt["snapshot"], {}).get(choice, {}).get(receipt["horizon"])
             if outcome is None or outcome["status"] == "no_fill":
                 continue
             entries.append(
@@ -350,13 +348,13 @@ def test_reconstruction_reproduces_the_published_digest(run: dict[str, Any]) -> 
             "appended-board discrepancy this test accounts for"
         )
         unshapeable = sum(
-            1
-            for e in entries
-            if e["row"] is None or e["row"]["short_strike_moneyness_pct"] is None
+            1 for e in entries if e["row"] is None or e["row"]["short_strike_moneyness_pct"] is None
         )
         flat_net = float(sum(e["gross"] for e in entries) - FLAT_ROUND_TRIP * len(entries))
         gap = flat_net - float(published["net_total"])
-        tolerance = max(float(FLAT_ROUND_TRIP) * (1 + unshapeable), 0.002 * abs(float(published["net_total"])))
+        tolerance = max(
+            float(FLAT_ROUND_TRIP) * (1 + unshapeable), 0.002 * abs(float(published["net_total"]))
+        )
         if abs(gap) <= 0.01:
             exact += 1
         else:
@@ -453,9 +451,7 @@ def rerating(run: dict[str, Any]) -> dict[str, Any]:
             priced += 1
             flat += entry["gross"] - FLAT_ROUND_TRIP
             for sigma in SIGMAS:
-                estimate = proxy_abs_delta(
-                    row["structure"], float(moneyness), row["dte"], sigma
-                )
+                estimate = proxy_abs_delta(row["structure"], float(moneyness), row["dte"], sigma)
                 if estimate > 0.70:
                     # OUTSIDE the measured universe. The model REFUSES this leg
                     # (fail-closed, spec 3.1); the reason it refuses is that no
@@ -526,8 +522,12 @@ def test_the_shape_is_actually_exercised_by_this_run(rerating: dict[str, Any]) -
         accounted = sum(rerating["buckets"][sigma].values())
         print(f"\nsigma={sigma} |delta| buckets: {rerating['buckets'][sigma]}")
         print(f"sigma={sigma} dte bands: {rerating['bands'][sigma]}")
-        assert accounted == rerating["priced"], "the bucket histogram does not account for every entry"
-        assert len(occupied_bands) >= 2, f"sigma={sigma}: one dte band only; no expiry shape exercised"
+        assert accounted == rerating["priced"], (
+            "the bucket histogram does not account for every entry"
+        )
+        assert len(occupied_bands) >= 2, (
+            f"sigma={sigma}: one dte band only; no expiry shape exercised"
+        )
         if len(occupied) <= 1:
             # Not a failure - a fact about this run's boards, which concentrate
             # their short strikes within ~1% of spot and are therefore all
@@ -597,7 +597,9 @@ def test_rerating_of_the_finished_run(rerating: dict[str, Any]) -> None:
         lines.append(
             f"    {arm:<42} flat {float(v['flat']):>12,.2f}  shaped {float(v['shaped']):>12,.2f}"
         )
-    changed = [s for s in SIGMAS if verdicts[s]["ordering_changed"] or verdicts[s]["profitability_changed"]]
+    changed = [
+        s for s in SIGMAS if verdicts[s]["ordering_changed"] or verdicts[s]["profitability_changed"]
+    ]
     occupied_any = {
         k
         for sigma in SIGMAS
@@ -658,7 +660,9 @@ def test_the_verdict_is_stable_across_the_sigma_sweep(rerating: dict[str, Any]) 
             {a: float(v["flat"]) for a, v in arms.items()},
             {a: float(v["shaped"]) for a, v in arms.items()},
         )
-    changed = {s for s in SIGMAS if verdicts[s]["ordering_changed"] or verdicts[s]["profitability_changed"]}
+    changed = {
+        s for s in SIGMAS if verdicts[s]["ordering_changed"] or verdicts[s]["profitability_changed"]
+    }
     print(f"\nsigma sweep: changed at {sorted(changed)} of {list(SIGMAS)}")
     assert changed in (set(), set(SIGMAS)), (
         f"the verdict depends on the assumed volatility: changed at {sorted(changed)} only"

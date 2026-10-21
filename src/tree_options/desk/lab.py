@@ -75,7 +75,7 @@ POLICY_SENTENCE = (
 #: moneyness range. Quoted in the board prompt so the agent is not told a
 #: constant the model no longer uses: the flat $14.60 is exactly the
 #: (|delta| 0.35-0.50, dte 7-21) cell of a fifteen-cell measured surface.
-COST_LOW = "$6.60"    # |delta| < 0.10, dte 7-21
+COST_LOW = "$6.60"  # |delta| < 0.10, dte 7-21
 COST_HIGH = "$40.60"  # |delta| 0.50-0.70, dte 7-21
 
 _POLICY_RE = re.compile(r"^[a-z0-9:_-]+$")

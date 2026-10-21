@@ -19,6 +19,7 @@ over the same priced subset, so the two columns differ only in the cost.
 Usage:
     report_cost_rerating.py <leg-deltas.jsonl> [--json OUT]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -53,9 +54,18 @@ def main() -> int:
 
     model = SpreadCostModel.measured()
     per_arm: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"n": 0, "dropped": 0, "gross": 0.0, "flat_net": 0.0,
-                 "shaped_net": 0.0, "cost": 0.0, "reasons": defaultdict(int),
-                 "n_flat_entries": 0, "arm_cost": 0.0})
+        lambda: {
+            "n": 0,
+            "dropped": 0,
+            "gross": 0.0,
+            "flat_net": 0.0,
+            "shaped_net": 0.0,
+            "cost": 0.0,
+            "reasons": defaultdict(int),
+            "n_flat_entries": 0,
+            "arm_cost": 0.0,
+        }
+    )
     seen = set()
 
     with args.legs_jsonl.open(encoding="utf-8") as handle:
@@ -66,7 +76,7 @@ def main() -> int:
             entry = json.loads(line)
             arm = str(entry["arm"])
             key = (arm, str(entry["id"]), str(entry.get("status")))
-            if key in seen:                       # the same entry, re-listed
+            if key in seen:  # the same entry, re-listed
                 continue
             seen.add(key)
             row = per_arm[arm]
@@ -84,9 +94,9 @@ def main() -> int:
                 row["reasons"]["delta_unrecoverable"] += 1
                 continue
             try:
-                cost = model.round_trip([
-                    _leg(symbol_of(str(leg["ticker"])), leg["ad"], dte)
-                    for leg in legs])
+                cost = model.round_trip(
+                    [_leg(symbol_of(str(leg["ticker"])), leg["ad"], dte) for leg in legs]
+                )
             except UnpricedCostError as refused:
                 row["dropped"] += 1
                 row["reasons"][refused.reason] += 1
@@ -112,16 +122,20 @@ def main() -> int:
         # this column reproduces the shaped column's conclusions, the shape
         # buys nothing that a one-line constant change would not.
         level_net = row["gross"] - mean_cost * row["n"]
-        arms.append({
-            "arm": arm, "priced": row["n"], "dropped": row["dropped"],
-            "gross": round(row["gross"], 2),
-            "flat_net": round(row["flat_net"], 2),
-            "level_net": round(level_net, 2),
-            "shaped_net": round(row["shaped_net"], 2),
-            "delta": round(row["shaped_net"] - row["flat_net"], 2),
-            "mean_shaped_cost": round(row["cost"] / row["n"], 2) if row["n"] else None,
-            "reasons": dict(sorted(row["reasons"].items())),
-        })
+        arms.append(
+            {
+                "arm": arm,
+                "priced": row["n"],
+                "dropped": row["dropped"],
+                "gross": round(row["gross"], 2),
+                "flat_net": round(row["flat_net"], 2),
+                "level_net": round(level_net, 2),
+                "shaped_net": round(row["shaped_net"], 2),
+                "delta": round(row["shaped_net"] - row["flat_net"], 2),
+                "mean_shaped_cost": round(row["cost"] / row["n"], 2) if row["n"] else None,
+                "reasons": dict(sorted(row["reasons"].items())),
+            }
+        )
 
     total_priced = sum(a["priced"] for a in arms)
     total_dropped = sum(a["dropped"] for a in arms)
@@ -135,17 +149,15 @@ def main() -> int:
         "profitable_flat": [a["arm"] for a in arms if a["flat_net"] > 0],
         "profitable_level": [a["arm"] for a in arms if a["level_net"] > 0],
         "profitable_shaped": [a["arm"] for a in arms if a["shaped_net"] > 0],
-        "sign_flips": [a["arm"] for a in arms
-                       if (a["flat_net"] > 0) != (a["shaped_net"] > 0)],
-        "shape_adds_nothing": sorted(a["arm"] for a in arms
-                                     if a["level_net"] > 0) == sorted(
-                                         a["arm"] for a in arms if a["shaped_net"] > 0),
+        "sign_flips": [a["arm"] for a in arms if (a["flat_net"] > 0) != (a["shaped_net"] > 0)],
+        "shape_adds_nothing": sorted(a["arm"] for a in arms if a["level_net"] > 0)
+        == sorted(a["arm"] for a in arms if a["shaped_net"] > 0),
         "provenance": {
             "cost_source": EOD,
             "deltas": "inverted from each leg's own last-traded-minute close "
-                      "(Black-Scholes, rate=0, divy=0, T=dte/365); not synthesised",
+            "(Black-Scholes, rate=0, divy=0, T=dte/365); not synthesised",
             "refusal_policy": "fail-closed: out-of-universe legs are DROPPED and "
-                              "counted, never priced at the boundary cell",
+            "counted, never priced at the boundary cell",
             "caveat": "EOD snapshots cannot describe a 10:00-15:15 ET fill",
         },
     }
@@ -153,35 +165,49 @@ def main() -> int:
     if args.json is not None:
         args.json.write_text(json.dumps(doc, indent=2), encoding="utf-8")
 
-    print(f"arms={summary['arms']}  priced={summary['priced_entries']}  "
-          f"dropped={summary['dropped_entries']}  "
-          f"mean shaped cost=${summary['mean_shaped_cost']}  "
-          f"({summary['level_multiple']}x the flat ${FLAT})")
-    print(f"profitable flat   ({len(summary['profitable_flat'])}): "
-          f"{summary['profitable_flat']}")
-    print(f"profitable LEVEL  ({len(summary['profitable_level'])}): "
-          f"{summary['profitable_level']}   <- shape removed, scalar only")
-    print(f"profitable shaped ({len(summary['profitable_shaped'])}): "
-          f"{summary['profitable_shaped']}")
+    print(
+        f"arms={summary['arms']}  priced={summary['priced_entries']}  "
+        f"dropped={summary['dropped_entries']}  "
+        f"mean shaped cost=${summary['mean_shaped_cost']}  "
+        f"({summary['level_multiple']}x the flat ${FLAT})"
+    )
+    print(f"profitable flat   ({len(summary['profitable_flat'])}): {summary['profitable_flat']}")
+    print(
+        f"profitable LEVEL  ({len(summary['profitable_level'])}): "
+        f"{summary['profitable_level']}   <- shape removed, scalar only"
+    )
+    print(
+        f"profitable shaped ({len(summary['profitable_shaped'])}): {summary['profitable_shaped']}"
+    )
     print(f"sign flips ({len(summary['sign_flips'])}): {summary['sign_flips']}")
     print(f"SHAPE ADDS NOTHING OVER A SCALAR: {summary['shape_adds_nothing']}")
     print()
-    header = (f"{'arm':<42} {'n':>5} {'drop':>5} {'flat net':>10} "
-              f"{'level net':>10} {'shaped net':>11} {'mean cost':>10}")
+    header = (
+        f"{'arm':<42} {'n':>5} {'drop':>5} {'flat net':>10} "
+        f"{'level net':>10} {'shaped net':>11} {'mean cost':>10}"
+    )
     print(header)
     print("-" * len(header))
     for a in arms:
-        print(f"{a['arm'][:42]:<42} {a['priced']:>5} {a['dropped']:>5} "
-              f"{a['flat_net']:>10,.0f} {a['level_net']:>10,.0f} "
-              f"{a['shaped_net']:>11,.0f} {a['mean_shaped_cost']:>10,.2f}")
+        print(
+            f"{a['arm'][:42]:<42} {a['priced']:>5} {a['dropped']:>5} "
+            f"{a['flat_net']:>10,.0f} {a['level_net']:>10,.0f} "
+            f"{a['shaped_net']:>11,.0f} {a['mean_shaped_cost']:>10,.2f}"
+        )
     return 0
 
 
 def _leg(symbol: str, abs_delta: Any, dte: int) -> Any:
     from tree_options.desk.cost import Leg
-    return Leg(symbol=symbol, abs_delta=Decimal(str(abs_delta)), dte=dte,
-               source_session=EOD, source_timestamp_et="2026-09-30T18:00:00-04:00",
-               is_eod_snapshot=True)
+
+    return Leg(
+        symbol=symbol,
+        abs_delta=Decimal(str(abs_delta)),
+        dte=dte,
+        source_session=EOD,
+        source_timestamp_et="2026-09-30T18:00:00-04:00",
+        is_eod_snapshot=True,
+    )
 
 
 if __name__ == "__main__":

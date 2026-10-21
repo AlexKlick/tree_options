@@ -271,7 +271,9 @@ def _challenge_service_running() -> bool:
     try:
         state = subprocess.run(
             ["systemctl", "--user", "is-active", "desk-challenge.service"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return False

@@ -55,8 +55,7 @@ class TestClockPaths:
         s = store.ChainStore(tmp_path)
         assert s.manifest_path(D) == tmp_path / "manifest/2026-09-22.json"
         assert (
-            s.manifest_path(D, clock="15:15")
-            == tmp_path / "manifest/clock=15:15/2026-09-22.json"
+            s.manifest_path(D, clock="15:15") == tmp_path / "manifest/clock=15:15/2026-09-22.json"
         )
         # the clock manifests are DIRECTORIES under manifest/: the eod
         # session enumeration globs *.json and cannot see them
@@ -87,9 +86,7 @@ class TestClockValidate:
 
     def test_clock_instant_is_et_not_utc(self) -> None:
         # 15:15 ET = 19:15 UTC: a 19:16 UTC stamp is the 15:15 clock's content
-        parsed = chains.parse_chain(
-            _clock_payload(ts_utc="2026-09-22 19:16:00"), "KO"
-        )
+        parsed = chains.parse_chain(_clock_payload(ts_utc="2026-09-22 19:16:00"), "KO")
         assert store.validate(parsed, D, None, clock="15:15").status == "ok"
 
     def test_eod_semantics_unchanged_without_clock(self, static_calendar) -> None:
@@ -102,10 +99,7 @@ class TestClockValidate:
 
 class TestClockRecording:
     def _record(self, tmp_path, static_calendar, *, clock: str, ts: str = "14:02:00"):
-        bodies = {
-            sym: _clock_payload(sym, ts_utc=f"2026-09-22 {ts}")
-            for sym in ("KO", "PEP")
-        }
+        bodies = {sym: _clock_payload(sym, ts_utc=f"2026-09-22 {ts}") for sym in ("KO", "PEP")}
         return (
             store.record_session(
                 D,
@@ -120,7 +114,9 @@ class TestClockRecording:
             tmp_path / "store",
         )
 
-    def test_clock_session_writes_its_own_namespace_and_no_raw(self, tmp_path, static_calendar) -> None:
+    def test_clock_session_writes_its_own_namespace_and_no_raw(
+        self, tmp_path, static_calendar
+    ) -> None:
         summary, root = self._record(tmp_path, static_calendar, clock="10:00")
         assert all(r.status == "ok" for r in summary.results.values())
         assert (root / "chains/clock=10:00/2026-09-22/KO.json.gz").exists()
@@ -180,7 +176,9 @@ class TestClockCli:
             cal=static_calendar,
         )
 
-    def test_auto_records_the_open_clock(self, monkeypatch, tmp_path: Path, static_calendar) -> None:
+    def test_auto_records_the_open_clock(
+        self, monkeypatch, tmp_path: Path, static_calendar
+    ) -> None:
         bodies = {
             sym: _clock_payload(sym, ts_utc="2026-09-22 14:02:00")
             for sym in ("KO", "PEP", "SPY")  # SPY: the probe reads it first
@@ -196,7 +194,9 @@ class TestClockCli:
         assert rc == 0
         assert (tmp_path / "store/chains/clock=10:00/2026-09-22/KO.json.gz").exists()
 
-    def test_auto_outside_the_schedule_exits_zero(self, monkeypatch, tmp_path, capsys, static_calendar) -> None:
+    def test_auto_outside_the_schedule_exits_zero(
+        self, monkeypatch, tmp_path, capsys, static_calendar
+    ) -> None:
         rc = self._run(
             monkeypatch,
             tmp_path,

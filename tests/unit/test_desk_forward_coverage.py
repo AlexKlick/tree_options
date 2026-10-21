@@ -52,15 +52,12 @@ BUDGET = "O:SPY261016C00570000"
 
 
 def _bar_ms(session: date, hour: int, minute: int, second: int = 0) -> int:
-    return int(
-        datetime.combine(session, time(hour, minute, second), tzinfo=ET).timestamp() * 1000
-    )
+    return int(datetime.combine(session, time(hour, minute, second), tzinfo=ET).timestamp() * 1000)
 
 
 def _bars_at(session: date, moments: list[tuple[int, int] | tuple[int, int, int]]):
     return [
-        {"t": _bar_ms(session, *m), "o": 1.0, "h": 1.0, "l": 1.0, "c": 1.0, "v": 5}
-        for m in moments
+        {"t": _bar_ms(session, *m), "o": 1.0, "h": 1.0, "l": 1.0, "c": 1.0, "v": 5} for m in moments
     ]
 
 
@@ -107,17 +104,22 @@ def forward_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _write_selection(root: Path, *, tickers: list[str], sha: str = SHA,
-                     selected_on: str = SELECT_ON) -> None:
+def _write_selection(
+    root: Path, *, tickers: list[str], sha: str = SHA, selected_on: str = SELECT_ON
+) -> None:
     target = root / "selection" / f"{selected_on}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({
-        "schema": fm.SELECTION_SCHEMA,
-        "selected_on": selected_on,
-        "source_sha256": sha,
-        "contracts": [{"ticker": t} for t in tickers],
-        "tickers": tickers,
-    }))
+    target.write_text(
+        json.dumps(
+            {
+                "schema": fm.SELECTION_SCHEMA,
+                "selected_on": selected_on,
+                "source_sha256": sha,
+                "contracts": [{"ticker": t} for t in tickers],
+                "tickers": tickers,
+            }
+        )
+    )
 
 
 def _write_bars(root: Path, session: date, contracts: dict[str, dict], **kw) -> None:
@@ -181,7 +183,10 @@ class TestClockCoverage:
             assert doc["clocks"][clock]["covered"] == 1
         for clock in ("14:30", "15:15"):
             assert doc["clocks"][clock] == {
-                "covered": 0, "total": 1, "pct": 0.0, "missing_contracts": [FULL],
+                "covered": 0,
+                "total": 1,
+                "pct": 0.0,
+                "missing_contracts": [FULL],
             }
         # hand arithmetic: 6/8 points = 75.0%, min 0.0 at the last two
         assert doc["summary"]["covered_points"] == 6
@@ -271,8 +276,9 @@ class TestClockCoverage:
             fc.clock_coverage(_bars_doc(SESSION_EDT, {FULL: _ok([])}, schema="other/1"))
         with pytest.raises(ValueError, match="no parsable session"):
             fc.clock_coverage(
-                _bars_doc(SESSION_EDT, {FULL: _ok(_bars_at(SESSION_EDT, [(10, 0)]))},
-                          drop_session=True)
+                _bars_doc(
+                    SESSION_EDT, {FULL: _ok(_bars_at(SESSION_EDT, [(10, 0)]))}, drop_session=True
+                )
             )
         bad_bar = [{"t": "10:00", "o": 1.0, "h": 1.0, "l": 1.0, "c": 1.0, "v": 5}]
         with pytest.raises(ValueError, match="invalid bar timestamp"):
@@ -280,8 +286,15 @@ class TestClockCoverage:
 
     def test_bad_schedules_are_refused(self) -> None:
         doc = _bars_doc(SESSION_EDT, {FULL: _ok(_bars_at(SESSION_EDT, [(10, 0)]))})
-        for schedule in ((), ["10:00", "10:00"], ["24:00"], ["10:60"], ["10:00:00"],
-                         ["ab:cd"], ["10"]):
+        for schedule in (
+            (),
+            ["10:00", "10:00"],
+            ["24:00"],
+            ["10:60"],
+            ["10:00:00"],
+            ["ab:cd"],
+            ["10"],
+        ):
             with pytest.raises(ValueError, match=r"clock|schedule"):
                 fc.clock_coverage(doc, schedule)
 
@@ -292,10 +305,14 @@ class TestClockCoverage:
 class TestScoreSession:
     def test_scores_writes_the_doc_and_records_provenance(self, forward_store) -> None:
         _write_selection(forward_store, tickers=[FULL, PARTIAL])
-        _write_bars(forward_store, SESSION_EDT, {
-            FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
-            PARTIAL: _ok(_every_minute(SESSION_EDT, (9, 31), (14, 0))),
-        })
+        _write_bars(
+            forward_store,
+            SESSION_EDT,
+            {
+                FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
+                PARTIAL: _ok(_every_minute(SESSION_EDT, (9, 31), (14, 0))),
+            },
+        )
         doc = fc.score_session(SESSION_EDT, now=NOW)
         assert doc["schema"] == fc.COVERAGE_SCHEMA
         assert doc["execution_authorized"] is False
@@ -304,9 +321,7 @@ class TestScoreSession:
         assert doc["summary"]["covered_points"] == 14
         assert doc["summary"]["scheduled_points"] == 16
         assert doc["summary"]["covered_points_pct"] == 87.5
-        written = json.loads(
-            (forward_store / "coverage" / "2026-10-05.json").read_text()
-        )
+        written = json.loads((forward_store / "coverage" / "2026-10-05.json").read_text())
         assert written["summary"] == doc["summary"]
         assert len(written["bars_sha256"]) == 64
 
@@ -318,8 +333,9 @@ class TestScoreSession:
         assert "forward-minutes" in str(exc.value)
 
     def test_no_selection_anywhere_is_an_honest_input_error(self, forward_store) -> None:
-        _write_bars(forward_store, SESSION_EDT,
-                    {FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0)))})
+        _write_bars(
+            forward_store, SESSION_EDT, {FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0)))}
+        )
         with pytest.raises(fc.CoverageInputError) as exc:
             fc.score_session(SESSION_EDT, now=NOW)
         assert exc.value.exit_code == fc.MISSING_SELECTION_EXIT
@@ -327,9 +343,13 @@ class TestScoreSession:
 
     def test_a_roster_mismatch_is_recorded_not_enforced(self, forward_store) -> None:
         _write_selection(forward_store, tickers=[FULL, PARTIAL, BUDGET], sha="b" * 64)
-        _write_bars(forward_store, SESSION_EDT, {
-            FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
-        })
+        _write_bars(
+            forward_store,
+            SESSION_EDT,
+            {
+                FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
+            },
+        )
         doc = fc.score_session(SESSION_EDT, now=NOW)
         check = doc["selection_check"]
         assert check["provenance"] == "mismatch"
@@ -346,12 +366,15 @@ class TestCli:
         self, forward_store, static_calendar, capsys
     ) -> None:
         _write_selection(forward_store, tickers=[FULL, PARTIAL])
-        _write_bars(forward_store, SESSION_EDT, {
-            FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
-            PARTIAL: _ok(_every_minute(SESSION_EDT, (9, 31), (14, 0))),
-        })
-        rc = run_cli(["forward-coverage", "--session", "2026-10-05"],
-                     now=NOW, cal=static_calendar)
+        _write_bars(
+            forward_store,
+            SESSION_EDT,
+            {
+                FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0))),
+                PARTIAL: _ok(_every_minute(SESSION_EDT, (9, 31), (14, 0))),
+            },
+        )
+        rc = run_cli(["forward-coverage", "--session", "2026-10-05"], now=NOW, cal=static_calendar)
         assert rc == 0
         out = capsys.readouterr().out
         assert "forward-coverage: 2026-10-05 selection 2026-10-03 provenance=match" in out
@@ -366,29 +389,28 @@ class TestCli:
         assert "fact: every clock >= 90% covered: no" in out
         assert "sealed call" in out
 
-    def test_missing_bars_document_exits_three(self, forward_store, static_calendar,
-                                               capsys) -> None:
+    def test_missing_bars_document_exits_three(
+        self, forward_store, static_calendar, capsys
+    ) -> None:
         _write_selection(forward_store, tickers=[FULL])
-        rc = run_cli(["forward-coverage", "--session", "2026-10-05"],
-                     now=NOW, cal=static_calendar)
+        rc = run_cli(["forward-coverage", "--session", "2026-10-05"], now=NOW, cal=static_calendar)
         assert rc == fc.NO_BARS_EXIT
         assert "no bars document" in capsys.readouterr().err
 
-    def test_missing_selection_exits_four(self, forward_store, static_calendar,
-                                          capsys) -> None:
-        _write_bars(forward_store, SESSION_EDT,
-                    {FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0)))})
-        rc = run_cli(["forward-coverage", "--session", "2026-10-05"],
-                     now=NOW, cal=static_calendar)
+    def test_missing_selection_exits_four(self, forward_store, static_calendar, capsys) -> None:
+        _write_bars(
+            forward_store, SESSION_EDT, {FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0)))}
+        )
+        rc = run_cli(["forward-coverage", "--session", "2026-10-05"], now=NOW, cal=static_calendar)
         assert rc == fc.MISSING_SELECTION_EXIT
         assert "forward-select" in capsys.readouterr().err
 
-    def test_a_document_with_no_contracts_exits_one(self, forward_store, static_calendar,
-                                                    capsys) -> None:
+    def test_a_document_with_no_contracts_exits_one(
+        self, forward_store, static_calendar, capsys
+    ) -> None:
         _write_selection(forward_store, tickers=[FULL])
         _write_bars(forward_store, SESSION_EDT, {})
-        rc = run_cli(["forward-coverage", "--session", "2026-10-05"],
-                     now=NOW, cal=static_calendar)
+        rc = run_cli(["forward-coverage", "--session", "2026-10-05"], now=NOW, cal=static_calendar)
         assert rc == 1
         assert "no contracts" in capsys.readouterr().err
 
@@ -396,10 +418,10 @@ class TestCli:
         self, forward_store, static_calendar, capsys
     ) -> None:
         _write_selection(forward_store, tickers=[FULL, BUDGET], sha="b" * 64)
-        _write_bars(forward_store, SESSION_EDT,
-                    {FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0)))})
-        rc = run_cli(["forward-coverage", "--session", "2026-10-05"],
-                     now=NOW, cal=static_calendar)
+        _write_bars(
+            forward_store, SESSION_EDT, {FULL: _ok(_every_minute(SESSION_EDT, (9, 31), (16, 0)))}
+        )
+        rc = run_cli(["forward-coverage", "--session", "2026-10-05"], now=NOW, cal=static_calendar)
         assert rc == 0
         out = capsys.readouterr().out
         assert "provenance=mismatch" in out

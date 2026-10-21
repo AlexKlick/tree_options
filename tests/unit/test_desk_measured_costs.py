@@ -64,6 +64,7 @@ import pytest
 # missing model pass the gate.
 try:  # pragma: no cover - the RED path is the point
     from tree_options.desk import cost
+
     _IMPORT_ERROR: Exception | None = None
 except Exception as exc:  # any import failure is the RED
     cost = None  # type: ignore[assignment]
@@ -147,7 +148,7 @@ def test_delta_buckets_are_the_five_measured_edges_right_closed() -> None:
     assert bucket(Decimal("0")) == "0.00-0.10"
     assert bucket(Decimal("0.0099")) == "0.00-0.10"
     assert bucket(Decimal("0.09999")) == "0.00-0.10"
-    assert bucket(Decimal("0.10")) == "0.00-0.10"      # upper edge of band 1 is INCLUSIVE
+    assert bucket(Decimal("0.10")) == "0.00-0.10"  # upper edge of band 1 is INCLUSIVE
     assert bucket(Decimal("0.10001")) == "0.10-0.20"
     assert bucket(Decimal("0.19999")) == "0.10-0.20"
     assert bucket(Decimal("0.20")) == "0.10-0.20"
@@ -159,7 +160,7 @@ def test_delta_buckets_are_the_five_measured_edges_right_closed() -> None:
     assert bucket(Decimal("0.50")) == "0.35-0.50"
     assert bucket(Decimal("0.50001")) == "0.50-0.70"
     assert bucket(Decimal("0.69999")) == "0.50-0.70"
-    assert bucket(Decimal("0.70")) == "0.50-0.70"      # the ceiling itself IS tradeable
+    assert bucket(Decimal("0.70")) == "0.50-0.70"  # the ceiling itself IS tradeable
 
 
 def test_a_leg_outside_the_measured_universe_has_no_bucket() -> None:
@@ -200,12 +201,15 @@ def test_the_shipped_marginals_are_the_measured_ones_exactly() -> None:
     The model has NO table object: the marginals are module constants and the
     surface is ``SpreadCostModel.half_spread_per_share(abs_delta, dte)``.
     """
-    assert dict(zip(("0.00-0.10", "0.10-0.20", "0.20-0.35", "0.35-0.50", "0.50-0.70"),
-                    mc().MEASURED_MEDIAN_FULL_SPREAD, strict=True)) \
-        == {k: v * 2 for k, v in ORACLE_DELTA_MARGINAL.items()}
+    assert dict(
+        zip(
+            ("0.00-0.10", "0.10-0.20", "0.20-0.35", "0.35-0.50", "0.50-0.70"),
+            mc().MEASURED_MEDIAN_FULL_SPREAD,
+            strict=True,
+        )
+    ) == {k: v * 2 for k, v in ORACLE_DELTA_MARGINAL.items()}
     # the dte multipliers ARE the measured dte-marginal ratio, at 3 dp
-    for band, raw in zip(("7-21", "22-45", "46-60"), ORACLE_DTE_MARGINAL.values(),
-                         strict=True):
+    for band, raw in zip(("7-21", "22-45", "46-60"), ORACLE_DTE_MARGINAL.values(), strict=True):
         assert band  # readability
         expected = (raw / ORACLE_DTE_MARGINAL["7-21"]).quantize(Decimal("0.001"))
         assert mc().DTE_BAND_MULTIPLIER[("7-21", "22-45", "46-60").index(band)] == expected
@@ -255,10 +259,10 @@ def test_every_one_of_the_fifteen_derived_cells_is_pinned() -> None:
 def test_round_trip_arithmetic_is_hand_derived_and_unchanged() -> None:
     """fills = 2 per leg, cost = fills * half * 100 + fills * 0.65.
 
-      2 legs @ |delta| 0.05 : 4 * 0.010 * 100 = 4.00, 4 * 0.65 = 2.60 ->  6.60
-      2 legs @ |delta| 0.25 : 4 * 0.025 * 100 = 10.00 + 2.60         -> 12.60
-      1 leg  @ |delta| 0.60 : 2 * 0.095 * 100 = 19.00 + 1.30         -> 20.30
-      2 mixed legs (0.05, 0.60) : 2*0.010*100 + 2*0.095*100 = 2.00 + 19.00 = 21.00 + 2.60 -> 23.60
+    2 legs @ |delta| 0.05 : 4 * 0.010 * 100 = 4.00, 4 * 0.65 = 2.60 ->  6.60
+    2 legs @ |delta| 0.25 : 4 * 0.025 * 100 = 10.00 + 2.60         -> 12.60
+    1 leg  @ |delta| 0.60 : 2 * 0.095 * 100 = 19.00 + 1.30         -> 20.30
+    2 mixed legs (0.05, 0.60) : 2*0.010*100 + 2*0.095*100 = 2.00 + 19.00 = 21.00 + 2.60 -> 23.60
     """
     model = measured_model()
     assert model.round_trip([leg("0.05"), leg("0.05")]) == Decimal("6.600000")
@@ -281,14 +285,13 @@ def test_the_shape_is_the_win_not_the_scalar() -> None:
     near-the-money money must come in OVER it. If both land on 14.60 the
     model has silently reverted to the constant it was written to replace."""
     model = measured_model()
-    flat = Decimal("14.60")            # outcomes.CostModel().round_trip()
+    flat = Decimal("14.60")  # outcomes.CostModel().round_trip()
     cheap = model.round_trip([leg("0.05"), leg("0.05")])
     dear = model.round_trip([leg("0.60"), leg("0.60")])
     assert cheap < flat < dear
     assert dear > 2 * flat
     # monotone in |delta| at fixed everything else
-    ladder = [model.round_trip([leg(d), leg(d)])
-              for d in ("0.05", "0.25", "0.60")]
+    ladder = [model.round_trip([leg(d), leg(d)]) for d in ("0.05", "0.25", "0.60")]
     assert ladder == sorted(ladder), f"cost must not fall as |delta| rises: {ladder}"
 
 
@@ -302,7 +305,8 @@ def test_the_flat_constant_is_exactly_one_cell_of_the_measured_surface() -> None
     model = measured_model()
     assert model.round_trip([leg("0.42"), leg("0.42")]) == Decimal("14.600000")
     assert model.round_trip([leg("0.42"), leg("0.42")]) != model.round_trip(
-        [leg("0.05"), leg("0.05")])
+        [leg("0.05"), leg("0.05")]
+    )
 
 
 def test_the_model_exposes_no_zero_argument_half_spread() -> None:
@@ -316,8 +320,9 @@ def test_the_model_exposes_no_zero_argument_half_spread() -> None:
     import inspect as _inspect
 
     signature = _inspect.signature(mc().SpreadCostModel.half_spread_per_share)
-    required = [name for name, p in signature.parameters.items()
-                if p.default is p.empty and name != "self"]
+    required = [
+        name for name, p in signature.parameters.items() if p.default is p.empty and name != "self"
+    ]
     assert required == ["abs_delta", "dte"], required
     assert not hasattr(measured_model(), "default_half_spread")
 
@@ -401,8 +406,9 @@ def test_no_entry_point_returns_a_scalar_for_an_unknown_key() -> None:
             answered.append(f"{name} -> {call()!r}")
         except mc().UnpricedCostError:
             pass
-    assert not answered, ("a pricing surface answered an unmeasured key instead of "
-                          f"refusing: {answered}")
+    assert not answered, (
+        f"a pricing surface answered an unmeasured key instead of refusing: {answered}"
+    )
 
 
 def test_a_missing_quote_can_never_be_priced_as_zero_or_the_old_default() -> None:
@@ -410,8 +416,10 @@ def test_a_missing_quote_can_never_be_priced_as_zero_or_the_old_default() -> Non
     positive, and the value being replaced -- a $0.03 half-spread per leg --
     survives nowhere as a scalar a caller can reach for."""
     model = measured_model()
-    cells = [model.half_spread_per_share(Decimal(d), 14)
-             for d in ("0.05", "0.15", "0.275", "0.425", "0.60")]
+    cells = [
+        model.half_spread_per_share(Decimal(d), 14)
+        for d in ("0.05", "0.15", "0.275", "0.425", "0.60")
+    ]
     assert cells, "the measured surface is empty"
     assert all(v > 0 for v in cells), [str(v) for v in cells if v <= 0]
     # the cheapest measured cell is still a real quote, not the old constant
@@ -472,6 +480,7 @@ def test_the_cost_block_quotes_the_single_provenance_authority() -> None:
     digest actually carries must equal ``cost.py``'s ``measured_corpus()``,
     the declared single authority, byte for byte."""
     from tree_options.desk import cost, outcomes
+
     block = outcomes._costs_block(measured_model(), mc().NoPriceLedger(), True)
     assert block["provenance"] == cost.CostProvenance.measured_corpus().as_dict()
 
@@ -523,28 +532,39 @@ def test_the_implementation_contains_no_mapping_default_that_could_mask_a_gap() 
         if isinstance(node, ast.IfExp) and isinstance(node.orelse, ast.Constant):
             if node.orelse.value is not None:
                 offences.append(
-                    f"line {node.lineno}: conditional scalar default {node.orelse.value!r}")
+                    f"line {node.lineno}: conditional scalar default {node.orelse.value!r}"
+                )
 
-    assert not offences, ("the cost model must never be able to answer with a default: "
-                          + "; ".join(sorted(offences)))
+    assert not offences, "the cost model must never be able to answer with a default: " + "; ".join(
+        sorted(offences)
+    )
 
 
 #: the module-level defs/classes that make up the PRICING surface. Everything
 #: else (the refusal ledger) is exempt: it counts, it never answers with a cost.
-PRICING_NAMES = frozenset({
-    "delta_bucket", "dte_bucket", "half_spread_per_share",
-    "SpreadCostModel", "Leg", "LegQuote", "SpreadQuote",
-    "CostModelError", "UnpricedCostError", "ProvenanceError",
-    "LegOutsideTradeableUniverseError", "CostProvenance",
-})
+PRICING_NAMES = frozenset(
+    {
+        "delta_bucket",
+        "dte_bucket",
+        "half_spread_per_share",
+        "SpreadCostModel",
+        "Leg",
+        "LegQuote",
+        "SpreadQuote",
+        "CostModelError",
+        "UnpricedCostError",
+        "ProvenanceError",
+        "LegOutsideTradeableUniverseError",
+        "CostProvenance",
+    }
+)
 EXEMPT_NAMES = frozenset({"NoPriceLedger"})
 
 
 def _pricing_subtrees(tree: ast.Module) -> tuple[ast.AST, set[str]]:
     """The pricing defs/classes merged into one walkable tree, plus the names
     deliberately excluded."""
-    picked = [node for node in tree.body
-              if _name_of(node) in PRICING_NAMES]
+    picked = [node for node in tree.body if _name_of(node) in PRICING_NAMES]
     excluded = {_name_of(node) for node in tree.body if _name_of(node) in EXEMPT_NAMES}
     merged = ast.Module(body=picked, type_ignores=[])
     return ast.fix_missing_locations(merged), excluded
@@ -558,9 +578,19 @@ def test_the_implementation_is_pure_no_network_no_file_io() -> None:
     source = inspect.getsourcefile(mc())
     with open(source, encoding="utf-8") as handle:
         text = handle.read()
-    banned = ("import requests", "import httpx", "import urllib", "import socket",
-              "import http", "from urllib", "from http", "import os", "from os import",
-              "import pathlib", "from pathlib")
+    banned = (
+        "import requests",
+        "import httpx",
+        "import urllib",
+        "import socket",
+        "import http",
+        "from urllib",
+        "from http",
+        "import os",
+        "from os import",
+        "import pathlib",
+        "from pathlib",
+    )
     hits = [b for b in banned if b in text]
     assert not hits, f"the cost model must be pure and deterministic; found {hits}"
 

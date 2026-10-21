@@ -27,9 +27,7 @@ def _pinned_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _body(sym: str, ts_utc: str) -> bytes:
-    return encode(
-        chain_payload(sym, timestamp=ts_utc, underlying_last="2026-10-01T10:02:30")
-    )
+    return encode(chain_payload(sym, timestamp=ts_utc, underlying_last="2026-10-01T10:02:30"))
 
 
 class RollingTransport:
@@ -135,7 +133,10 @@ class TestClockCoverage:
                         "schema": "desk-chain-manifest/1",
                         "session": "2026-10-01",
                         "clock": clock,
-                        "symbols": {s: {"status": st, "n": 1, "raw_sha256": "x", "detail": "", "at": "t"} for s, st in rows.items()},
+                        "symbols": {
+                            s: {"status": st, "n": 1, "raw_sha256": "x", "detail": "", "at": "t"}
+                            for s, st in rows.items()
+                        },
                     }
                 )
             )

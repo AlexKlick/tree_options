@@ -234,7 +234,9 @@ def _parser() -> argparse.ArgumentParser:
         help="per-clock capture coverage of a session's A2 tier (ok/stale + the persistent stale set)",
     )
     cc.add_argument("--session", type=date.fromisoformat)
-    cc.add_argument("--min-ok", type=int, default=30, help="alert when a clock records fewer (default 30)")
+    cc.add_argument(
+        "--min-ok", type=int, default=30, help="alert when a clock records fewer (default 30)"
+    )
     rc = sub.add_parser("record-chains", help="record the CBOE delayed option chains")
     rc.add_argument("--session", type=date.fromisoformat)
     rc.add_argument(
@@ -329,38 +331,56 @@ def _parser() -> argparse.ArgumentParser:
         "forward-select",
         help="refresh the forward minute-bar contract selection (weekly; no wire)",
     )
-    fw.add_argument("--selected-on", type=date.fromisoformat,
-                    help="default: today ET (the Saturday 09:00 slot)")
-    fw.add_argument("--strikes-per-group", type=int,
-                    help=f"default {forward_minutes.STRIKES_PER_GROUP}")
-    fw.add_argument("--max-contracts", type=int,
-                    help=f"default {forward_minutes.MAX_CONTRACTS}")
+    fw.add_argument(
+        "--selected-on", type=date.fromisoformat, help="default: today ET (the Saturday 09:00 slot)"
+    )
+    fw.add_argument(
+        "--strikes-per-group", type=int, help=f"default {forward_minutes.STRIKES_PER_GROUP}"
+    )
+    fw.add_argument("--max-contracts", type=int, help=f"default {forward_minutes.MAX_CONTRACTS}")
     fwd = sub.add_parser(
         "forward-minutes",
         help="capture the session's decision-clock minute bars (wire-budgeted)",
     )
-    fwd.add_argument("--session", type=date.fromisoformat,
-                     help="default: the latest session whose 16:15 ET cutoff has passed")
-    fwd.add_argument("--selection", type=Path,
-                     help="default: the newest selection in the forward store")
-    fwd.add_argument("--budget", type=int,
-                     help=f"max wire requests for today (default {forward_minutes.DAILY_BUDGET_DEFAULT})")
-    fwd.add_argument("--massive-cache", type=Path,
-                     help="default: the desk captures' artifacts/massive-cache-desk")
-    fwd.add_argument("--dry-run", action="store_true",
-                     help="cache-only: no wire requests, nothing written")
+    fwd.add_argument(
+        "--session",
+        type=date.fromisoformat,
+        help="default: the latest session whose 16:15 ET cutoff has passed",
+    )
+    fwd.add_argument(
+        "--selection", type=Path, help="default: the newest selection in the forward store"
+    )
+    fwd.add_argument(
+        "--budget",
+        type=int,
+        help=f"max wire requests for today (default {forward_minutes.DAILY_BUDGET_DEFAULT})",
+    )
+    fwd.add_argument(
+        "--massive-cache",
+        type=Path,
+        help="default: the desk captures' artifacts/massive-cache-desk",
+    )
+    fwd.add_argument(
+        "--dry-run", action="store_true", help="cache-only: no wire requests, nothing written"
+    )
     fv = sub.add_parser(
         "forward-verify",
         help="decision-clock coverage verdict for a captured session (no wire)",
     )
-    fv.add_argument("--session", type=date.fromisoformat,
-                    help="default: the latest session whose 16:15 ET cutoff has passed")
+    fv.add_argument(
+        "--session",
+        type=date.fromisoformat,
+        help="default: the latest session whose 16:15 ET cutoff has passed",
+    )
     fco = sub.add_parser(
         "forward-coverage",
         help="eight-clock coverage evidence for a captured session (no wire; decides nothing)",
     )
-    fco.add_argument("--session", type=date.fromisoformat,
-                     help="default: the latest session whose 16:15 ET cutoff has passed")
+    fco.add_argument(
+        "--session",
+        type=date.fromisoformat,
+        help="default: the latest session whose 16:15 ET cutoff has passed",
+    )
     from tree_options.desk import production
 
     production.register(sub)
@@ -378,53 +398,65 @@ def _parser() -> argparse.ArgumentParser:
     lab.add_argument("--lab-root", type=Path)
     sub.add_parser("lab-scoreboard", help="aggregate lab runs into a per-policy scoreboard")
     ovn = sub.add_parser(
-        "lab-overnight",
-        help="the overnight lab: hindsight gaps + GEPA policy evolution + digest")
+        "lab-overnight", help="the overnight lab: hindsight gaps + GEPA policy evolution + digest"
+    )
     ovn.add_argument("--bundle", required=True, type=Path)
     ovn.add_argument("--windows", type=Path)
     ovn.add_argument("--lab-root", type=Path)
-    ch = sub.add_parser("challenge",
-                        help="the end-to-end challenge game over the frozen bundles")
+    ch = sub.add_parser("challenge", help="the end-to-end challenge game over the frozen bundles")
     ch_sub = ch.add_subparsers(dest="challenge_command", required=True)
-    ch_run = ch_sub.add_parser(
-        "run", help="score every policy on every frozen bundle, one digest")
-    ch_run.add_argument("--bundles-from", type=Path,
-                        help="the desk store holding evaluations/intraday-graph "
-                             "(default DESK_STORE)")
-    ch_run.add_argument("--windows", type=Path,
-                        help="quota snapshot (a FRESH snapshot gates model policies)")
+    ch_run = ch_sub.add_parser("run", help="score every policy on every frozen bundle, one digest")
+    ch_run.add_argument(
+        "--bundles-from",
+        type=Path,
+        help="the desk store holding evaluations/intraday-graph (default DESK_STORE)",
+    )
+    ch_run.add_argument(
+        "--windows", type=Path, help="quota snapshot (a FRESH snapshot gates model policies)"
+    )
     ch_run.add_argument("--lab-root", type=Path)
     ch_run.add_argument("--rounds", type=int, help="play only the newest N bundles")
-    ch_run.add_argument("--dry-run", action="store_true",
-                        help="compute and print the plan; write nothing")
+    ch_run.add_argument(
+        "--dry-run", action="store_true", help="compute and print the plan; write nothing"
+    )
     ch_standings = ch_sub.add_parser(
         "standings",
         help="rebuild the cross-digest standings (post-seal digests only) "
-             "and write evaluations/challenge/standings.json")
-    ch_standings.add_argument("--bundles-from", type=Path,
-                              help="the desk store (default DESK_STORE)")
-    ch_standings.add_argument("--dry-run", action="store_true",
-                              help="print the standings; write nothing")
+        "and write evaluations/challenge/standings.json",
+    )
+    ch_standings.add_argument(
+        "--bundles-from", type=Path, help="the desk store (default DESK_STORE)"
+    )
+    ch_standings.add_argument(
+        "--dry-run", action="store_true", help="print the standings; write nothing"
+    )
     ch_rule = ch_sub.add_parser(
         "rule-check",
         help="evaluate the REGISTERED promotion rule's clauses against the "
-             "standings (informational; promotes nothing)")
-    ch_rule.add_argument("--bundles-from", type=Path,
-                         help="the desk store (default DESK_STORE)")
-    ot = sub.add_parser("outcome-table",
-                        help="environment v2: per-candidate outcomes x exit modes, gross/net")
+        "standings (informational; promotes nothing)",
+    )
+    ch_rule.add_argument("--bundles-from", type=Path, help="the desk store (default DESK_STORE)")
+    ot = sub.add_parser(
+        "outcome-table", help="environment v2: per-candidate outcomes x exit modes, gross/net"
+    )
     ot.add_argument("--bundle", required=True, type=Path)
     ot.add_argument("--out", required=True, type=Path)
     ot.add_argument("--sync", default="2")
     ot.add_argument("--half-spread", default="0.03")
     ot.add_argument("--commission", default="0.65")
-    ot.add_argument("--cost-model", default="flat", metavar="{flat,measured}",
-                    help="flat: the frozen $14.60 baseline every digest is calibrated on. "
-                         "measured: per-moneyness, from the CBOE EOD corpus; every "
-                         "candidate without a |delta| is refused and counted, never "
-                         "back-filled flat. Explicit, never defaulted silently.")
-    sup = sub.add_parser("supervised-previews",
-                         help="E6 shadow: request previews from the deal queue (never the inbox)")
+    ot.add_argument(
+        "--cost-model",
+        default="flat",
+        metavar="{flat,measured}",
+        help="flat: the frozen $14.60 baseline every digest is calibrated on. "
+        "measured: per-moneyness, from the CBOE EOD corpus; every "
+        "candidate without a |delta| is refused and counted, never "
+        "back-filled flat. Explicit, never defaulted silently.",
+    )
+    sup = sub.add_parser(
+        "supervised-previews",
+        help="E6 shadow: request previews from the deal queue (never the inbox)",
+    )
     sup.add_argument("--session", type=date.fromisoformat)
     sup.add_argument("--queue-dir", type=Path)
     sup.add_argument("--run-dir", type=Path, help="the desk run dir (HALT/AUTO_OFF, previews)")
@@ -607,9 +639,11 @@ def _forward_select(args: argparse.Namespace, *, clock: store.Clock) -> int:
     except forward_minutes.SelectionError as exc:
         print(f"forward-select: {exc}", file=sys.stderr)
         return 1
-    print(f"forward-select: {selected_on} {report['status']} "
-          f"chain={report['chain_session']} contracts={len(report['contracts'])} "
-          f"skipped_groups={len(report['skipped_groups'])}")
+    print(
+        f"forward-select: {selected_on} {report['status']} "
+        f"chain={report['chain_session']} contracts={len(report['contracts'])} "
+        f"skipped_groups={len(report['skipped_groups'])}"
+    )
     return 0
 
 
@@ -629,12 +663,15 @@ def _forward_minutes(
     else:
         session = args.session
     selection = (
-        json.loads(args.selection.read_text()) if args.selection
+        json.loads(args.selection.read_text())
+        if args.selection
         else forward_minutes.latest_selection_for(session)
     )
     if selection is None:
-        print("forward-minutes: no selection in the forward store; run forward-select",
-              file=sys.stderr)
+        print(
+            "forward-minutes: no selection in the forward store; run forward-select",
+            file=sys.stderr,
+        )
         return forward_minutes.STALE_SELECTION_EXIT
     budget = forward_minutes.WireBudget.load(
         forward_minutes.budget_path(now.astimezone(ET).date()),
@@ -646,20 +683,25 @@ def _forward_minutes(
                 args.massive_cache or forward_minutes.default_massive_cache()
             )
         except MassiveError as exc:  # fixed text: no key material, no path
-            print(f"forward-minutes: no usable Massive key ({type(exc).__name__})",
-                  file=sys.stderr)
+            print(f"forward-minutes: no usable Massive key ({type(exc).__name__})", file=sys.stderr)
             return 1
     try:
         result = forward_minutes.capture_session(
-            session, selection=selection, client=client, budget=budget, now=now,
+            session,
+            selection=selection,
+            client=client,
+            budget=budget,
+            now=now,
             dry_run=args.dry_run,
         )
     except MassiveNotEntitledError as exc:
         # the runbook's exit-2 story: a tier boundary is a purchase
         # decision, not a key problem and not a crash
-        print(f"forward-minutes: NOT_ENTITLED — tier boundary ({exc}); accept the "
-              "gap or take the purchase decision (docs/m4-massive-runbook.md)",
-              file=sys.stderr)
+        print(
+            f"forward-minutes: NOT_ENTITLED — tier boundary ({exc}); accept the "
+            "gap or take the purchase decision (docs/m4-massive-runbook.md)",
+            file=sys.stderr,
+        )
         return 2
     except MassiveAuthRejectedError as exc:
         print(f"forward-minutes: AUTH_REJECTED — rotate the key ({exc})", file=sys.stderr)
@@ -672,8 +714,7 @@ def _forward_minutes(
     return result.exit_code
 
 
-def _forward_verify(args: argparse.Namespace, *, clock: store.Clock,
-                    cal: ClosingCalendar) -> int:
+def _forward_verify(args: argparse.Namespace, *, clock: store.Clock, cal: ClosingCalendar) -> int:
     now = clock()
     session = args.session or latest_completed_session(now, cal)
     verdict = forward_minutes.verify_session(session, now=now)
@@ -681,8 +722,7 @@ def _forward_verify(args: argparse.Namespace, *, clock: store.Clock,
     return verdict.exit_code
 
 
-def _forward_coverage(args: argparse.Namespace, *, clock: store.Clock,
-                      cal: ClosingCalendar) -> int:
+def _forward_coverage(args: argparse.Namespace, *, clock: store.Clock, cal: ClosingCalendar) -> int:
     now = clock()
     session = args.session or latest_completed_session(now, cal)
     try:
@@ -759,7 +799,8 @@ def _record_chains(
             open_clocks = [
                 c
                 for c in SCHEDULE
-                if store_mod.clock_instant(session, c) <= now_et
+                if store_mod.clock_instant(session, c)
+                <= now_et
                 < store_mod.shift_instant(
                     store_mod.clock_instant(session, c), store_mod.CLOCK_WINDOW_S
                 )
@@ -946,10 +987,22 @@ def run_cli(
     if args.command == "outcome-table":  # pure mechanics: writes only --out, no state lock
         from tree_options.desk.outcomes import _cli as _outcomes_cli
 
-        return _outcomes_cli(["--bundle", str(args.bundle), "--out", str(args.out),
-                              "--sync", args.sync, "--half-spread", args.half_spread,
-                              "--commission", args.commission,
-                              "--cost-model", args.cost_model])
+        return _outcomes_cli(
+            [
+                "--bundle",
+                str(args.bundle),
+                "--out",
+                str(args.out),
+                "--sync",
+                args.sync,
+                "--half-spread",
+                args.half_spread,
+                "--commission",
+                args.commission,
+                "--cost-model",
+                args.cost_model,
+            ]
+        )
     if args.command == "longrun":  # its own per-run-dir lock; `status` is read-only
         from tree_options.desk import longrun
 
@@ -962,8 +1015,12 @@ def run_cli(
             from tree_options.desk.qsl import run_qsl
 
             result = run_qsl(
-                session=args.session, now=clock(), cal=cal, dry_run=args.dry_run,
-                out=args.out, store=args.store_root,
+                session=args.session,
+                now=clock(),
+                cal=cal,
+                dry_run=args.dry_run,
+                out=args.out,
+                store=args.store_root,
             )
             print(result.line())
             for line in result.summary():
@@ -1067,10 +1124,19 @@ def run_cli(
             from tree_options.desk.lab import _cli as _lab_cli
 
             return _lab_cli(
-                ["--bundle", str(args.bundle), "--policy", args.policy,
-                 "--sessions", str(args.sessions), "--boards-cap", str(args.boards_cap)]
+                [
+                    "--bundle",
+                    str(args.bundle),
+                    "--policy",
+                    args.policy,
+                    "--sessions",
+                    str(args.sessions),
+                    "--boards-cap",
+                    str(args.boards_cap),
+                ]
                 + (["--windows", str(args.windows)] if args.windows else [])
-                + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
+                + (["--lab-root", str(args.lab_root)] if args.lab_root else [])
+            )
         if args.command == "lab-scoreboard":
             from tree_options.desk.lab import default_root as _lab_root
             from tree_options.desk.lab_scoreboard import aggregate
@@ -1083,7 +1149,8 @@ def run_cli(
             return _overnight_cli(
                 ["--bundle", str(args.bundle)]
                 + (["--windows", str(args.windows)] if args.windows else [])
-                + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
+                + (["--lab-root", str(args.lab_root)] if args.lab_root else [])
+            )
         if args.command == "challenge":
             if args.challenge_command == "standings":
                 from tree_options.desk import challenge as challenge_mod
@@ -1113,32 +1180,43 @@ def run_cli(
                     print("rule-check: no model policies in the standings yet")
                     return 3
                 for check in checks:
-                    verdict = "ALL CLAUSES PASS (operator rules on promotion)" if check["all_pass"] else "not promotable yet"
+                    verdict = (
+                        "ALL CLAUSES PASS (operator rules on promotion)"
+                        if check["all_pass"]
+                        else "not promotable yet"
+                    )
                     print(f"{check['policy']}: {verdict}")
                     for cl in check["clauses"]:
                         mark = "x" if cl["pass"] else " "
                         print(f"  [{mark}] {cl['clause']}. {cl['name']} — {cl['detail']}")
-                    print(f"  holm_p={check['holm_p']} ({'pass' if check['holm_pass'] else 'fail'})")
+                    print(
+                        f"  holm_p={check['holm_p']} ({'pass' if check['holm_pass'] else 'fail'})"
+                    )
                 return 0
             from tree_options.desk.challenge import _cli as _challenge_cli
 
             return _challenge_cli(
                 ["run"]
-                + (["--bundles-from", str(args.bundles_from)]
-                   if args.bundles_from else [])
+                + (["--bundles-from", str(args.bundles_from)] if args.bundles_from else [])
                 + (["--windows", str(args.windows)] if args.windows else [])
                 + (["--lab-root", str(args.lab_root)] if args.lab_root else [])
-                + (["--rounds", str(args.rounds)]
-                   if args.rounds is not None else [])
-                + (["--dry-run"] if args.dry_run else []))
+                + (["--rounds", str(args.rounds)] if args.rounds is not None else [])
+                + (["--dry-run"] if args.dry_run else [])
+            )
         if args.command == "supervised-previews":
             from tree_options.desk import enter_supervised
 
             try:
                 doc = enter_supervised.write_previews(
-                    now=clock(), cal=cal, session=args.session, queue_dir=args.queue_dir,
-                    run_dir=args.run_dir, database=args.database, account_id=args.account,
-                    dry_run=args.dry_run)
+                    now=clock(),
+                    cal=cal,
+                    session=args.session,
+                    queue_dir=args.queue_dir,
+                    run_dir=args.run_dir,
+                    database=args.database,
+                    account_id=args.account,
+                    dry_run=args.dry_run,
+                )
             except ValueError as error:
                 print(f"supervised-previews: {error}", file=sys.stderr)
                 return 2

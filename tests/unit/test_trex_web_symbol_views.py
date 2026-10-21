@@ -160,9 +160,7 @@ def _write_chain(
     if clock is not None:
         header["clock"] = clock
     doc = {"header": header, "columns": cols}
-    path = ChainStore(store).chain_path(
-        date.fromisoformat(session), sym, clock=clock or "eod"
-    )
+    path = ChainStore(store).chain_path(date.fromisoformat(session), sym, clock=clock or "eod")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(encode_document(doc))
 
@@ -598,10 +596,18 @@ def test_eod_payload_without_clock_is_byte_identical(tmp_path: Path) -> None:
             "session": SESSION,
             "age_seconds": 129600.0,  # 2026-06-11 ET midnight -> 06-12 noon
             "spot": 101.0,
-            "cards": {k: name[k] for k in (
-                "iv", "iv_rank", "skew25", "term_slope",
-                "yz22_ann", "liquidity_score", "earnings",
-            )},
+            "cards": {
+                k: name[k]
+                for k in (
+                    "iv",
+                    "iv_rank",
+                    "skew25",
+                    "term_slope",
+                    "yz22_ann",
+                    "liquidity_score",
+                    "earnings",
+                )
+            },
             "atm_term": [["2026-06-19", 8, 0.2512, 9, "bracket"]],
             "slice": [row, {**row, "right": "P"}],
         },
@@ -638,8 +644,13 @@ def test_clock_param_reads_the_clock_namespace_not_chains(tmp_path: Path) -> Non
     # the eod ladder vs a DIFFERENT 13:00 ladder: which one served is the proof
     _write_chain(store, SESSION, SYM, ["2026-06-19"], [95.0, 100.0, 105.0])
     _write_chain(
-        store, SESSION, SYM, ["2026-06-19"], [98.0, 101.0, 104.0],
-        clock=CLOCK, current_price=101.5,
+        store,
+        SESSION,
+        SYM,
+        ["2026-06-19"],
+        [98.0, 101.0, 104.0],
+        clock=CLOCK,
+        current_price=101.5,
     )
     client = _client(store)
     rec = _get(client, f"/api/market/{SYM}/options?window=0&max_expiries=1&clock={CLOCK}")[
@@ -665,8 +676,13 @@ def test_clock_slice_serves_without_any_eod_chain(tmp_path: Path) -> None:
     store = tmp_path / "store"
     _write_features(store, SESSION, {"TEST": _feature_name(101.0)})
     _write_chain(
-        store, SESSION, SYM, ["2026-06-19"], [99.0, 102.0, 105.0],
-        clock=CLOCK, current_price=102.4,
+        store,
+        SESSION,
+        SYM,
+        ["2026-06-19"],
+        [99.0, 102.0, 105.0],
+        clock=CLOCK,
+        current_price=102.4,
     )
     client = _client(store)
     rec = _get(client, f"/api/market/{SYM}/options?window=0&clock={CLOCK}")["recorded"]
@@ -682,12 +698,16 @@ def test_clock_spot_falls_back_to_current_price(tmp_path: Path) -> None:
     store = tmp_path / "store"
     _write_features(store, SESSION, {"TEST": _feature_name(None)})
     _write_chain(
-        store, SESSION, SYM, ["2026-06-19"], [99.0, 103.0, 107.0],
-        clock=CLOCK, current_price=103.4, close=99.0,
+        store,
+        SESSION,
+        SYM,
+        ["2026-06-19"],
+        [99.0, 103.0, 107.0],
+        clock=CLOCK,
+        current_price=103.4,
+        close=99.0,
     )
-    rec = _get(_client(store), f"/api/market/{SYM}/options?window=0&clock={CLOCK}")[
-        "recorded"
-    ]
+    rec = _get(_client(store), f"/api/market/{SYM}/options?window=0&clock={CLOCK}")["recorded"]
     assert rec["spot"] == 103.4
     assert {r["strike"] for r in rec["slice"]} == {103.0}
 
@@ -695,13 +715,13 @@ def test_clock_spot_falls_back_to_current_price(tmp_path: Path) -> None:
 def test_clock_latest_picks_the_newest_capture_of_the_newest_session(tmp_path: Path) -> None:
     store = tmp_path / "store"
     _write_features(store, SESSION, {"TEST": _feature_name(101.0)})
-    _write_chain(store, SESSION, SYM, ["2026-06-19"], [95.0, 100.0],
-                 clock="10:00", current_price=99.2)
-    _write_chain(store, SESSION, SYM, ["2026-06-19"], [98.0, 101.0],
-                 clock="14:30", current_price=101.2)
-    rec = _get(_client(store), f"/api/market/{SYM}/options?window=0&clock=latest")[
-        "recorded"
-    ]
+    _write_chain(
+        store, SESSION, SYM, ["2026-06-19"], [95.0, 100.0], clock="10:00", current_price=99.2
+    )
+    _write_chain(
+        store, SESSION, SYM, ["2026-06-19"], [98.0, 101.0], clock="14:30", current_price=101.2
+    )
+    rec = _get(_client(store), f"/api/market/{SYM}/options?window=0&clock=latest")["recorded"]
     assert rec["clock"] == "14:30"  # the resolved capture, echoed
     assert rec["clocks"] == ["10:00", "14:30"]
     assert rec["spot"] == 101.2
@@ -728,13 +748,10 @@ def test_clock_without_capture_degrades_to_cards_only_honestly(tmp_path: Path) -
     assert rec["slice"] is None  # never a silent eod fallback
     assert "clock" not in rec
     assert any(
-        f"no clock={CLOCK} capture for {SYM}" in w and "cards only" in w
-        for w in body["warnings"]
+        f"no clock={CLOCK} capture for {SYM}" in w and "cards only" in w for w in body["warnings"]
     )
 
 
 def test_bad_clock_query_is_a_422(client: TestClient) -> None:
     for bad in ("9:30", "25:00", "1300", "13:00:00", "eod"):
-        assert (
-            client.get(f"/api/market/{SYM}/options?clock={bad}").status_code == 422
-        ), bad
+        assert client.get(f"/api/market/{SYM}/options?clock={bad}").status_code == 422, bad

@@ -151,9 +151,7 @@ def latest_selection(root: Path | None = None) -> dict[str, Any] | None:
     return json.loads((directory / f"{best}.json").read_text())
 
 
-def latest_selection_for(
-    session: date, root: Path | None = None
-) -> dict[str, Any] | None:
+def latest_selection_for(session: date, root: Path | None = None) -> dict[str, Any] | None:
     """The newest selection written on or before ``session`` (``None`` if none).
 
     A catch-up slot replays a past session; a selection that postdates it is
@@ -285,13 +283,15 @@ def refresh_selection(
             grouped[key][1].append((row, dte))
     # nearest expiries first (the corpus always covers the front monthly), the
     # symbol order UNDERLYINGS defines within an expiry
-    for (expiry, sym, right) in sorted(grouped, key=lambda k: (k[0], underlyings.index(k[1]), k[2])):
+    for expiry, sym, right in sorted(grouped, key=lambda k: (k[0], underlyings.index(k[1]), k[2])):
         spot, members = grouped[(expiry, sym, right)]
-        picked = sorted(members, key=lambda m: (abs(m[0]["strike"] - spot), m[0]["strike"])
-                        )[:strikes_per_group]
+        picked = sorted(members, key=lambda m: (abs(m[0]["strike"] - spot), m[0]["strike"]))[
+            :strikes_per_group
+        ]
         if len(contracts) + len(picked) > max_contracts:
-            skipped.append({"key": f"{sym}/{expiry.isoformat()}/{right}",
-                            "reason": "cap", "size": len(picked)})
+            skipped.append(
+                {"key": f"{sym}/{expiry.isoformat()}/{right}", "reason": "cap", "size": len(picked)}
+            )
             continue
         for row, dte in sorted(picked, key=lambda m: m[0]["strike"]):
             ticker = f"O:{row['occ']}"
@@ -299,15 +299,17 @@ def refresh_selection(
                 parsed = parse_contract(ticker)
             except ValueError:
                 continue  # an OCC the repo cannot re-parse is not corpus material
-            contracts.append({
-                "ticker": ticker,
-                "underlying": sym,
-                "expiry": expiry.isoformat(),
-                "right": right,
-                "strike": float(parsed.strike),
-                "delta_at_selection": row["delta"],
-                "dte_at_selection": dte,
-            })
+            contracts.append(
+                {
+                    "ticker": ticker,
+                    "underlying": sym,
+                    "expiry": expiry.isoformat(),
+                    "right": right,
+                    "strike": float(parsed.strike),
+                    "delta_at_selection": row["delta"],
+                    "dte_at_selection": dte,
+                }
+            )
     report = {
         "schema": SELECTION_SCHEMA,
         "selected_on": selected_on.isoformat(),
@@ -368,8 +370,13 @@ class WireBudget:
             doc = json.loads(path.read_text())
             if doc.get("schema") != BUDGET_SCHEMA:
                 raise ValueError(f"{path.name}: not a wire-budget ledger")
-            return cls(path, cap, int(doc["spent"]), list(doc.get("entries", [])),
-                       list(doc.get("refusals", [])))
+            return cls(
+                path,
+                cap,
+                int(doc["spent"]),
+                list(doc.get("entries", [])),
+                list(doc.get("refusals", [])),
+            )
         return cls(path, cap)
 
     def _flush(self) -> None:
@@ -393,8 +400,9 @@ class WireBudget:
         self._flush()
 
     def refuse(self, label: str, wanted: int) -> None:
-        self.refusals.append({"label": label, "wanted": wanted, "cap": self.cap,
-                              "spent": self.spent})
+        self.refusals.append(
+            {"label": label, "wanted": wanted, "cap": self.cap, "spent": self.spent}
+        )
         self._flush()
 
 
@@ -413,10 +421,12 @@ class CaptureResult:
     note: str = ""
 
     def line(self) -> str:
-        return (f"forward-minutes: {self.session} {self.status} "
-                f"ok={self.captured} invalid={self.invalid} "
-                f"budget={self.budget_refused} wire={self.wire_requests}"
-                + (f" ({self.note})" if self.note else ""))
+        return (
+            f"forward-minutes: {self.session} {self.status} "
+            f"ok={self.captured} invalid={self.invalid} "
+            f"budget={self.budget_refused} wire={self.wire_requests}"
+            + (f" ({self.note})" if self.note else "")
+        )
 
 
 def _validate_bars(ticker: str, body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -428,8 +438,11 @@ def _validate_bars(ticker: str, body: dict[str, Any]) -> list[dict[str, Any]]:
     if body.get("status") not in ("OK", "DELAYED") or body.get("ticker") != ticker:
         raise ValueError("status/ticker")
     raw = body.get("results", [])
-    if (body.get("next_url") or len(raw) >= AGGS_PARAMS["limit"]
-            or body.get("resultsCount", len(raw)) != len(raw)):
+    if (
+        body.get("next_url")
+        or len(raw) >= AGGS_PARAMS["limit"]
+        or body.get("resultsCount", len(raw)) != len(raw)
+    ):
         raise ValueError("truncated")
     bars: list[dict[str, Any]] = []
     for b in raw:
@@ -438,8 +451,14 @@ def _validate_bars(ticker: str, body: dict[str, Any]) -> list[dict[str, Any]]:
             raise ValueError("bar shape")
         try:
             v = float(b["v"])
-            bar = {"t": t, "o": float(b["o"]), "h": float(b["h"]),
-                   "l": float(b["l"]), "c": float(b["c"]), "v": v}
+            bar = {
+                "t": t,
+                "o": float(b["o"]),
+                "h": float(b["h"]),
+                "l": float(b["l"]),
+                "c": float(b["c"]),
+                "v": v,
+            }
         except (KeyError, TypeError, ValueError):
             raise ValueError("bar shape") from None
         if v <= 0:
@@ -476,9 +495,11 @@ def capture_session(
     chain_session = date.fromisoformat(selection["chain_session"])
     if not 0 <= age <= MAX_SELECTION_AGE_DAYS or chain_session >= session:
         return CaptureResult(
-            session, "stale", STALE_SELECTION_EXIT,
+            session,
+            "stale",
+            STALE_SELECTION_EXIT,
             note=f"selection {selection['selected_on']} is {age:g} days from the "
-                 f"session (chain {selection['chain_session']}); run forward-select",
+            f"session (chain {selection['chain_session']}); run forward-select",
         )
     cache: ResponseCache | None = client.cache
     headroom = client.backoff.max_attempts
@@ -511,24 +532,30 @@ def capture_session(
         try:
             bars = _validate_bars(ticker, body)
         except ValueError as exc:
-            entries[ticker] = {**contract, "status": "invalid",
-                               "reason": str(exc), "bars": []}
+            entries[ticker] = {**contract, "status": "invalid", "reason": str(exc), "bars": []}
             continue
         entries[ticker] = {
             **contract,
             "status": "ok",
-            "dte_at_session": int(calendar_days_between(
-                session.isoformat(), contract["expiry"])),
+            "dte_at_session": int(calendar_days_between(session.isoformat(), contract["expiry"])),
             "n_bars": len(bars),
             "bars": bars,
         }
-    counts = {s: sum(1 for e in entries.values() if e["status"] == s)
-              for s in ("ok", "invalid", "budget")}
+    counts = {
+        s: sum(1 for e in entries.values() if e["status"] == s) for s in ("ok", "invalid", "budget")
+    }
     refused = counts["budget"]
     if dry_run:
-        return CaptureResult(session, "dry-run", 0, 0, counts["ok"],
-                             counts["invalid"], refused,
-                             note=f"cache-only: {refused} not in cache")
+        return CaptureResult(
+            session,
+            "dry-run",
+            0,
+            0,
+            counts["ok"],
+            counts["invalid"],
+            refused,
+            note=f"cache-only: {refused} not in cache",
+        )
     if counts["ok"]:
         exit_code = 0
     elif refused:
@@ -551,8 +578,9 @@ def capture_session(
     }
     target.parent.mkdir(parents=True, exist_ok=True)
     store.atomic_write_json(target, doc)
-    return CaptureResult(session, "written", exit_code, wire, counts["ok"],
-                         counts["invalid"], refused)
+    return CaptureResult(
+        session, "written", exit_code, wire, counts["ok"], counts["invalid"], refused
+    )
 
 
 # ---------------------------------------------------------------- verify
@@ -568,9 +596,11 @@ class Verdict:
     note: str = ""
 
     def line(self) -> str:
-        return (f"forward-verify: {self.session} ok={self.ok} "
-                f"covered={self.covered_contracts} no_trade={self.no_trade}"
-                + (f" ({self.note})" if self.note else ""))
+        return (
+            f"forward-verify: {self.session} ok={self.ok} "
+            f"covered={self.covered_contracts} no_trade={self.no_trade}"
+            + (f" ({self.note})" if self.note else "")
+        )
 
 
 def clock_ms(session: date, clock: str) -> int:
@@ -595,8 +625,7 @@ def verify_session(
     """Decision-clock coverage of a captured session (no wire, idempotent)."""
     source = bars_path(session, root)
     if not source.exists():
-        return Verdict(session, COVERAGE_EXIT, False,
-                       note="no bars document for the session")
+        return Verdict(session, COVERAGE_EXIT, False, note="no bars document for the session")
     raw = source.read_bytes()
     doc = json.loads(raw)
     contracts: dict[str, dict[str, Any]] = {}
@@ -609,11 +638,12 @@ def verify_session(
         if not bars:
             no_trade.append(ticker)
             continue
-        missing = [c for c in DECISION_CLOCKS
-                   if not _clock_covered(bars, session, c)]
-        contracts[ticker] = {"n_bars": len(bars),
-                             "covered": [c for c in DECISION_CLOCKS if c not in missing],
-                             "missing": missing}
+        missing = [c for c in DECISION_CLOCKS if not _clock_covered(bars, session, c)]
+        contracts[ticker] = {
+            "n_bars": len(bars),
+            "covered": [c for c in DECISION_CLOCKS if c not in missing],
+            "missing": missing,
+        }
         covered += not missing
     ok = bool(contracts) and covered == len(contracts)
     verdict = {

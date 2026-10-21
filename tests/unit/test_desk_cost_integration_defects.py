@@ -41,9 +41,13 @@ from tree_options.desk.longrun import Board
 
 def _leg(symbol: str = "SPY", abs_delta: str = "0.05", dte: int = 14) -> Any:
     return measured_costs.Leg(
-        symbol=symbol, abs_delta=Decimal(abs_delta), dte=dte,
-        source_session="2026-06-01", source_timestamp_et="2026-06-01T18:05:00-04:00",
-        is_eod_snapshot=True)
+        symbol=symbol,
+        abs_delta=Decimal(abs_delta),
+        dte=dte,
+        source_session="2026-06-01",
+        source_timestamp_et="2026-06-01T18:05:00-04:00",
+        is_eod_snapshot=True,
+    )
 
 
 # ------------------------------------------------------------------ defect 1
@@ -65,34 +69,42 @@ _ORDER_CASES = [
 
 
 def _boards(names: list[str]) -> list[Board]:
-    return [Board(n, "2026-06-01", "10:00",
-                  [{"id": f"{n}R", "structure": "put_credit", "underlying": "SPY"}])
-            for n in names]
+    return [
+        Board(
+            n,
+            "2026-06-01",
+            "10:00",
+            [{"id": f"{n}R", "structure": "put_credit", "underlying": "SPY"}],
+        )
+        for n in names
+    ]
 
 
 def _ledger_for(arm: str, snapshot: str) -> Any:
     ledger = measured_costs.NoPriceLedger()
-    ledger.record(arm=arm, snapshot=snapshot, key=_leg(abs_delta="0.90"),
-                  reason="delta_out_of_universe")
+    ledger.record(
+        arm=arm, snapshot=snapshot, key=_leg(abs_delta="0.90"), reason="delta_out_of_universe"
+    )
     return ledger
 
 
-@pytest.mark.parametrize(("names", "order", "dropped", "expected"),
-                         _ORDER_CASES)
+@pytest.mark.parametrize(("names", "order", "dropped", "expected"), _ORDER_CASES)
 def test_dropping_a_board_remaps_the_decision_order_onto_the_kept_positions(
-        names: list[str], order: list[int], dropped: str, expected: list[int]) -> None:
+    names: list[str], order: list[int], dropped: str, expected: list[int]
+) -> None:
     """The new order must be the surviving boards' decision order, as
     positions in the FILTERED list -- not ranks in the pre-drop list."""
     ledger = _ledger_for("arm-a", dropped)
     kept, _decisions, new_order, _report = skill._drop_unpriced(
-        _boards(names), [(f"{n}R", "h1") for n in names], order, ledger, "arm-a")
+        _boards(names), [(f"{n}R", "h1") for n in names], order, ledger, "arm-a"
+    )
     assert new_order == expected, (
         f"decision order {order} with {dropped!r} dropped over {names}: the remap must be "
         f"{expected} (survivors in decision order, as positions in the filtered list); "
         f"got {new_order}. A rank taken against the PRE-drop length indexes past the "
-        f"end of the filtered excess array and raises inside monitor().")
-    assert sorted(new_order) == list(range(len(kept))), \
-        "every kept board must appear exactly once"
+        f"end of the filtered excess array and raises inside monitor()."
+    )
+    assert sorted(new_order) == list(range(len(kept))), "every kept board must appear exactly once"
 
 
 def test_the_remap_stays_inside_the_filtered_excess_array() -> None:
@@ -101,8 +113,9 @@ def test_the_remap_stays_inside_the_filtered_excess_array() -> None:
     order = [2, 0, 4, 1, 3]
     ledger = _ledger_for("arm-a", "s2")
     kept, _dec, new_order, _rep = skill._drop_unpriced(
-        _boards(names), [(f"{n}R", "h1") for n in names], order, ledger, "arm-a")
-    excess = [1.0] * len(kept)          # stands in for net.excess
+        _boards(names), [(f"{n}R", "h1") for n in names], order, ledger, "arm-a"
+    )
+    excess = [1.0] * len(kept)  # stands in for net.excess
     assert new_order is not None
     for i in new_order:
         assert 0 <= i < len(excess), f"index {i} is outside a {len(excess)}-element excess"
@@ -130,10 +143,19 @@ def test_arm_skill_with_a_drop_and_a_decision_order_does_not_degrade() -> None:
     # The FULL board list plus a decision order, exactly as `skill_section`
     # hands them over: `_drop_unpriced` does the filtering.
     doc = skill.arm_skill(
-        book, _boards(names), [(f"{n}R", "h1") for n in names],
-        window=_boards(names), order=order,
-        options=skill.SkillOptions(), draws=50, seed=1, bound=None, base_block=1,
-        arm="arm-a", no_price=ledger)
+        book,
+        _boards(names),
+        [(f"{n}R", "h1") for n in names],
+        window=_boards(names),
+        order=order,
+        options=skill.SkillOptions(),
+        draws=50,
+        seed=1,
+        bound=None,
+        base_block=1,
+        arm="arm-a",
+        no_price=ledger,
+    )
     assert doc.get("status") != "error", doc
     assert doc["boards"] == len(kept_names)
     assert doc["boards_dropped_unpriced"] == 1
@@ -149,6 +171,7 @@ def test_arm_skill_with_a_drop_and_a_decision_order_does_not_degrade() -> None:
 # silently halves at every cell. That is the "flatter the strategy" failure
 # wired up and waiting, so it is pinned now.
 
+
 def test_a_two_leg_vertical_is_priced_as_two_legs() -> None:
     """Two legs in the SAME cell must cost exactly twice one leg.
 
@@ -158,8 +181,11 @@ def test_a_two_leg_vertical_is_priced_as_two_legs() -> None:
     Two legs = $6.60. (Spec table 2.2: the 0.00-0.10 / dte 7-21 cell.)
     """
     candidate = {
-        "structure": "put_credit", "underlying": "SPY", "expiry": 14,
-        "session": "2026-06-01", "source_timestamp_et": "2026-06-01T18:05:00-04:00",
+        "structure": "put_credit",
+        "underlying": "SPY",
+        "expiry": 14,
+        "session": "2026-06-01",
+        "source_timestamp_et": "2026-06-01T18:05:00-04:00",
         "is_eod_snapshot": True,
         "legs": [{"symbol": "SPY", "delta": "0.05"}, {"symbol": "SPY", "delta": "0.05"}],
     }
@@ -169,15 +195,19 @@ def test_a_two_leg_vertical_is_priced_as_two_legs() -> None:
     assert priced == Decimal("6.60"), (
         f"a 2-leg vertical at the measured cell must cost $6.60 (2 legs x $3.30); got "
         f"{priced}. Pricing one leg would HALVE every round trip the moment a delta "
-        f"source lands.")
+        f"source lands."
+    )
 
 
 def test_a_single_leg_structure_is_priced_as_one_leg() -> None:
     """The one-leg case must still be $3.30 -- the two-leg test is not a
     blanket doubling."""
     candidate = {
-        "structure": "single", "underlying": "SPY", "expiry": 14,
-        "session": "2026-06-01", "source_timestamp_et": "2026-06-01T18:05:00-04:00",
+        "structure": "single",
+        "underlying": "SPY",
+        "expiry": 14,
+        "session": "2026-06-01",
+        "source_timestamp_et": "2026-06-01T18:05:00-04:00",
         "is_eod_snapshot": True,
         "legs": [{"symbol": "SPY", "delta": "0.05"}],
     }
@@ -187,36 +217,49 @@ def test_a_single_leg_structure_is_priced_as_one_leg() -> None:
 
 def test_two_legs_in_different_cells_cost_the_sum_not_a_middle_cell() -> None:
     """Hand-derived from spec table 2.2 (dte 7-21 column):
-      |delta| 0.05 -> half 0.010000 -> leg round trip 2 x 0.010 x 100 + 1.30 = 3.30
-      |delta| 0.60 -> half 0.095000 -> leg round trip 2 x 0.095 x 100 + 1.30 = 20.30
-      sum = 23.60.  (Neither the cheap cell, the dear cell, nor their mean.)
+    |delta| 0.05 -> half 0.010000 -> leg round trip 2 x 0.010 x 100 + 1.30 = 3.30
+    |delta| 0.60 -> half 0.095000 -> leg round trip 2 x 0.095 x 100 + 1.30 = 20.30
+    sum = 23.60.  (Neither the cheap cell, the dear cell, nor their mean.)
     """
     candidate = {
-        "structure": "vertical", "underlying": "SPY", "expiry": 14,
-        "session": "2026-06-01", "source_timestamp_et": "2026-06-01T18:05:00-04:00",
+        "structure": "vertical",
+        "underlying": "SPY",
+        "expiry": 14,
+        "session": "2026-06-01",
+        "source_timestamp_et": "2026-06-01T18:05:00-04:00",
         "is_eod_snapshot": True,
         "legs": [{"symbol": "SPY", "delta": "0.05"}, {"symbol": "SPY", "delta": "0.60"}],
     }
     model = measured_costs.SpreadCostModel.measured()
     priced = outcomes._price_candidate(model, candidate, None, "arm-a", "s1")
     assert priced == Decimal("23.60"), (
-        f"a cheap wing plus a near-the-money body is $3.30 + $20.30 = $23.60; got {priced}")
+        f"a cheap wing plus a near-the-money body is $3.30 + $20.30 = $23.60; got {priced}"
+    )
 
 
 def test_a_candidate_with_no_leg_deltas_is_still_refused_not_half_priced() -> None:
     """Fail-closed survives the two-leg change."""
-    candidate = {"structure": "put_credit", "underlying": "SPY", "expiry": 14,
-                 "session": "2026-06-01",
-                 "source_timestamp_et": "2026-06-01T18:05:00-04:00",
-                 "is_eod_snapshot": True}
+    candidate = {
+        "structure": "put_credit",
+        "underlying": "SPY",
+        "expiry": 14,
+        "session": "2026-06-01",
+        "source_timestamp_et": "2026-06-01T18:05:00-04:00",
+        "is_eod_snapshot": True,
+    }
     ledger = measured_costs.NoPriceLedger()
-    assert outcomes._price_candidate(
-        measured_costs.SpreadCostModel.measured(), candidate, ledger, "arm-a", "s1") is None
+    assert (
+        outcomes._price_candidate(
+            measured_costs.SpreadCostModel.measured(), candidate, ledger, "arm-a", "s1"
+        )
+        is None
+    )
     assert ledger.as_dict()["total"] == 1
     assert ledger.for_arm("arm-a")["reasons"]["s1"] == "delta_unavailable"
 
 
 # ------------------------------------------------------------------ defect 3
+
 
 def test_max_cost_absorbs_the_dearest_measured_round_trip() -> None:
     """``MAX_COST`` caps the round-trip cost the empirical-Bernstein bound may
@@ -228,13 +271,14 @@ def test_max_cost_absorbs_the_dearest_measured_round_trip() -> None:
     assert skill.MAX_COST >= 65.946, (
         f"MAX_COST={skill.MAX_COST} is below the dearest measured 2-leg round trip "
         f"($65.946 = 400 x 0.158365 + 2.60), so the EB bound would be tighter than "
-        f"the cost it bounds.")
+        f"the cost it bounds."
+    )
     assert "14.60" not in (skill.MAX_COST.__doc__ or ""), "stale comment"
 
 
 def test_the_max_cost_comment_does_not_claim_the_flat_model_is_current() -> None:
     """The constant's own comment said "$14.60 today"."""
-    source = (skill.__file__ or "")
+    source = skill.__file__ or ""
     with open(source, encoding="utf-8") as handle:
         text = handle.read()
     line = next(ln for ln in text.splitlines() if ln.startswith("MAX_COST"))
@@ -247,6 +291,7 @@ def test_the_max_cost_comment_does_not_claim_the_flat_model_is_current() -> None
 # Before the fix the one call site passed neither `no_price=` nor
 # `cost_provenance=`, so a run in which EVERY board was refused reported
 # `no_price.total == 0`, no verdict prefix, and zero-profit rows.
+
 
 def test_longrun_hands_the_ledger_and_the_provenance_to_the_skill_section() -> None:
     """Both must be forwarded at the one real call site."""
@@ -266,28 +311,44 @@ def test_a_fully_refused_run_is_named_in_the_digest_not_scored_as_break_even() -
     names = ["s1", "s2", "s3", "s4"]
     boards = _boards(names)
     ledger = measured_costs.NoPriceLedger()
-    for name in names:                     # every board refused
-        ledger.record(arm="arm-a", snapshot=name, key=_leg(abs_delta="0.90"),
-                      reason="delta_out_of_universe")
-    arms = [longrun.Arm(name="arm-a",
-                        policy=longrun.PolicySpec(name="arm-a", kind="rule",
-                                                 rule=lambda *_: None),
-                        repeat=1)]
-    receipts = {"arm-a": {b.snapshot: {"ok": True, "choice": f"{b.snapshot}R",
-                                       "horizon": "h1"} for b in boards}}
-    def get(snapshot: str, row_id: str,
-            horizon: str | None) -> dict[str, Any] | None:
+    for name in names:  # every board refused
+        ledger.record(
+            arm="arm-a", snapshot=name, key=_leg(abs_delta="0.90"), reason="delta_out_of_universe"
+        )
+    arms = [
+        longrun.Arm(
+            name="arm-a",
+            policy=longrun.PolicySpec(name="arm-a", kind="rule", rule=lambda *_: None),
+            repeat=1,
+        )
+    ]
+    receipts = {
+        "arm-a": {
+            b.snapshot: {"ok": True, "choice": f"{b.snapshot}R", "horizon": "h1"} for b in boards
+        }
+    }
+
+    def get(snapshot: str, row_id: str, horizon: str | None) -> dict[str, Any] | None:
         # Every board is refused, so the drop removes them all and this is
         # never consulted for a scored row. It must still be a real fn
         # returning the OutcomeCache's dict shape: `ValueBook` is built
         # eagerly and `power_table` walks it.
         return {"gross": 10.0, "net": 6.70}
+
     with contextlib.ExitStack() as stack:
-        stack.enter_context(mock.patch.object(
-            measured_costs, "TRADEABLE_SYMBOLS", frozenset({"SPY"})))
-        section = skill.skill_section(boards, arms, receipts, longrun.OutcomeCache(get),
-                                      _protocol(), options=skill.SkillOptions(),
-                                      no_price=ledger, cost_provenance=None)
+        stack.enter_context(
+            mock.patch.object(measured_costs, "TRADEABLE_SYMBOLS", frozenset({"SPY"}))
+        )
+        section = skill.skill_section(
+            boards,
+            arms,
+            receipts,
+            longrun.OutcomeCache(get),
+            _protocol(),
+            options=skill.SkillOptions(),
+            no_price=ledger,
+            cost_provenance=None,
+        )
     doc = section["arms"]["arm-a"]
     assert doc["boards_dropped_unpriced"] == len(names), doc
     assert doc["no_price"]["total"] == len(names), doc
@@ -313,6 +374,7 @@ def _protocol() -> Any:
 #     exist, are positive, and are 15 DISTINCT numbers, which a value-pin
 #     list cannot state.
 
+
 def test_a_leg_the_delta_source_declined_is_a_named_refusal() -> None:
     """The derivation component's 'I declined' is a DROP, not a price."""
     declined = _leg(abs_delta="0.05")
@@ -328,8 +390,10 @@ def test_the_delta_source_declining_refuses_the_whole_package() -> None:
     """Declining one leg must not let the other be priced alone."""
     model = measured_costs.SpreadCostModel.measured()
     with pytest.raises(measured_costs.UnpricedCostError) as excinfo:
-        model.round_trip([_leg(abs_delta="0.05"), _leg(abs_delta="0.05")],
-                         delta_unavailable=[_leg(abs_delta="0.05")])
+        model.round_trip(
+            [_leg(abs_delta="0.05"), _leg(abs_delta="0.05")],
+            delta_unavailable=[_leg(abs_delta="0.05")],
+        )
     assert excinfo.value.reason == "delta_unavailable"
 
 
@@ -347,4 +411,5 @@ def test_the_derived_surface_is_total_over_the_whole_measured_grid() -> None:
     assert len(seen) == 15, f"the 15 derived cells collapsed to {len(seen)}: {sorted(seen)}"
     assert "unmeasured_cell" in tuple(measured_costs.REASON_TOKENS), (
         "the token stays available to an offline builder even though the "
-        "separable shipped surface cannot produce a hole")
+        "separable shipped surface cannot produce a hole"
+    )

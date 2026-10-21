@@ -107,12 +107,8 @@ class TestEveningValidate:
         # the same payload is fresh for evening but PAST the 15:15 clock
         # window, and a clock-fresh 10:02 ET payload is before the close
         evening_ok = chains.parse_chain(_evening_payload(ts_utc="2026-10-01 21:30:00"), "KO")
-        assert (
-            store.validate(evening_ok, D, static_calendar, clock="15:15").status == "stale"
-        )
-        clock_ok = chains.parse_chain(
-            _evening_payload(ts_utc="2026-10-01 14:02:00"), "KO"
-        )
+        assert store.validate(evening_ok, D, static_calendar, clock="15:15").status == "stale"
+        clock_ok = chains.parse_chain(_evening_payload(ts_utc="2026-10-01 14:02:00"), "KO")
         assert store.validate(clock_ok, D, static_calendar, clock=store.EVENING).status == "stale"
 
 
@@ -136,9 +132,7 @@ class TestEveningRecording:
             tmp_path / "store",
         )
 
-    def test_evening_writes_its_own_namespace_and_no_raw(
-        self, tmp_path, static_calendar
-    ) -> None:
+    def test_evening_writes_its_own_namespace_and_no_raw(self, tmp_path, static_calendar) -> None:
         bodies = {s: _evening_payload(s) for s in ("KO", "PEP")}
         summary, _, root = self._record(tmp_path, static_calendar, bodies=bodies)
         assert all(r.status == "ok" for r in summary.results.values())
@@ -151,9 +145,7 @@ class TestEveningRecording:
     def test_evening_documents_carry_the_evening_clock_header(
         self, tmp_path, static_calendar
     ) -> None:
-        self._record(
-            tmp_path, static_calendar, bodies={"KO": _evening_payload("KO")}
-        )
+        self._record(tmp_path, static_calendar, bodies={"KO": _evening_payload("KO")})
         with gzip.open(tmp_path / "store/chains/clock=evening/2026-10-01/KO.json.gz") as fh:
             doc = json.loads(fh.read())
         assert doc["header"]["clock"] == "evening"
@@ -162,20 +154,14 @@ class TestEveningRecording:
     def test_evening_manifest_is_per_tier_and_eod_bookkeeping_untouched(
         self, tmp_path, static_calendar
     ) -> None:
-        self._record(
-            tmp_path, static_calendar, bodies={"KO": _evening_payload("KO")}
-        )
-        m = json.loads(
-            (tmp_path / "store/manifest/clock=evening/2026-10-01.json").read_text()
-        )
+        self._record(tmp_path, static_calendar, bodies={"KO": _evening_payload("KO")})
+        m = json.loads((tmp_path / "store/manifest/clock=evening/2026-10-01.json").read_text())
         assert m["clock"] == "evening"
         assert set(m["symbols"]) == {"KO"}
         assert not (tmp_path / "store/manifest/2026-10-01.json").exists()
         assert not (tmp_path / "store/gaps.jsonl").exists()  # not the eod lane
 
-    def test_evening_eod_and_clock_namespaces_coexist(
-        self, tmp_path, static_calendar
-    ) -> None:
+    def test_evening_eod_and_clock_namespaces_coexist(self, tmp_path, static_calendar) -> None:
         # the same evening bytes also satisfy eod (post-close, settled), and
         # a clock payload lands in its own namespace: three namespaces, one
         # file each, nothing shared
@@ -199,7 +185,9 @@ class TestEveningRecording:
         assert (tmp_path / "store/chains/clock=10:00/2026-10-01/KO.json.gz").exists()
         assert (tmp_path / "store/chains/clock=evening/2026-10-01/KO.json.gz").exists()
         assert len(list((tmp_path / "store/chains/2026-10-01").glob("*.json.gz"))) == 1
-        assert len(list((tmp_path / "store/chains/clock=evening/2026-10-01").glob("*.json.gz"))) == 1
+        assert (
+            len(list((tmp_path / "store/chains/clock=evening/2026-10-01").glob("*.json.gz"))) == 1
+        )
 
 
 class TestEveningSinglePass:
@@ -256,7 +244,9 @@ class TestEveningCoverage:
             )
         )
         bodies = {
-            s: _evening_payload(s, ts_utc="2026-10-01 19:30:00" if s == "PG" else "2026-10-01 21:30:00")
+            s: _evening_payload(
+                s, ts_utc="2026-10-01 19:30:00" if s == "PG" else "2026-10-01 21:30:00"
+            )
             for s in ("KO", "PEP", "PG")
         }
         store.record_session(
@@ -291,9 +281,7 @@ class TestEveningCli:
             cal=static_calendar,
         )
 
-    def test_clock_evening_records_the_tier(
-        self, tmp_path: Path, static_calendar
-    ) -> None:
+    def test_clock_evening_records_the_tier(self, tmp_path: Path, static_calendar) -> None:
         rc = self._run(
             tmp_path,
             static_calendar,
@@ -318,9 +306,7 @@ class TestEveningCli:
         assert rc == 3
         assert not (tmp_path / "store/chains/clock=evening/2026-10-01/KO.json.gz").exists()
 
-    def test_clock_evening_non_session_day_refused(
-        self, tmp_path: Path, static_calendar
-    ) -> None:
+    def test_clock_evening_non_session_day_refused(self, tmp_path: Path, static_calendar) -> None:
         rc = self._run(
             tmp_path,
             static_calendar,

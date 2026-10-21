@@ -134,8 +134,9 @@ class TestDebitVerticalMaxLossIsTheDebitPaid:
             ("0", "35", "17250"),  # pin the floor: deep ITM cannot beat the width
         ],
     )
-    def test_expiry_payoff_bounded_by_the_debit(self, spot: str, pkg_value: str,
-                                                book_pnl: str) -> None:
+    def test_expiry_payoff_bounded_by_the_debit(
+        self, spot: str, pkg_value: str, book_pnl: str
+    ) -> None:
         s = Decimal(spot)
         long_k, short_k = Decimal("185"), Decimal("150")
         # intrinsic of a long put vertical, by hand:
@@ -193,8 +194,9 @@ class TestCreditKindsMaxLossIsWidthMinusCredit:
             ("0", "5", "-700"),  # pin the floor: loss stops at width - credit
         ],
     )
-    def test_credit_payoff_bounded_by_width_minus_credit(self, spot: str, pkg_value: str,
-                                                         book_pnl: str) -> None:
+    def test_credit_payoff_bounded_by_width_minus_credit(
+        self, spot: str, pkg_value: str, book_pnl: str
+    ) -> None:
         s = Decimal(spot)
         value = max(Decimal(0), Decimal("100") - s) - max(Decimal(0), Decimal("95") - s)
         assert value == Decimal(pkg_value)
@@ -223,13 +225,17 @@ class TestCreditKindsMaxLossIsWidthMinusCredit:
     def test_calendar_and_diagonal_cap_is_the_loss(self) -> None:
         # calendar: 1.10 x 100 x 3 = 330
         cal = _leg_structure(
-            "calendar", [_leg("C", "SELL", "100", FRONT), _leg("C", "BUY", "100", BACK)],
-            "1.10", quantity=3,
+            "calendar",
+            [_leg("C", "SELL", "100", FRONT), _leg("C", "BUY", "100", BACK)],
+            "1.10",
+            quantity=3,
         )
         # protective put diagonal: 7.25 x 100 x 2 = 1,450
         diag = _leg_structure(
-            "diagonal", [_leg("P", "SELL", "100", FRONT), _leg("P", "BUY", "105", BACK)],
-            "7.25", quantity=2,
+            "diagonal",
+            [_leg("P", "SELL", "100", FRONT), _leg("P", "BUY", "105", BACK)],
+            "7.25",
+            quantity=2,
         )
         assert LegStructure(**cal).max_loss() == Decimal("330")
         assert LegStructure(**diag).max_loss() == Decimal("1450")
@@ -275,31 +281,46 @@ class TestGate3AuditNumbersRefuted:
             [
                 _nvda_oct(),
                 _leg_structure(
-                    "debit_vertical", [_leg("P", "BUY", "185"), _leg("P", "SELL", "150")],
-                    "0.50", quantity=5, id="oct-ml",
+                    "debit_vertical",
+                    [_leg("P", "BUY", "185"), _leg("P", "SELL", "150")],
+                    "0.50",
+                    quantity=5,
+                    id="oct-ml",
                 ),
                 _leg_structure(
-                    "credit_vertical", [_leg("P", "SELL", "100"), _leg("P", "BUY", "95")],
-                    "1.50", quantity=2, id="cv",
+                    "credit_vertical",
+                    [_leg("P", "SELL", "100"), _leg("P", "BUY", "95")],
+                    "1.50",
+                    quantity=2,
+                    id="cv",
                 ),
                 _leg_structure(
                     "iron_condor",
                     [
-                        _leg("P", "BUY", "90"), _leg("P", "SELL", "95"),
-                        _leg("C", "SELL", "105"), _leg("C", "BUY", "115"),
+                        _leg("P", "BUY", "90"),
+                        _leg("P", "SELL", "95"),
+                        _leg("C", "SELL", "105"),
+                        _leg("C", "BUY", "115"),
                     ],
-                    "2.00", id="ic",
+                    "2.00",
+                    id="ic",
                 ),
                 _leg_structure(
                     "long_single", [_leg("C", "BUY", "100", BACK)], "3.20", quantity=2, id="ls"
                 ),
                 _leg_structure(
-                    "calendar", [_leg("C", "SELL", "100", FRONT), _leg("C", "BUY", "100", BACK)],
-                    "1.10", quantity=3, id="cal",
+                    "calendar",
+                    [_leg("C", "SELL", "100", FRONT), _leg("C", "BUY", "100", BACK)],
+                    "1.10",
+                    quantity=3,
+                    id="cal",
                 ),
                 _leg_structure(
-                    "diagonal", [_leg("P", "SELL", "100", FRONT), _leg("P", "BUY", "105", BACK)],
-                    "7.25", quantity=2, id="diag",
+                    "diagonal",
+                    [_leg("P", "SELL", "100", FRONT), _leg("P", "BUY", "105", BACK)],
+                    "7.25",
+                    quantity=2,
+                    id="diag",
                 ),
             ],
             total_debit_cap="4420",
@@ -368,9 +389,7 @@ class TestRuntimeRailReading:
         # a live book at the rail, doubled through model_copy (validators
         # skipped): 0.50 x 200 x 100 = 10,000 committed against the 5,000 rail
         plan = _plan([_nvda_oct(quantity=100)], account_mode="live", total_debit_cap="5000")
-        mutated = plan.model_copy(
-            update={"structures": [PutSpread(**_nvda_oct(quantity=200))]}
-        )
+        mutated = plan.model_copy(update={"structures": [PutSpread(**_nvda_oct(quantity=200))]})
         assert mutated.committed_at_caps == Decimal("10000")  # nothing raised
         reading = rail_reading(mutated)
         assert reading.committed == Decimal("10000")

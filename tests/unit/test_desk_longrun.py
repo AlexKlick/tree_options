@@ -29,16 +29,16 @@ from tree_options.desk.longrun import (
 
 # ------------------------------------------------------------------ fixtures
 
-ROWS = [{"id": "l", "structure": "call_credit"},   # the loser (and first_row)
-        {"id": "w", "structure": "put_credit"},    # the winner (and first bullish)
-        {"id": "n", "structure": "call_debit"}]    # never fills (unevaluable)
-TABLE: dict[str, tuple[float, float] | None] = {"w": (12.0, 10.0), "l": (-4.0, -4.0),
-                                                "n": None}
+ROWS = [
+    {"id": "l", "structure": "call_credit"},  # the loser (and first_row)
+    {"id": "w", "structure": "put_credit"},  # the winner (and first bullish)
+    {"id": "n", "structure": "call_debit"},
+]  # never fills (unevaluable)
+TABLE: dict[str, tuple[float, float] | None] = {"w": (12.0, 10.0), "l": (-4.0, -4.0), "n": None}
 SESSIONS6 = [f"2026-06-0{d}" for d in range(1, 7)]
 
 
-def boards_for(sessions: list[str], clocks: tuple[str, ...] = ("10:00", "13:00")
-               ) -> list[Board]:
+def boards_for(sessions: list[str], clocks: tuple[str, ...] = ("10:00", "13:00")) -> list[Board]:
     return [Board(f"s:{s}T{c}", s, c, [dict(r) for r in ROWS]) for s in sessions for c in clocks]
 
 
@@ -50,8 +50,11 @@ def table_outcome(snapshot: str, candidate: str, horizon: str | None) -> dict[st
 class FakeAsk:
     """Counts calls; picks via ``pick``; raises on snapshots in ``fail``."""
 
-    def __init__(self, pick: Callable[[PolicySpec, Board], tuple[Any, Any, str]] | None = None,
-                 fail: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        pick: Callable[[PolicySpec, Board], tuple[Any, Any, str]] | None = None,
+        fail: set[str] | None = None,
+    ) -> None:
         self.pick = pick or (lambda spec, board: ("w", None, "fake"))
         self.fail = fail or set()
         self.calls: list[tuple[str, str]] = []
@@ -76,14 +79,29 @@ def policies() -> list[PolicySpec]:
     return [PolicySpec("m", "model", repeats=2), *longrun.builtin_controls()]
 
 
-def run(run_dir: Path, ask: FakeAsk, *, boards: list[Board] | None = None,
-        quota: Callable[[], tuple[bool, str]] = always_ok,
-        settings: ExecSettings | None = None, sleep: Callable[[float], None] = lambda s: None,
-        protocol: Protocol = PROTO, **kwargs: Any) -> dict[str, Any]:
+def run(
+    run_dir: Path,
+    ask: FakeAsk,
+    *,
+    boards: list[Board] | None = None,
+    quota: Callable[[], tuple[bool, str]] = always_ok,
+    settings: ExecSettings | None = None,
+    sleep: Callable[[float], None] = lambda s: None,
+    protocol: Protocol = PROTO,
+    **kwargs: Any,
+) -> dict[str, Any]:
     return longrun.run_longrun(
-        run_dir, boards=boards or boards_for(SESSIONS6[:3]), policies=policies(),
-        outcome=table_outcome, ask=ask, quota_ok=quota, protocol=protocol,
-        settings=settings or ExecSettings(concurrency=3, pause_s=60.0), sleep=sleep, **kwargs)
+        run_dir,
+        boards=boards or boards_for(SESSIONS6[:3]),
+        policies=policies(),
+        outcome=table_outcome,
+        ask=ask,
+        quota_ok=quota,
+        protocol=protocol,
+        settings=settings or ExecSettings(concurrency=3, pause_s=60.0),
+        sleep=sleep,
+        **kwargs,
+    )
 
 
 def ok(choice: str | None, horizon: str | None = None) -> dict[str, Any]:
@@ -142,8 +160,12 @@ def test_stability_drop_one_and_half_split_hand_cases() -> None:
     assert (stab["drop_one_min"], stab["drop_one_max"]) == (5.0, 17.0)
     assert stab["drop_one_sign_flips"] == 0
     assert stab["most_influential_session"] == "a"
-    assert stab["half_split"] == {"first": 8.0, "second": 7.0, "split_after": "b",
-                                  "signs_agree": True}
+    assert stab["half_split"] == {
+        "first": 8.0,
+        "second": 7.0,
+        "split_after": "b",
+        "signs_agree": True,
+    }
     fragile = longrun.stability([10.0, -12.0], ["a", "b"])
     assert fragile["drop_one_sign_flips"] == 1  # dropping b turns -2 into +10
     assert fragile["half_split"]["signs_agree"] is False
@@ -168,8 +190,9 @@ def test_random_null_exact_expectation_and_seed_floor() -> None:
 
 
 def test_pick_null_places_the_realized_pick() -> None:
-    doc = longrun.pick_null(20.0, [np.array([10.0, -10.0]), np.array([10.0, -10.0])],
-                            seeds=400, seed=2)
+    doc = longrun.pick_null(
+        20.0, [np.array([10.0, -10.0]), np.array([10.0, -10.0])], seeds=400, seed=2
+    )
     assert doc["expected"] == 0.0
     assert doc["band95"] == [-20.0, 20.0]
     assert 0.6 < doc["percentile"] < 0.9  # only the best-of-both draw ties 20
@@ -197,9 +220,15 @@ def test_own_entry_rate_null_is_matched_not_the_incumbents() -> None:
 
 def test_benchmark_rows_buy_and_hold_dollars_hand_case() -> None:
     rows = longrun.benchmark_rows(
-        {"SPY": {"2026-05-29": 100.0, "2026-06-01": 110.0, "2026-06-03": 99.0},
-         "NONE": {"2026-07-01": 5.0}},
-        ["2026-06-01", "2026-06-02", "2026-06-03"], capital=5000.0, draws=2000, seed=1)
+        {
+            "SPY": {"2026-05-29": 100.0, "2026-06-01": 110.0, "2026-06-03": 99.0},
+            "NONE": {"2026-07-01": 5.0},
+        },
+        ["2026-06-01", "2026-06-02", "2026-06-03"],
+        capital=5000.0,
+        draws=2000,
+        seed=1,
+    )
     none, spy = rows
     assert none["status"] == "unavailable"
     assert spy["base_date"] == "2026-05-29"
@@ -211,8 +240,8 @@ def test_benchmark_rows_buy_and_hold_dollars_hand_case() -> None:
 
 def test_equal_weight_index_is_the_mean_of_normalized_closes() -> None:
     index = longrun.equal_weight_index(
-        {"A": {"d0": 10.0, "d1": 11.0, "d2": 12.0}, "B": {"d0": 20.0, "d1": 18.0, "d2": 22.0}},
-        "d1")
+        {"A": {"d0": 10.0, "d1": 11.0, "d2": 12.0}, "B": {"d0": 20.0, "d1": 18.0, "d2": 22.0}}, "d1"
+    )
     assert index == pytest.approx({"d0": 1.0, "d1": 1.0, "d2": 1.15})
 
 
@@ -238,11 +267,17 @@ def test_board_and_policy_validation() -> None:
 
 
 def test_builtin_rules_are_deterministic() -> None:
-    board = Board("s", "2026-06-01", "10:00", [
-        {"id": "a", "structure": "put_credit", "reward_risk": "0.5", "max_loss": "200"},
-        {"id": "b", "structure": "put_credit", "reward_risk": "0.9", "max_loss": "250"},
-        {"id": "c", "structure": "call_credit", "reward_risk": "2", "max_loss": "90"},
-        {"id": "d", "structure": "call_debit", "direction": "bearish"}])
+    board = Board(
+        "s",
+        "2026-06-01",
+        "10:00",
+        [
+            {"id": "a", "structure": "put_credit", "reward_risk": "0.5", "max_loss": "200"},
+            {"id": "b", "structure": "put_credit", "reward_risk": "0.9", "max_loss": "250"},
+            {"id": "c", "structure": "call_credit", "reward_risk": "2", "max_loss": "90"},
+            {"id": "d", "structure": "call_debit", "direction": "bearish"},
+        ],
+    )
     assert longrun.rule_no_trade(board) == (None, None)
     assert longrun.rule_first_row("1d")(board) == ("a", "1d")
     assert longrun.rule_fixed_structure("put_credit")(board) == ("a", None)
@@ -253,8 +288,16 @@ def test_builtin_rules_are_deterministic() -> None:
     assert not longrun.is_bullish(board.rows[3])
     assert longrun.rule_always_bullish()(board) == ("a", None)
     names = [p.name for p in longrun.builtin_controls()]
-    assert names == ["no_trade", "first_row", "always_put_credit", "always_call_debit",
-                     "always_put_debit", "always_call_credit", "always_bullish", "random"]
+    assert names == [
+        "no_trade",
+        "first_row",
+        "always_put_credit",
+        "always_call_debit",
+        "always_put_debit",
+        "always_call_credit",
+        "always_bullish",
+        "random",
+    ]
 
 
 def test_unknown_choice_is_rejected_not_trusted() -> None:
@@ -272,12 +315,13 @@ def test_unknown_choice_is_rejected_not_trusted() -> None:
 
 def _score_case() -> tuple[list[Board], list[longrun.Arm], dict[str, dict[str, Any]]]:
     boards = boards_for(["2026-06-01", "2026-06-02"])  # b1,b2 | b3,b4
-    specs = [PolicySpec("m", "model", repeats=2),
-             PolicySpec("first_row", "control", rule=longrun.rule_first_row()),
-             PolicySpec("no_trade", "control", rule=longrun.rule_no_trade),
-             PolicySpec("always_call_debit", "rule",
-                        rule=longrun.rule_fixed_structure("call_debit")),
-             PolicySpec("always_bullish", "control", rule=longrun.rule_always_bullish())]
+    specs = [
+        PolicySpec("m", "model", repeats=2),
+        PolicySpec("first_row", "control", rule=longrun.rule_first_row()),
+        PolicySpec("no_trade", "control", rule=longrun.rule_no_trade),
+        PolicySpec("always_call_debit", "rule", rule=longrun.rule_fixed_structure("call_debit")),
+        PolicySpec("always_bullish", "control", rule=longrun.rule_always_bullish()),
+    ]
     arms = longrun.arms_of(specs)
     sids = [b.snapshot for b in boards]
     receipts = {
@@ -326,7 +370,11 @@ def test_score_run_matches_hand_computation() -> None:
     assert aa["diff"]["diff_total"] == 10.0 and aa["diff"]["ci95"] == [0.0, 20.0]
     wf = doc["walk_forward"]
     assert (wf["status"], wf["cutoff"], wf["tune_sessions"], wf["test_sessions"]) == (
-        "ok", "2026-06-01", 1, 1)
+        "ok",
+        "2026-06-01",
+        1,
+        1,
+    )
     assert [f["policy"] for f in wf["finalists"]] == ["m", "always_call_debit"]
     assert wf["finalists"][0]["test"]["vs_random"]["diff_total"] == 11.5  # (20+10)/2 - 3.5
     assert doc["promotion"]["promoted"] is False
@@ -342,8 +390,7 @@ NO_FILL_WHY: dict[str, str | None] = {
 }
 
 
-def reason_outcome(snapshot: str, candidate: str,
-                   horizon: str | None) -> dict[str, Any] | None:
+def reason_outcome(snapshot: str, candidate: str, horizon: str | None) -> dict[str, Any] | None:
     """TABLE plus, on the never-filling row, the reason the outcome row carries."""
     if candidate == "n":
         why = NO_FILL_WHY[snapshot]
@@ -360,8 +407,11 @@ def test_score_run_splits_no_fill_reasons_per_arm() -> None:
     acd = rows["always_call_debit"]
     # hand-derived: the arm enters "n" on all 4 boards; by snapshot the rows carry
     # missing_later_entry_bars x2, legs_out_of_sync x1, and one row carries no reason
-    assert acd["no_fill_reasons"] == {"missing_later_entry_bars": 2,
-                                      "legs_out_of_sync": 1, "unknown": 1}
+    assert acd["no_fill_reasons"] == {
+        "missing_later_entry_bars": 2,
+        "legs_out_of_sync": 1,
+        "unknown": 1,
+    }
     assert sum(acd["no_fill_reasons"].values()) == acd["unevaluable"] == 4
     # the accounting convention is untouched: entered, $0 total, no evaluated entries
     assert (acd["entered"], acd["net_total"], acd["net_per_evaluated_entry"]) == (4, 0.0, None)
@@ -381,13 +431,16 @@ def test_digest_markdown_reports_the_no_fill_reason_split() -> None:
     md = longrun.digest_markdown(doc)
     assert "## No-fill reason split (per arm, from the outcome rows)" in md
     line = next(line for line in md.splitlines() if line.startswith("- always_call_debit:"))
-    assert ("missing_later_entry_bars 2" in line and "legs_out_of_sync 1" in line
-            and "unknown 1" in line and "(unevaluable 4)" in line)
+    assert (
+        "missing_later_entry_bars 2" in line
+        and "legs_out_of_sync 1" in line
+        and "unknown 1" in line
+        and "(unevaluable 4)" in line
+    )
     # the section names the unchanged convention - it must not change it
     assert "scores $0" in md and "entry-rate denominator" in md
     # a run with no no-fills carries no section and no per-arm key
-    clean_receipts = {**receipts,
-                      "always_call_debit": {b.snapshot: ok("l") for b in boards}}
+    clean_receipts = {**receipts, "always_call_debit": {b.snapshot: ok("l") for b in boards}}
     clean = longrun.score_run(boards, arms, clean_receipts, OutcomeCache(table_outcome), proto)
     assert "No-fill reason split" not in longrun.digest_markdown(clean)
     assert all("no_fill_reasons" not in row for row in clean["standings"])
@@ -399,16 +452,19 @@ def test_cockpit_projection_carries_the_no_fill_reason_split() -> None:
     doc = longrun.score_run(boards, arms, receipts, OutcomeCache(reason_outcome), proto)
     rows = {r["arm"]: r for r in longrun._project_digest(doc)["standings"]}
     assert rows["always_call_debit"]["no_fill_reasons"] == {
-        "missing_later_entry_bars": 2, "legs_out_of_sync": 1, "unknown": 1}
-    assert all("no_fill_reasons" not in row
-               for arm, row in rows.items() if arm != "always_call_debit")
+        "missing_later_entry_bars": 2,
+        "legs_out_of_sync": 1,
+        "unknown": 1,
+    }
+    assert all(
+        "no_fill_reasons" not in row for arm, row in rows.items() if arm != "always_call_debit"
+    )
 
 
 def test_outcome_cache_no_fill_reason_single_leg_and_pair() -> None:
     calls: list[tuple[str, str, str | None]] = []
 
-    def outcome(snapshot: str, candidate: str,
-                horizon: str | None) -> dict[str, Any] | None:
+    def outcome(snapshot: str, candidate: str, horizon: str | None) -> dict[str, Any] | None:
         calls.append((snapshot, candidate, horizon))
         if candidate == "n":
             return {"no_fill_reason": "missing_later_entry_bars"}
@@ -434,17 +490,41 @@ def test_outcome_cache_no_fill_reason_single_leg_and_pair() -> None:
 
 def test_v2_outcome_table_no_fill_reason_marker(tmp_path: Path) -> None:
     rows = [
-        {"snapshot": "s:2026-06-01T10:00", "candidate_id": "w", "exit_mode": "intraday",
-         "status": "closed", "gross": "12.00", "net": "10.00",
-         "exit_at": "2026-06-01T14:45:00+00:00"},
-        {"snapshot": "s:2026-06-01T10:00", "candidate_id": "n", "exit_mode": "intraday",
-         "status": "no_fill", "gross": None, "net": None,
-         "exit_reason": "missing_later_entry_bars"},
-        {"snapshot": "s:2026-06-01T13:00", "candidate_id": "n", "exit_mode": "intraday",
-         "status": "no_fill", "gross": None, "net": None,
-         "exit_reason": "legs_out_of_sync"},
-        {"snapshot": "s:2026-06-02T10:00", "candidate_id": "n", "exit_mode": "intraday",
-         "status": "no_fill", "gross": None, "net": None},  # no reason on the row
+        {
+            "snapshot": "s:2026-06-01T10:00",
+            "candidate_id": "w",
+            "exit_mode": "intraday",
+            "status": "closed",
+            "gross": "12.00",
+            "net": "10.00",
+            "exit_at": "2026-06-01T14:45:00+00:00",
+        },
+        {
+            "snapshot": "s:2026-06-01T10:00",
+            "candidate_id": "n",
+            "exit_mode": "intraday",
+            "status": "no_fill",
+            "gross": None,
+            "net": None,
+            "exit_reason": "missing_later_entry_bars",
+        },
+        {
+            "snapshot": "s:2026-06-01T13:00",
+            "candidate_id": "n",
+            "exit_mode": "intraday",
+            "status": "no_fill",
+            "gross": None,
+            "net": None,
+            "exit_reason": "legs_out_of_sync",
+        },
+        {
+            "snapshot": "s:2026-06-02T10:00",
+            "candidate_id": "n",
+            "exit_mode": "intraday",
+            "status": "no_fill",
+            "gross": None,
+            "net": None,
+        },  # no reason on the row
     ]
     table = tmp_path / "table.jsonl"
     table.write_text("".join(json.dumps(row) + "\n" for row in rows))
@@ -462,8 +542,10 @@ def test_v2_outcome_table_no_fill_reason_marker(tmp_path: Path) -> None:
 def test_aa_flags_the_evaluation_invalid_when_the_repeats_differ() -> None:
     boards = boards_for(SESSIONS6, clocks=("10:00",))
     arms = longrun.arms_of([PolicySpec("m", "model", repeats=2)])
-    receipts = {"m#1": {b.snapshot: ok("w") for b in boards},
-                "m#2": {b.snapshot: ok("l") for b in boards}}
+    receipts = {
+        "m#1": {b.snapshot: ok("w") for b in boards},
+        "m#2": {b.snapshot: ok("l") for b in boards},
+    }
     doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), PROTO)
     assert doc["aa"]["significant"] is True
     assert doc["aa"]["status"] == "INVALID" and doc["evaluation_valid"] is False
@@ -493,7 +575,8 @@ def test_vs_random_is_matched_to_each_arms_own_entry_rate() -> None:
     # the legacy column IS the degenerate shape, and stays that way on purpose
     for row in doc["standings"]:
         assert row["vs_random"]["diff_total"] == pytest.approx(
-            row["net_total"] - null_total, abs=0.01)
+            row["net_total"] - null_total, abs=0.01
+        )
 
     # the matched column is not: it varies with each arm's own entry rate
     assert rows["m#1"]["vs_random_own"]["p_enter"] == 1.0
@@ -531,30 +614,52 @@ def test_a_zero_entry_arm_is_not_credited_with_the_incumbents_null() -> None:
     assert rows["first_row"]["vs_random_own"]["diff_total"] < 0.0
     # the sign of the zero-entry arm's advantage flips between the two columns
     # whenever the shared null is negative, which is the production case
-    assert (rows["no_trade"]["vs_random_own"]["diff_total"]
-            > rows["no_trade"]["vs_random"]["diff_total"])
+    assert (
+        rows["no_trade"]["vs_random_own"]["diff_total"]
+        > rows["no_trade"]["vs_random"]["diff_total"]
+    )
 
 
 def test_aa_not_run_leaves_the_evaluation_unvalidated() -> None:
     boards = boards_for(SESSIONS6[:2])
     arms = longrun.arms_of([PolicySpec("m", "model")])
     receipts = {"m": {b.snapshot: ok("w") for b in boards}}
-    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome),
-                            Protocol(draws=2000, random_seeds=200, incumbent="m"))
+    doc = longrun.score_run(
+        boards,
+        arms,
+        receipts,
+        OutcomeCache(table_outcome),
+        Protocol(draws=2000, random_seeds=200, incumbent="m"),
+    )
     assert doc["aa"]["status"] == "not_run" and doc["evaluation_valid"] is False
     assert doc["headline"].startswith("UNVALIDATED")
 
 
 def test_walk_forward_caps_finalists_at_two() -> None:
     sessions = ["d1", "d2", "d3"]
-    pooled = {"a": np.array([5.0, 5.0, 1.0]), "b": np.array([1.0, 1.0, 9.0]),
-              "c": np.array([3.0, 3.0, 3.0]), "d": np.array([-1.0, 0.0, 0.0]),
-              "e": np.array([4.0, 4.0, -9.0])}
+    pooled = {
+        "a": np.array([5.0, 5.0, 1.0]),
+        "b": np.array([1.0, 1.0, 9.0]),
+        "c": np.array([3.0, 3.0, 3.0]),
+        "d": np.array([-1.0, 0.0, 0.0]),
+        "e": np.array([4.0, 4.0, -9.0]),
+    }
     entries = {name: np.full(3, 5.0) for name in pooled}
     for cap in (2, 5):  # even a caller asking for more gets at most two
-        wf = longrun.walk_forward(pooled, np.zeros(3), sessions, incumbent=None, cutoff="d2",
-                                  metric="total", max_finalists=cap, draws=2000, seed=1,
-                                  alpha=0.05, aa_valid=True, test_entries=entries)
+        wf = longrun.walk_forward(
+            pooled,
+            np.zeros(3),
+            sessions,
+            incumbent=None,
+            cutoff="d2",
+            metric="total",
+            max_finalists=cap,
+            draws=2000,
+            seed=1,
+            alpha=0.05,
+            aa_valid=True,
+            test_entries=entries,
+        )
         assert wf["max_finalists"] == 2
         assert [f["policy"] for f in wf["finalists"]] == ["a", "e"]  # tune totals 10, 8
     assert [r["policy"] for r in wf["ranking"]] == ["a", "e", "c", "b", "d"]
@@ -564,9 +669,20 @@ def test_walk_forward_caps_finalists_at_two() -> None:
     assert a["eligible_for_operator_review"] is False
     with pytest.raises(ValueError, match="max_finalists"):
         Protocol(max_finalists=3)
-    one = longrun.walk_forward(pooled, np.zeros(3), sessions, incumbent=None, cutoff="d3",
-                               metric="total", max_finalists=2, draws=2000, seed=1,
-                               alpha=0.05, aa_valid=True, test_entries=entries)
+    one = longrun.walk_forward(
+        pooled,
+        np.zeros(3),
+        sessions,
+        incumbent=None,
+        cutoff="d3",
+        metric="total",
+        max_finalists=2,
+        draws=2000,
+        seed=1,
+        alpha=0.05,
+        aa_valid=True,
+        test_entries=entries,
+    )
     assert one["status"] == "not_applicable"
 
 
@@ -577,16 +693,37 @@ def test_walk_forward_eligibility_needs_every_clause() -> None:
     # clause (6) is part of the rule now, so the caller has to say how many
     # evaluated entries each policy has in the test window
     entries = {"challenger": np.full(24, 5.0), "inc": np.zeros(24)}
-    wf = longrun.walk_forward(pooled, np.zeros(24), sessions, incumbent="inc", cutoff="d12",
-                              metric="ci_low_diff_vs_random", max_finalists=2, draws=2000,
-                              seed=1, alpha=0.05, aa_valid=True, test_entries=entries)
+    wf = longrun.walk_forward(
+        pooled,
+        np.zeros(24),
+        sessions,
+        incumbent="inc",
+        cutoff="d12",
+        metric="ci_low_diff_vs_random",
+        max_finalists=2,
+        draws=2000,
+        seed=1,
+        alpha=0.05,
+        aa_valid=True,
+        test_entries=entries,
+    )
     top = wf["finalists"][0]
     assert top["policy"] == "challenger" and top["eligible_for_operator_review"] is True
     assert all(v is True for v in top["rule_check"].values())
-    invalid = longrun.walk_forward(pooled, np.zeros(24), sessions, incumbent="inc",
-                                   cutoff="d12", metric="ci_low_diff_vs_random",
-                                   max_finalists=2, draws=2000, seed=1, alpha=0.05,
-                                   aa_valid=False, test_entries=entries)
+    invalid = longrun.walk_forward(
+        pooled,
+        np.zeros(24),
+        sessions,
+        incumbent="inc",
+        cutoff="d12",
+        metric="ci_low_diff_vs_random",
+        max_finalists=2,
+        draws=2000,
+        seed=1,
+        alpha=0.05,
+        aa_valid=False,
+        test_entries=entries,
+    )
     assert invalid["finalists"][0]["eligible_for_operator_review"] is False
 
 
@@ -602,24 +739,34 @@ def test_promotion_rule_cannot_be_won_by_not_trading() -> None:
     """
     sessions = [f"d{i:02d}" for i in range(1, 25)]
     abstainer = np.concatenate([np.full(12, 10.0), np.zeros(12)])  # test net $0.00
-    pooled = {"abstainer": abstainer,
-              "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
+    pooled = {"abstainer": abstainer, "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
     # the random null expects to LOSE money in the test window, so standing
     # still reads as a large positive paired diff
     expected = np.concatenate([np.zeros(12), np.full(12, -100.0)])
-    wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
-                              metric="total", max_finalists=2, draws=2000, seed=1,
-                              alpha=0.05, aa_valid=True,
-                              test_entries={"abstainer": np.zeros(24),
-                                            "inc": np.zeros(24)})
+    wf = longrun.walk_forward(
+        pooled,
+        expected,
+        sessions,
+        incumbent="inc",
+        cutoff="d12",
+        metric="total",
+        max_finalists=2,
+        draws=2000,
+        seed=1,
+        alpha=0.05,
+        aa_valid=True,
+        test_entries={"abstainer": np.zeros(24), "inc": np.zeros(24)},
+    )
     top = wf["finalists"][0]
     assert top["policy"] == "abstainer"
     assert top["test"]["net_total"] == 0.0  # it never traded in the test window
     assert top["test"]["vs_random"]["ci95"][0] > 0  # ... and still "beat" the null
     assert top["holm_p"] < 0.05
     # the pre-existing clauses all pass; only the two new ones can catch it
-    assert [k for k, v in top["rule_check"].items()
-            if v is not True] == ["test_net_positive", "test_entries_at_least_floor"]
+    assert [k for k, v in top["rule_check"].items() if v is not True] == [
+        "test_net_positive",
+        "test_entries_at_least_floor",
+    ]
     assert top["eligible_for_operator_review"] is False
 
 
@@ -627,17 +774,32 @@ def test_promotion_rule_needs_enough_test_entries_to_carry_a_ci() -> None:
     """Six fills with a positive CI and a positive net are still not a result:
     the floor stops a handful of entries from carrying the confirmatory look."""
     sessions = [f"d{i:02d}" for i in range(1, 25)]
-    lucky = np.concatenate([np.full(12, 10.0),          # tune: ranks first
-                            [10.0, 10.0, 10.0, 0.0, 0.0, 0.0,
-                             10.0, 10.0, 10.0, 0.0, 0.0, 0.0]])
-    pooled = {"lucky": lucky,
-              "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
+    lucky = np.concatenate(
+        [
+            np.full(12, 10.0),  # tune: ranks first
+            [10.0, 10.0, 10.0, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    pooled = {"lucky": lucky, "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
     expected = np.concatenate([np.zeros(12), np.full(12, -100.0)])
-    entries = {"lucky": np.concatenate([np.full(12, 5.0), np.full(6, 1.0), np.zeros(6)]),
-               "inc": np.zeros(24)}
-    wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
-                              metric="total", max_finalists=2, draws=2000, seed=1,
-                              alpha=0.05, aa_valid=True, test_entries=entries)
+    entries = {
+        "lucky": np.concatenate([np.full(12, 5.0), np.full(6, 1.0), np.zeros(6)]),
+        "inc": np.zeros(24),
+    }
+    wf = longrun.walk_forward(
+        pooled,
+        expected,
+        sessions,
+        incumbent="inc",
+        cutoff="d12",
+        metric="total",
+        max_finalists=2,
+        draws=2000,
+        seed=1,
+        alpha=0.05,
+        aa_valid=True,
+        test_entries=entries,
+    )
     top = wf["finalists"][0]
     assert top["policy"] == "lucky"
     assert top["test"]["net_total"] == 60.0  # positive, so clause (a) alone passes it
@@ -649,9 +811,20 @@ def test_promotion_rule_needs_enough_test_entries_to_carry_a_ci() -> None:
     # the same arm over the same test window, with the fills it would need
     enough = {k: v.copy() for k, v in entries.items()}
     enough["lucky"][12:24] = longrun.MIN_TEST_ENTRIES
-    ok_wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
-                                 metric="total", max_finalists=2, draws=2000, seed=1,
-                                 alpha=0.05, aa_valid=True, test_entries=enough)
+    ok_wf = longrun.walk_forward(
+        pooled,
+        expected,
+        sessions,
+        incumbent="inc",
+        cutoff="d12",
+        metric="total",
+        max_finalists=2,
+        draws=2000,
+        seed=1,
+        alpha=0.05,
+        aa_valid=True,
+        test_entries=enough,
+    )
     assert all(v is True for v in ok_wf["finalists"][0]["rule_check"].values())
     assert ok_wf["finalists"][0]["eligible_for_operator_review"] is True
 
@@ -664,18 +837,22 @@ def test_score_run_counts_only_evaluated_entries_in_the_test_window() -> None:
     arms = longrun.arms_of([PolicySpec("early", "model"), PolicySpec("always", "model")])
     early = {b.snapshot: ok("w" if b.session <= "2026-06-02" else None) for b in boards}
     always = {b.snapshot: ok("w") for b in boards}
-    doc = longrun.score_run(boards, arms, {"early": early, "always": always},
-                            OutcomeCache(table_outcome),
-                            Protocol(draws=2000, random_seeds=200, incumbent="early",
-                                     cutoff="2026-06-02"))
+    doc = longrun.score_run(
+        boards,
+        arms,
+        {"early": early, "always": always},
+        OutcomeCache(table_outcome),
+        Protocol(draws=2000, random_seeds=200, incumbent="early", cutoff="2026-06-02"),
+    )
     wf = doc["walk_forward"]
     assert (wf["tune_sessions"], wf["test_sessions"]) == (2, 3)  # sessions, not boards
     entered = {f["policy"]: f["test_entries"] for f in wf["finalists"]}
     assert entered == {"always": 6, "early": 0}
     assert wf["min_test_entries"] == longrun.MIN_TEST_ENTRIES
     for f in wf["finalists"]:
-        assert f["rule_check"]["test_entries_at_least_floor"] == (f["test_entries"]
-                                                                   >= longrun.MIN_TEST_ENTRIES)
+        assert f["rule_check"]["test_entries_at_least_floor"] == (
+            f["test_entries"] >= longrun.MIN_TEST_ENTRIES
+        )
 
 
 # --------------------------------------------------------------- executor
@@ -687,9 +864,12 @@ def test_run_digest_leads_with_the_note_and_never_promotes(tmp_path: Path) -> No
     assert result["status"] == "finished" and result["complete"] is True
     doc = json.loads((run_dir / "digest.json").read_text())
     assert list(doc)[:3] == ["schema", "untrusted_note", "promotion"]
-    assert doc["promotion"] == {"promoted": False, "rule": PREREGISTERED_RULE,
-                                "pre_registered_at": doc["promotion"]["pre_registered_at"],
-                                "amendments": []}
+    assert doc["promotion"] == {
+        "promoted": False,
+        "rule": PREREGISTERED_RULE,
+        "pre_registered_at": doc["promotion"]["pre_registered_at"],
+        "amendments": [],
+    }
     for path in run_dir.rglob("*"):
         if path.is_file():
             assert not re.search(r'"promoted"\s*:\s*true', path.read_text(), re.I), path
@@ -698,8 +878,17 @@ def test_run_digest_leads_with_the_note_and_never_promotes(tmp_path: Path) -> No
     assert body[1].startswith("> UNTRUSTED / NEVER PROMOTED")
     assert PREREGISTERED_RULE in md and "Promoted: False" in md
     assert "resampling_unit: session" in md and "draws 2000" in md
-    arms = ["m#1", "m#2", "no_trade", "first_row", "always_put_credit", "always_call_debit",
-            "always_put_debit", "always_call_credit", "always_bullish"]
+    arms = [
+        "m#1",
+        "m#2",
+        "no_trade",
+        "first_row",
+        "always_put_credit",
+        "always_call_debit",
+        "always_put_debit",
+        "always_call_credit",
+        "always_bullish",
+    ]
     assert sorted(doc["receipts"]) == sorted(arms)
     for arm in arms:
         assert doc["receipts"][arm] in md and Path(doc["receipts"][arm]).is_file()
@@ -735,16 +924,19 @@ def test_failures_are_recorded_never_fatal_and_retried_on_resume(tmp_path: Path)
     failing = {b.snapshot for b in boards if b.session == SESSIONS6[2]}
     result = run(run_dir, FakeAsk(fail=failing))
     assert result["status"] == "finished" and result["complete"] is False
-    recs = [json.loads(line) for line in
-            longrun.receipts_path(run_dir, "m#1").read_text().splitlines()]
+    recs = [
+        json.loads(line) for line in longrun.receipts_path(run_dir, "m#1").read_text().splitlines()
+    ]
     bad = [r for r in recs if not r["ok"]]
     assert {r["snapshot"] for r in bad} == failing
-    assert all(r["error"] == "RuntimeError: provider down" and r["choice"] is None
-               for r in bad)
+    assert all(r["error"] == "RuntimeError: provider down" and r["choice"] is None for r in bad)
     doc = json.loads((run_dir / "digest.json").read_text())
-    assert doc["boards"] == {"total": 6, "scored": 4, "excluded": 2,
-                             "sessions": {"count": 2, "first": SESSIONS6[0],
-                                          "last": SESSIONS6[1]}}
+    assert doc["boards"] == {
+        "total": 6,
+        "scored": 4,
+        "excluded": 2,
+        "sessions": {"count": 2, "first": SESSIONS6[0], "last": SESSIONS6[1]},
+    }
     assert {r["arm"]: r["failures"] for r in doc["standings"]}["m#1"] == 2
     assert doc["headline"].startswith("PARTIAL")
     progress = json.loads((run_dir / "progress.json").read_text())
@@ -769,11 +961,15 @@ def test_quota_pause_drains_sleeps_and_resumes(tmp_path: Path) -> None:
         slept.append((seconds, progress["status"], progress["quota"]["reason"]))
 
     ask = FakeAsk()
-    result = run(run_dir, ask, quota=quota, sleep=sleep,
-                 settings=ExecSettings(concurrency=2, pause_s=60.0, quota_every=100))
+    result = run(
+        run_dir,
+        ask,
+        quota=quota,
+        sleep=sleep,
+        settings=ExecSettings(concurrency=2, pause_s=60.0, quota_every=100),
+    )
     assert result["status"] == "finished"
-    assert slept == [(60.0, "paused", "left=40 planned=60"),
-                     (60.0, "paused", "left=41 planned=60")]
+    assert slept == [(60.0, "paused", "left=40 planned=60"), (60.0, "paused", "left=41 planned=60")]
     assert len(ask.calls) == 12
     progress = json.loads((run_dir / "progress.json").read_text())
     assert progress["paused_s"] == 120.0 and progress["quota"]["ok"] is True
@@ -782,8 +978,12 @@ def test_quota_pause_drains_sleeps_and_resumes(tmp_path: Path) -> None:
 def test_quota_pause_budget_stops_resumably(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     ask = FakeAsk()
-    result = run(run_dir, ask, quota=lambda: (False, "dry"),
-                 settings=ExecSettings(pause_s=60.0, max_pause_s=60.0))
+    result = run(
+        run_dir,
+        ask,
+        quota=lambda: (False, "dry"),
+        settings=ExecSettings(pause_s=60.0, max_pause_s=60.0),
+    )
     assert result["status"] == "stopped:quota_pause_limit"
     assert ask.calls == [] and not (run_dir / "digest.json").exists()
     progress = json.loads((run_dir / "progress.json").read_text())
@@ -798,8 +998,9 @@ def test_consecutive_failures_back_off(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     boards = boards_for(SESSIONS6[:3])
     ask = FakeAsk(fail={b.snapshot for b in boards})
-    result = run(run_dir, ask, settings=ExecSettings(concurrency=1, failure_backoff_after=3,
-                                                     max_pause_s=0.0))
+    result = run(
+        run_dir, ask, settings=ExecSettings(concurrency=1, failure_backoff_after=3, max_pause_s=0.0)
+    )
     assert result["status"] == "stopped:failure_backoff_limit"
     assert len(ask.calls) == 3
 
@@ -818,10 +1019,18 @@ def test_model_arms_are_interleaved(tmp_path: Path) -> None:
     def clock() -> datetime:
         return datetime.fromtimestamp(1_790_000_000 + next(ticks), UTC)
 
-    run(tmp_path / "run", FakeAsk(), boards=boards_for(SESSIONS6),
-        settings=ExecSettings(concurrency=1), clock=clock)
-    stamped = sorted((rec["at"], arm) for arm in ("m#1", "m#2") for rec in
-                     longrun.load_receipts(longrun.receipts_path(tmp_path / "run", arm)).values())
+    run(
+        tmp_path / "run",
+        FakeAsk(),
+        boards=boards_for(SESSIONS6),
+        settings=ExecSettings(concurrency=1),
+        clock=clock,
+    )
+    stamped = sorted(
+        (rec["at"], arm)
+        for arm in ("m#1", "m#2")
+        for rec in longrun.load_receipts(longrun.receipts_path(tmp_path / "run", arm)).values()
+    )
     assert len(stamped) == 24
     first_half = [arm for _, arm in stamped[:12]]
     # repeats progress together: neither arm runs as one block
@@ -834,20 +1043,31 @@ def test_resume_refuses_changed_boards_or_protocol(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="boards changed"):
         run(run_dir, FakeAsk(), boards=boards_for(SESSIONS6[:2]))
     with pytest.raises(ValueError, match="pre-registered"):
-        run(run_dir, FakeAsk(), protocol=Protocol(draws=2000, random_seeds=200,
-                                                  incumbent="m", cutoff="2026-06-02"))
+        run(
+            run_dir,
+            FakeAsk(),
+            protocol=Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-02"),
+        )
 
 
 def run_roster(run_dir: Path, pols: list[PolicySpec], ask: FakeAsk) -> dict[str, Any]:
     """``run_longrun`` with an explicit arm roster (the default helper pins it)."""
     return longrun.run_longrun(
-        run_dir, boards=boards_for(SESSIONS6[:3]), policies=pols, outcome=table_outcome,
-        ask=ask, quota_ok=always_ok, protocol=PROTO,
-        settings=ExecSettings(concurrency=3, pause_s=60.0), sleep=lambda s: None)
+        run_dir,
+        boards=boards_for(SESSIONS6[:3]),
+        policies=pols,
+        outcome=table_outcome,
+        ask=ask,
+        quota_ok=always_ok,
+        protocol=PROTO,
+        settings=ExecSettings(concurrency=3, pause_s=60.0),
+        sleep=lambda s: None,
+    )
 
 
 def test_resume_with_an_unchanged_roster_is_accepted_and_amendments_stay_empty(
-        tmp_path: Path) -> None:
+    tmp_path: Path,
+) -> None:
     run_dir = tmp_path / "run"
     run_roster(run_dir, policies(), FakeAsk())
     first = json.loads((run_dir / "plan.json").read_text())
@@ -864,8 +1084,7 @@ def test_resume_with_an_unchanged_roster_is_accepted_and_amendments_stay_empty(
     assert second["created"] == first["created"]
 
 
-def test_resume_refuses_a_changed_arm_roster_and_records_it_append_only(
-        tmp_path: Path) -> None:
+def test_resume_refuses_a_changed_arm_roster_and_records_it_append_only(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_roster(run_dir, policies(), FakeAsk())
     first = json.loads((run_dir / "plan.json").read_text())
@@ -878,7 +1097,8 @@ def test_resume_refuses_a_changed_arm_roster_and_records_it_append_only(
     assert after_add["policies"] == first["policies"]
     assert after_add["created"] == first["created"]
     assert [sorted(entry) for entry in after_add["amendments"]] == [
-        ["added_at", "arm", "pre_registered_before_any_scoring", "reason"]]
+        ["added_at", "arm", "pre_registered_before_any_scoring", "reason"]
+    ]
     entry = after_add["amendments"][0]
     assert entry["arm"] == "m31-base" and "added" in entry["reason"]
     assert entry["pre_registered_before_any_scoring"] is False
@@ -898,8 +1118,9 @@ def test_resume_refuses_a_changed_arm_roster_and_records_it_append_only(
     retuned = [PolicySpec("m", "model", repeats=2), *longrun.builtin_controls()]
     assert retuned != policies()
     with pytest.raises(ValueError, match="roster is pre-registered"):
-        run_roster(run_dir, [PolicySpec("m", "model", repeats=3),
-                             *longrun.builtin_controls()], FakeAsk())
+        run_roster(
+            run_dir, [PolicySpec("m", "model", repeats=3), *longrun.builtin_controls()], FakeAsk()
+        )
     final = json.loads((run_dir / "plan.json").read_text())
     assert [a["arm"] for a in final["amendments"]] == ["m31-base", "no_trade", "m"]
     assert "changed" in final["amendments"][2]["reason"]
@@ -914,9 +1135,16 @@ def test_digest_says_so_when_the_roster_was_amended_before_scoring(tmp_path: Pat
     plan_path = run_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
     plan.pop("amendments")
-    plan["policies"] = [*plan["policies"], {"name": "m31-base", "kind": "model",
-                                            "repeats": 1, "provider": None,
-                                            "prompt_sha256": None}]
+    plan["policies"] = [
+        *plan["policies"],
+        {
+            "name": "m31-base",
+            "kind": "model",
+            "repeats": 1,
+            "provider": None,
+            "prompt_sha256": None,
+        },
+    ]
     plan_path.write_text(json.dumps(plan))
     grown = [*policies(), PolicySpec("m31-base", "model", repeats=1)]
     assert run_roster(run_dir, grown, FakeAsk())["status"] == "finished"
@@ -939,8 +1167,17 @@ def test_progress_reports_per_arm_state(tmp_path: Path) -> None:
     progress = json.loads((run_dir / "progress.json").read_text())
     assert progress["schema"] == longrun.PROGRESS_SCHEMA and progress["digest"] == "digest.json"
     arm = progress["arms"]["m#1"]
-    assert arm == {"policy": "m", "repeat": 1, "kind": "model", "done": 6, "total": 6,
-                   "entered": 6, "failures": 0, "unevaluable": 6, "net": 0.0}
+    assert arm == {
+        "policy": "m",
+        "repeat": 1,
+        "kind": "model",
+        "done": 6,
+        "total": 6,
+        "entered": 6,
+        "failures": 0,
+        "unevaluable": 6,
+        "net": 0.0,
+    }
     assert progress["arms"]["always_put_credit"]["net"] == 60.0
     assert progress["total"] == 54 and progress["finished"] == 54 and progress["eta_s"] == 0.0
 
@@ -972,8 +1209,9 @@ def test_quota_broker_meter_semantics() -> None:
             return self.body
 
     def meter(left: float, planned: float) -> Callable[..., Response]:
-        body = {"providers": {"minimax": {"meter": {"interval_pct": left,
-                                                    "planned_pct_now": planned}}}}
+        body = {
+            "providers": {"minimax": {"meter": {"interval_pct": left, "planned_pct_now": planned}}}
+        }
         return lambda url, timeout: Response(body)
 
     assert longrun.broker_quota(opener=meter(97.0, 85.2))() == (True, "left=97.0 planned=85.2")
@@ -994,27 +1232,43 @@ def test_register_plugin_refuses_silent_replacement(monkeypatch: pytest.MonkeyPa
         longrun.plugin("boards", "nope")
 
 
-def test_cli_run_and_status_with_registered_fakes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                                  capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_run_and_status_with_registered_fakes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     from tree_options.desk.__main__ import run_cli
 
     ask = FakeAsk()
-    monkeypatch.setitem(longrun.PLUGINS["boards"], "pytest",
-                        lambda p, c: boards_for(SESSIONS6[:3]))
+    monkeypatch.setitem(longrun.PLUGINS["boards"], "pytest", lambda p, c: boards_for(SESSIONS6[:3]))
     monkeypatch.setitem(longrun.PLUGINS["outcome"], "pytest", lambda p, c: table_outcome)
     monkeypatch.setitem(longrun.PLUGINS["ask"], "pytest", lambda p, c: ask)
     bench = tmp_path / "bench.json"
     bench.write_text(json.dumps({"SPY": {"2026-05-29": 100.0, "2026-06-03": 101.0}}))
     config = tmp_path / "longrun.json"
-    config.write_text(json.dumps({
-        "out_root": "out", "incumbent": "m", "concurrency": 2,
-        "boards": {"plugin": "pytest"}, "outcome": {"plugin": "pytest"},
-        "ask": {"plugin": "pytest"}, "quota": {"plugin": "always"},
-        "benchmarks": {"plugin": "file", "path": "bench.json"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m", "kind": "model", "repeats": 2},
-                     {"name": "pc-eod", "kind": "rule", "builtin": "fixed_structure",
-                      "structure": "put_credit", "horizon": "eod"}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": "out",
+                "incumbent": "m",
+                "concurrency": 2,
+                "boards": {"plugin": "pytest"},
+                "outcome": {"plugin": "pytest"},
+                "ask": {"plugin": "pytest"},
+                "quota": {"plugin": "always"},
+                "benchmarks": {"plugin": "file", "path": "bench.json"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [
+                    {"name": "m", "kind": "model", "repeats": 2},
+                    {
+                        "name": "pc-eod",
+                        "kind": "rule",
+                        "builtin": "fixed_structure",
+                        "structure": "put_credit",
+                        "horizon": "eod",
+                    },
+                ],
+            }
+        )
+    )
     assert run_cli(["longrun", "run", "--config", str(config)]) == 0
     out = json.loads(capsys.readouterr().out)
     run_dir = Path(out["run_dir"])
@@ -1044,7 +1298,8 @@ def v1_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, di
 
 
 def test_v1_plugins_match_decision_packet_and_hindsight(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, raw = v1_bundle
     ctx = longrun.PluginContext(config_dir=tmp_path)
     boards = longrun.plugin("boards", "v1")({"bundle": str(path)}, ctx)
@@ -1068,16 +1323,24 @@ def test_v1_plugins_match_decision_packet_and_hindsight(
     assert outcome(boards[0].snapshot, "not-on-the-board", None) is None
 
 
-def test_v1_end_to_end_with_a_fake_transport(v1_bundle: tuple[Path, dict[str, Any]],
-                                             tmp_path: Path) -> None:
+def test_v1_end_to_end_with_a_fake_transport(
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, _ = v1_bundle
     config = tmp_path / "v1.json"
-    config.write_text(json.dumps({
-        "out_root": str(tmp_path / "out"), "incumbent": "m31",
-        "boards": {"plugin": "v1", "bundle": str(path)}, "outcome": {"plugin": "v1"},
-        "ask": {"plugin": "v1", "provider": "minimax-flash"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m31", "kind": "model", "repeats": 2}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": str(tmp_path / "out"),
+                "incumbent": "m31",
+                "boards": {"plugin": "v1", "bundle": str(path)},
+                "outcome": {"plugin": "v1"},
+                "ask": {"plugin": "v1", "provider": "minimax-flash"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [{"name": "m31", "kind": "model", "repeats": 2}],
+            }
+        )
+    )
     transport = ChoosingTransport(0)
     result = longrun.run_from_config(config, shared={"transport": transport}, limit=4)
     assert result["status"] == "finished" and result["complete"] is True
@@ -1100,8 +1363,9 @@ class HorizonTransport:
         self.index, self.horizon = index, horizon
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.calls.append({"url": url, "body": json.loads(body), "timeout": timeout})
         prompt = json.loads(json.loads(body)["messages"][0]["content"])
         rows = prompt["board"]
@@ -1112,7 +1376,8 @@ class HorizonTransport:
 
 
 def test_v2_plugins_match_env_v2_and_table_equals_live(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     from tree_options.desk import outcomes
 
     path, raw = v1_bundle
@@ -1129,16 +1394,17 @@ def test_v2_plugins_match_env_v2_and_table_equals_live(
     live = longrun.plugin("outcome", "v2")({"sync": 2}, ctx)
     table_path = tmp_path / "table.jsonl"
     with table_path.open("w") as stream:
-        for row in outcomes.outcome_table(index, costs=outcomes.CostModel(),
-                                          leg_sync_minutes=2):
+        for row in outcomes.outcome_table(index, costs=outcomes.CostModel(), leg_sync_minutes=2):
             stream.write(json.dumps(row, default=str) + "\n")
     table = longrun.plugin("outcome", "v2")({"table": str(table_path)}, ctx)
     compared = 0
     for board in boards:
         for cid in board.ids:
             for horizon in (None, "intraday", "eod", "hold:5", "expiry"):
-                got_live, got_table = live(board.snapshot, cid, horizon), table(
-                    board.snapshot, cid, horizon)
+                got_live, got_table = (
+                    live(board.snapshot, cid, horizon),
+                    table(board.snapshot, cid, horizon),
+                )
                 assert got_live == got_table
                 if got_live is not None and "no_fill_reason" not in got_live:
                     compared += 1
@@ -1146,17 +1412,24 @@ def test_v2_plugins_match_env_v2_and_table_equals_live(
     assert compared > 0
 
 
-def test_v2_end_to_end_scores_the_chosen_horizon(v1_bundle: tuple[Path, dict[str, Any]],
-                                                 tmp_path: Path) -> None:
+def test_v2_end_to_end_scores_the_chosen_horizon(
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, _ = v1_bundle
     config = tmp_path / "v2.json"
-    config.write_text(json.dumps({
-        "out_root": str(tmp_path / "out"), "incumbent": "m31",
-        "boards": {"plugin": "v2", "bundle": str(path)},
-        "outcome": {"plugin": "v2", "sync": 2},
-        "ask": {"plugin": "v2", "provider": "minimax-flash"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m31", "kind": "model", "repeats": 2}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": str(tmp_path / "out"),
+                "incumbent": "m31",
+                "boards": {"plugin": "v2", "bundle": str(path)},
+                "outcome": {"plugin": "v2", "sync": 2},
+                "ask": {"plugin": "v2", "provider": "minimax-flash"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [{"name": "m31", "kind": "model", "repeats": 2}],
+            }
+        )
+    )
     transport = HorizonTransport(0, "eod")
     result = longrun.run_from_config(config, shared={"transport": transport}, limit=4)
     assert result["status"] == "finished" and result["complete"] is True
@@ -1164,29 +1437,44 @@ def test_v2_end_to_end_scores_the_chosen_horizon(v1_bundle: tuple[Path, dict[str
     content = json.loads(transport.calls[0]["body"]["messages"][0]["content"])
     assert set(content) == {"task", "context", "board"} and "eod" in content["task"]
     run_dir = Path(result["run_dir"])
-    receipts = [json.loads(line) for line in
-                longrun.receipts_path(run_dir, "m31#1").read_text().splitlines()]
+    receipts = [
+        json.loads(line)
+        for line in longrun.receipts_path(run_dir, "m31#1").read_text().splitlines()
+    ]
     assert receipts and all(r.get("horizon") == "eod" for r in receipts if r.get("choice"))
     from tree_options.trex.discovery.llm import PROVIDERS
 
     provider_default = PROVIDERS["minimax-flash"]["extra"].get("reasoning_effort")
-    assert all(call["body"].get("reasoning_effort") == provider_default
-               for call in transport.calls)  # no override without an effort param
+    assert all(
+        call["body"].get("reasoning_effort") == provider_default for call in transport.calls
+    )  # no override without an effort param
 
 
-def test_v2_ask_effort_is_a_per_policy_override(v1_bundle: tuple[Path, dict[str, Any]],
-                                                tmp_path: Path) -> None:
+def test_v2_ask_effort_is_a_per_policy_override(
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, _ = v1_bundle
     config = tmp_path / "v2e.json"
-    config.write_text(json.dumps({
-        "out_root": str(tmp_path / "out"), "incumbent": "m31",
-        "boards": {"plugin": "v2", "bundle": str(path)},
-        "outcome": {"plugin": "v2", "sync": 2},
-        "ask": {"plugin": "v2", "provider": "minimax-flash"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m31", "kind": "model"},
-                     {"name": "m31-low", "kind": "model",
-                      "ask": {"plugin": "v2", "provider": "minimax-flash", "effort": "low"}}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": str(tmp_path / "out"),
+                "incumbent": "m31",
+                "boards": {"plugin": "v2", "bundle": str(path)},
+                "outcome": {"plugin": "v2", "sync": 2},
+                "ask": {"plugin": "v2", "provider": "minimax-flash"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [
+                    {"name": "m31", "kind": "model"},
+                    {
+                        "name": "m31-low",
+                        "kind": "model",
+                        "ask": {"plugin": "v2", "provider": "minimax-flash", "effort": "low"},
+                    },
+                ],
+            }
+        )
+    )
     transport = HorizonTransport(0, "eod")
     result = longrun.run_from_config(config, shared={"transport": transport}, limit=2)
     assert result["status"] == "finished"
@@ -1204,21 +1492,38 @@ def test_v2_ask_effort_is_a_per_policy_override(v1_bundle: tuple[Path, dict[str,
 
 
 def test_v2_ask_budget_overrides_timeout_and_max_tokens(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     from tree_options.trex.discovery.llm import PROVIDERS
 
     path, _ = v1_bundle
-    base = {"out_root": str(tmp_path / "out"), "incumbent": "m31",
-            "boards": {"plugin": "v2", "bundle": str(path)},
-            "outcome": {"plugin": "v2", "sync": 2},
-            "protocol": {"draws": 1000, "random_seeds": 200},
-            "policies": [{"name": "m31", "kind": "model"}]}
+    base = {
+        "out_root": str(tmp_path / "out"),
+        "incumbent": "m31",
+        "boards": {"plugin": "v2", "bundle": str(path)},
+        "outcome": {"plugin": "v2", "sync": 2},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model"}],
+    }
     config = tmp_path / "budget.json"
-    config.write_text(json.dumps({**base, "ask": {
-        "plugin": "v2", "provider": "minimax-flash", "timeout": 300, "max_tokens": 20000}}))
+    config.write_text(
+        json.dumps(
+            {
+                **base,
+                "ask": {
+                    "plugin": "v2",
+                    "provider": "minimax-flash",
+                    "timeout": 300,
+                    "max_tokens": 20000,
+                },
+            }
+        )
+    )
     transport = HorizonTransport(0, "eod")
-    assert longrun.run_from_config(config, shared={"transport": transport},
-                                   limit=2)["status"] == "finished"
+    assert (
+        longrun.run_from_config(config, shared={"transport": transport}, limit=2)["status"]
+        == "finished"
+    )
     assert [c["timeout"] for c in transport.calls] == [300.0, 300.0]
     assert [c["body"]["max_tokens"] for c in transport.calls] == [20000, 20000]
     plain = tmp_path / "plain.json"
@@ -1246,8 +1551,9 @@ class TruncatingTransport:
         self.truncate, self.seen = truncate, 0
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.calls.append({"body": json.loads(body), "timeout": timeout})
         self.seen += 1
         rows = json.loads(json.loads(body)["messages"][0]["content"])["board"]
@@ -1263,18 +1569,25 @@ class TruncatingTransport:
 
 
 def test_v2_ask_self_heals_one_truncation_from_the_provider_budget(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     from tree_options.trex.discovery.llm import PROVIDERS
 
     path, _ = v1_bundle
     config = tmp_path / "heal.json"
-    config.write_text(json.dumps({
-        "out_root": str(tmp_path / "out"), "incumbent": "m31",
-        "boards": {"plugin": "v2", "bundle": str(path)},
-        "outcome": {"plugin": "v2", "sync": 2},
-        "ask": {"plugin": "v2", "provider": "minimax-flash"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m31", "kind": "model"}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": str(tmp_path / "out"),
+                "incumbent": "m31",
+                "boards": {"plugin": "v2", "bundle": str(path)},
+                "outcome": {"plugin": "v2", "sync": 2},
+                "ask": {"plugin": "v2", "provider": "minimax-flash"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [{"name": "m31", "kind": "model"}],
+            }
+        )
+    )
     transport = TruncatingTransport(truncate=1)
     result = longrun.run_from_config(config, shared={"transport": transport}, limit=1)
     assert result["status"] == "finished" and result["complete"] is True
@@ -1286,8 +1599,9 @@ def test_v2_ask_self_heals_one_truncation_from_the_provider_budget(
     assert first["timeout"] == float(spec["timeout"])
     assert second["body"]["max_tokens"] == 2 * spec["max_tokens"]
     assert second["timeout"] == 2 * float(spec["timeout"])
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is True and rec["choice"]
     assert rec["escalated"] is True
     assert rec["max_tokens"] == 2 * spec["max_tokens"]
@@ -1299,15 +1613,18 @@ def test_v2_ask_self_heals_one_truncation_from_the_provider_budget(
 
 
 def test_v2_ask_escalation_is_capped_and_a_second_truncation_still_fails(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, _ = v1_bundle
-    base = {"out_root": str(tmp_path / "out"), "incumbent": "m31",
-            "boards": {"plugin": "v2", "bundle": str(path)},
-            "outcome": {"plugin": "v2", "sync": 2},
-            "ask": {"plugin": "v2", "provider": "minimax-flash",
-                    "timeout": 300, "max_tokens": 30000},
-            "protocol": {"draws": 1000, "random_seeds": 200},
-            "policies": [{"name": "m31", "kind": "model"}]}
+    base = {
+        "out_root": str(tmp_path / "out"),
+        "incumbent": "m31",
+        "boards": {"plugin": "v2", "bundle": str(path)},
+        "outcome": {"plugin": "v2", "sync": 2},
+        "ask": {"plugin": "v2", "provider": "minimax-flash", "timeout": 300, "max_tokens": 30000},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model"}],
+    }
     config = tmp_path / "cap.json"
     config.write_text(json.dumps(base))
     transport = TruncatingTransport(truncate=1)
@@ -1316,8 +1633,9 @@ def test_v2_ask_escalation_is_capped_and_a_second_truncation_still_fails(
     first, second = transport.calls
     assert (first["body"]["max_tokens"], first["timeout"]) == (30000, 300.0)
     assert (second["body"]["max_tokens"], second["timeout"]) == (48000, 600.0)  # the cap
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is True and rec["escalated"] is True and rec["max_tokens"] == 48000
 
     # truncated at the escalated budget too: exactly one retry, then the failure stands
@@ -1327,8 +1645,9 @@ def test_v2_ask_escalation_is_capped_and_a_second_truncation_still_fails(
     result = longrun.run_from_config(always, shared={"transport": transport}, limit=1)
     assert result["status"] == "finished"
     assert len(transport.calls) == 2
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is False and "truncated" in rec["error"]
     assert rec.get("escalated") is None  # a failed retry never claims the flag
     run_dir = Path(result["run_dir"])
@@ -1353,8 +1672,9 @@ class FailoverTransport:
     def __init__(self, fail_hosts: tuple[str, ...] = ("api.minimax.io",)) -> None:
         self.fail_hosts, self.calls = fail_hosts, []
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.calls.append({"url": url, "body": json.loads(body), "timeout": timeout})
         if any(host in url for host in self.fail_hosts):
             raise ConnectionError("simulated provider outage")
@@ -1366,28 +1686,44 @@ class FailoverTransport:
 
 
 def test_v2_ask_falls_over_to_the_backup_provider_once(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, _ = v1_bundle
     config = tmp_path / "failover.json"
-    config.write_text(json.dumps({
-        "out_root": str(tmp_path / "out"), "incumbent": "m31",
-        "boards": {"plugin": "v2", "bundle": str(path)},
-        "outcome": {"plugin": "v2", "sync": 2},
-        "ask": {"plugin": "v2", "provider": "minimax-flash", "effort": "low",
-                "timeout": 300, "max_tokens": 20000, "fallback_provider": "zai"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m31", "kind": "model"}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": str(tmp_path / "out"),
+                "incumbent": "m31",
+                "boards": {"plugin": "v2", "bundle": str(path)},
+                "outcome": {"plugin": "v2", "sync": 2},
+                "ask": {
+                    "plugin": "v2",
+                    "provider": "minimax-flash",
+                    "effort": "low",
+                    "timeout": 300,
+                    "max_tokens": 20000,
+                    "fallback_provider": "zai",
+                },
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [{"name": "m31", "kind": "model"}],
+            }
+        )
+    )
     transport = FailoverTransport()
     result = longrun.run_from_config(config, shared={"transport": transport}, limit=1)
     assert result["status"] == "finished" and result["complete"] is True
     assert [c["url"].split("/chat")[0] for c in transport.calls] == [
-        "https://api.minimax.io/v1", "https://api.z.ai/api/coding/paas/v4"]
+        "https://api.minimax.io/v1",
+        "https://api.z.ai/api/coding/paas/v4",
+    ]
     backup = transport.calls[1]
     assert backup["body"]["max_tokens"] == 20000  # the generic budget rides along
     assert "reasoning_effort" not in backup["body"]  # never the primary's extras
     assert backup["timeout"] == 300.0
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is True and rec["choice"]
     assert rec["provider"] == "zai" and rec["fallback"] is True
     assert rec.get("escalated") is None
@@ -1398,8 +1734,9 @@ def test_v2_ask_falls_over_to_the_backup_provider_once(
     result = longrun.run_from_config(down, shared={"transport": both}, limit=1)
     assert result["status"] == "finished"
     assert len(both.calls) == 2
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is False and "zai: ConnectionError" in rec["error"]
     doc = json.loads((Path(result["run_dir"]) / "digest.json").read_text())
     rows = {r["arm"]: r for r in doc["standings"]}
@@ -1414,35 +1751,43 @@ class TimeoutThenAnswerTransport(FailoverTransport):
         super().__init__(fail_hosts=())
         self.timeouts, self.seen_minimax = timeouts, 0
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         if "api.minimax.io" in url:
             self.seen_minimax += 1
             if self.seen_minimax <= self.timeouts:
-                self.calls.append({"url": url, "body": json.loads(body),
-                                   "timeout": timeout})
+                self.calls.append({"url": url, "body": json.loads(body), "timeout": timeout})
                 raise TimeoutError("still thinking")
         return super().__call__(url, body, headers, timeout)
 
 
 def test_v2_ask_escalates_a_timeout_once_then_answers(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, _ = v1_bundle
     config = tmp_path / "slow.json"
-    config.write_text(json.dumps({
-        "out_root": str(tmp_path / "out"), "incumbent": "m31",
-        "boards": {"plugin": "v2", "bundle": str(path)},
-        "outcome": {"plugin": "v2", "sync": 2},
-        "ask": {"plugin": "v2", "provider": "minimax-flash", "timeout": 300},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m31", "kind": "model"}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": str(tmp_path / "out"),
+                "incumbent": "m31",
+                "boards": {"plugin": "v2", "bundle": str(path)},
+                "outcome": {"plugin": "v2", "sync": 2},
+                "ask": {"plugin": "v2", "provider": "minimax-flash", "timeout": 300},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [{"name": "m31", "kind": "model"}],
+            }
+        )
+    )
     transport = TimeoutThenAnswerTransport(timeouts=1)
     result = longrun.run_from_config(config, shared={"transport": transport}, limit=1)
     assert result["status"] == "finished" and result["complete"] is True
     assert len(transport.calls) == 2  # one escalating retry, never more
     assert [c["timeout"] for c in transport.calls] == [300.0, 600.0]
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is True and rec["choice"]
     assert rec["timeout_escalated"] is True and rec["timeout"] == 600.0
     assert rec["provider"] == "minimax-flash"
@@ -1455,53 +1800,85 @@ def test_v2_ask_escalates_a_timeout_once_then_answers(
     result = longrun.run_from_config(slow, shared={"transport": stuck}, limit=1)
     assert result["status"] == "finished"
     assert len(stuck.calls) == 2
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is False and "TimeoutError" in rec["error"]
 
     # with a fallback: two timed-out minimax attempts, then zai answers
     both = tmp_path / "fb.json"
-    both.write_text(json.dumps({
-        **json.loads(config.read_text()),
-        "ask": {"plugin": "v2", "provider": "minimax-flash", "timeout": 300,
-                "fallback_provider": "zai"}}))
+    both.write_text(
+        json.dumps(
+            {
+                **json.loads(config.read_text()),
+                "ask": {
+                    "plugin": "v2",
+                    "provider": "minimax-flash",
+                    "timeout": 300,
+                    "fallback_provider": "zai",
+                },
+            }
+        )
+    )
     chain = TimeoutThenAnswerTransport(timeouts=99)
     result = longrun.run_from_config(both, shared={"transport": chain}, limit=1)
     assert result["status"] == "finished" and result["complete"] is True
     assert [c["url"].split("/chat")[0] for c in chain.calls] == [
-        "https://api.minimax.io/v1", "https://api.minimax.io/v1",
-        "https://api.z.ai/api/coding/paas/v4"]
-    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
-                     .read_text().splitlines()[0])
+        "https://api.minimax.io/v1",
+        "https://api.minimax.io/v1",
+        "https://api.z.ai/api/coding/paas/v4",
+    ]
+    rec = json.loads(
+        longrun.receipts_path(Path(result["run_dir"]), "m31").read_text().splitlines()[0]
+    )
     assert rec["ok"] is True and rec["fallback"] is True and rec["provider"] == "zai"
 
 
 def test_v2_ask_refuses_a_bad_fallback_provider(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     path, _ = v1_bundle
-    base = {"out_root": str(tmp_path / "out"), "incumbent": "m31",
-            "boards": {"plugin": "v2", "bundle": str(path)},
-            "outcome": {"plugin": "v2", "sync": 2},
-            "protocol": {"draws": 1000, "random_seeds": 200},
-            "policies": [{"name": "m31", "kind": "model"}]}
+    base = {
+        "out_root": str(tmp_path / "out"),
+        "incumbent": "m31",
+        "boards": {"plugin": "v2", "bundle": str(path)},
+        "outcome": {"plugin": "v2", "sync": 2},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model"}],
+    }
     transport = HorizonTransport(0, "eod")
-    for bad, match in (("nonexistent", "fallback_provider must be one of"),
-                       ("minimax-flash", "fallback_provider must differ")):
+    for bad, match in (
+        ("nonexistent", "fallback_provider must be one of"),
+        ("minimax-flash", "fallback_provider must differ"),
+    ):
         config = tmp_path / f"bad-{bad}.json"
-        config.write_text(json.dumps({**base, "ask": {
-            "plugin": "v2", "provider": "minimax-flash", "fallback_provider": bad}}))
+        config.write_text(
+            json.dumps(
+                {
+                    **base,
+                    "ask": {"plugin": "v2", "provider": "minimax-flash", "fallback_provider": bad},
+                }
+            )
+        )
         with pytest.raises(ValueError, match=match):
             longrun.run_from_config(config, shared={"transport": transport}, limit=1)
     # a policy whose own provider equals the fallback simply never falls over
     same = tmp_path / "same.json"
-    same.write_text(json.dumps({
-        **base, "incumbent": "zz",
-        "ask": {"plugin": "v2", "provider": "minimax-flash",
-                "fallback_provider": "zai"},
-        "policies": [{"name": "zz", "kind": "model", "provider": "zai"}]}))
+    same.write_text(
+        json.dumps(
+            {
+                **base,
+                "incumbent": "zz",
+                "ask": {"plugin": "v2", "provider": "minimax-flash", "fallback_provider": "zai"},
+                "policies": [{"name": "zz", "kind": "model", "provider": "zai"}],
+            }
+        )
+    )
     transport = FailoverTransport(("api.minimax.io",))  # zai answers directly
-    assert longrun.run_from_config(same, shared={"transport": transport},
-                                   limit=1)["status"] == "finished"
+    assert (
+        longrun.run_from_config(same, shared={"transport": transport}, limit=1)["status"]
+        == "finished"
+    )
     assert len(transport.calls) == 1 and "api.z.ai" in transport.calls[0]["url"]
 
 
@@ -1514,10 +1891,12 @@ def test_score_run_tallies_failure_reasons_per_arm() -> None:
         return {"ok": False, "error": error}
 
     receipts = {
-        "m#1": {sids[0]: failed("LlmError: minimax-flash: reply truncated at max_tokens"),
-                sids[1]: failed("LlmError: minimax-flash: TimeoutError"),
-                sids[2]: failed("LlmError: minimax-flash: HTTP 429"),
-                sids[3]: failed("LlmError: minimax-flash: no JSON object in model output")},
+        "m#1": {
+            sids[0]: failed("LlmError: minimax-flash: reply truncated at max_tokens"),
+            sids[1]: failed("LlmError: minimax-flash: TimeoutError"),
+            sids[2]: failed("LlmError: minimax-flash: HTTP 429"),
+            sids[3]: failed("LlmError: minimax-flash: no JSON object in model output"),
+        },
         "m#2": {s: ok("w") for s in sids},
     }
     doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), PROTO)
@@ -1532,8 +1911,9 @@ def test_score_run_tallies_failure_reasons_per_arm() -> None:
     assert "- m#1: http 1, other 1, timeout 1, truncated 1" in section  # sorted reasons
     assert "m#2" not in section  # a clean arm is not tallied
     assert "PARTIAL RUN" not in md  # complete run: no partial label
-    partial = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), PROTO,
-                                complete=False)
+    partial = longrun.score_run(
+        boards, arms, receipts, OutcomeCache(table_outcome), PROTO, complete=False
+    )
     assert "PARTIAL RUN" in longrun.digest_markdown(partial)
     assert "receipts incomplete" in longrun.digest_markdown(partial)
 
@@ -1555,7 +1935,11 @@ def test_pair_receipt_accepts_exactly_two_distinct_board_ids() -> None:
         assert "rejected_choice" in refused and "legs" not in refused, bad
     # a single row id keeps its exact pre-pair receipt shape (backward compatible)
     assert longrun._validated(board, "w", None, "") == {
-        "note": "", "choice": "w", "horizon": None, "row": 1}
+        "note": "",
+        "choice": "w",
+        "horizon": None,
+        "row": 1,
+    }
 
 
 def test_decide_records_a_rule_pair_receipt() -> None:
@@ -1602,8 +1986,22 @@ def test_single_choice_receipts_keep_their_exact_pre_pair_shape(tmp_path: Path) 
     board = boards_for(["2026-06-01"])[0]
     arm = longrun.arms_of([PolicySpec("r", "rule", rule=lambda b: ("w", None))])[0]
     rec = longrun.decide(arm, board, None)
-    assert set(rec) == {"schema", "arm", "policy", "repeat", "kind", "snapshot", "session",
-                        "board_rows", "note", "choice", "horizon", "row", "ok", "latency_s"}
+    assert set(rec) == {
+        "schema",
+        "arm",
+        "policy",
+        "repeat",
+        "kind",
+        "snapshot",
+        "session",
+        "board_rows",
+        "note",
+        "choice",
+        "horizon",
+        "row",
+        "ok",
+        "latency_s",
+    }
     path = tmp_path / "r.jsonl"
     path.write_text(json.dumps(rec) + "\n")
     assert longrun.load_receipts(path) == {board.snapshot: rec}
@@ -1611,13 +2009,14 @@ def test_single_choice_receipts_keep_their_exact_pre_pair_shape(tmp_path: Path) 
 
 def test_pair_arm_scores_on_the_paired_scoreboard() -> None:
     boards = boards_for(SESSIONS6[:3])
-    specs = [PolicySpec("pair", "rule", rule=lambda b: ("w+l", None)),
-             *longrun.builtin_controls()]
+    specs = [PolicySpec("pair", "rule", rule=lambda b: ("w+l", None)), *longrun.builtin_controls()]
     arms = longrun.arms_of(specs)
-    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards}
-                for arm in arms}
-    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome),
-                            Protocol(draws=1000, random_seeds=200))
+    receipts = {
+        arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards} for arm in arms
+    }
+    doc = longrun.score_run(
+        boards, arms, receipts, OutcomeCache(table_outcome), Protocol(draws=1000, random_seeds=200)
+    )
     row = next(r for r in doc["standings"] if r["arm"] == "pair")
     assert row["entered"] == 6 and row["unevaluable"] == 0
     assert row["net_total"] == 36.0  # 6 boards x (10 + -4): both legs, both costs
@@ -1628,40 +2027,59 @@ def test_pair_arm_scores_on_the_paired_scoreboard() -> None:
 
 
 def test_theory_pair_rule_runs_end_to_end_on_the_v1_bundle(
-        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path
+) -> None:
     # the tiny v1 fixture's boards carry only call-side structures, so this
     # plumbing check pairs call_debit with call_credit; the beta-neutral
     # put_credit+call_credit config itself is pinned in the theory and
     # redigest tests
     path, _ = v1_bundle
     config = tmp_path / "pair-v1.json"
-    config.write_text(json.dumps({
-        "out_root": str(tmp_path / "out"), "incumbent": "m31",
-        "boards": {"plugin": "v1", "bundle": str(path)}, "outcome": {"plugin": "v1"},
-        "ask": {"plugin": "v1", "provider": "minimax-flash"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m31", "kind": "model", "repeats": 2},
-                     {"name": "call_pair_h5", "kind": "control", "builtin": "theory",
-                      "structures": ["call_debit", "call_credit"], "require_all": True,
-                      "pair": True, "horizon": "hold:5"}]}))
-    result = longrun.run_from_config(config, shared={"transport": ChoosingTransport(0)},
-                                     limit=4)
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": str(tmp_path / "out"),
+                "incumbent": "m31",
+                "boards": {"plugin": "v1", "bundle": str(path)},
+                "outcome": {"plugin": "v1"},
+                "ask": {"plugin": "v1", "provider": "minimax-flash"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [
+                    {"name": "m31", "kind": "model", "repeats": 2},
+                    {
+                        "name": "call_pair_h5",
+                        "kind": "control",
+                        "builtin": "theory",
+                        "structures": ["call_debit", "call_credit"],
+                        "require_all": True,
+                        "pair": True,
+                        "horizon": "hold:5",
+                    },
+                ],
+            }
+        )
+    )
+    result = longrun.run_from_config(config, shared={"transport": ChoosingTransport(0)}, limit=4)
     assert result["status"] == "finished" and result["complete"] is True
     run_dir = Path(result["run_dir"])
     ctx = longrun.PluginContext(config_dir=tmp_path, shared={"transport": None})
     boards = longrun.plugin("boards", "v1")({"bundle": str(path)}, ctx)
     boards = boards[:4]
     outcome = longrun.plugin("outcome", "v1")({}, ctx)
-    receipts = [json.loads(line) for line in
-                longrun.receipts_path(run_dir, "call_pair_h5").read_text().splitlines()]
+    receipts = [
+        json.loads(line)
+        for line in longrun.receipts_path(run_dir, "call_pair_h5").read_text().splitlines()
+    ]
     by_snapshot = {r["snapshot"]: r for r in receipts if r.get("ok")}
     # independent oracle from the boards alone: the v1 rows carry no underlying, so the
     # pair joins the FIRST row of each listed structure of every board that holds both
     # (board_order key), else the arm skips
     expected_net = 0.0
     for board in boards:
-        firsts = {s: next((r["id"] for r in board.rows if r["structure"] == s), None)
-                  for s in ("call_debit", "call_credit")}
+        firsts = {
+            s: next((r["id"] for r in board.rows if r["structure"] == s), None)
+            for s in ("call_debit", "call_credit")
+        }
         rec = by_snapshot.get(board.snapshot)
         if any(v is None for v in firsts.values()):
             assert rec is None or rec["choice"] is None

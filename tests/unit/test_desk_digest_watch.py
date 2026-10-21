@@ -316,9 +316,7 @@ class TestInFlightDowngrade:
     def test_active_service_downgrades_failure_to_warn(self, tmp_path, monkeypatch, capsys):
         from scripts.desk_digest_watch import main as watch_main
 
-        monkeypatch.setattr(
-            "scripts.desk_digest_watch._challenge_service_running", lambda: True
-        )
+        monkeypatch.setattr("scripts.desk_digest_watch._challenge_service_running", lambda: True)
         # an empty store: without the downgrade this fails digest-missing
         rc = watch_main(["--store", str(tmp_path), "--now", "2026-10-02T01:30:00+00:00"])
         out = capsys.readouterr().out
@@ -329,9 +327,7 @@ class TestInFlightDowngrade:
     def test_finished_service_keeps_strict_failure(self, tmp_path, monkeypatch, capsys):
         from scripts.desk_digest_watch import main as watch_main
 
-        monkeypatch.setattr(
-            "scripts.desk_digest_watch._challenge_service_running", lambda: False
-        )
+        monkeypatch.setattr("scripts.desk_digest_watch._challenge_service_running", lambda: False)
         rc = watch_main(["--store", str(tmp_path), "--now", "2026-10-02T01:30:00+00:00"])
         out = capsys.readouterr().out
         assert rc == 1
@@ -342,12 +338,8 @@ class TestInFlightDowngrade:
         store = _build_store(tmp_path)  # the module's own happy-path builder
         from scripts.desk_digest_watch import main as watch_main
 
-        monkeypatch.setattr(
-            "scripts.desk_digest_watch._challenge_service_running", lambda: True
-        )
-        rc = watch_main(
-            ["--store", str(store), "--now", "2026-10-02T01:30:00+00:00"]
-        )
+        monkeypatch.setattr("scripts.desk_digest_watch._challenge_service_running", lambda: True)
+        rc = watch_main(["--store", str(store), "--now", "2026-10-02T01:30:00+00:00"])
         out = capsys.readouterr().out
         assert rc == 0
         assert "in flight" not in out

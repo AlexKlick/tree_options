@@ -3,6 +3,7 @@ cockpit. Oracle discipline: every expectation is hand arithmetic over the
 fixture digests (the same discipline as tests/unit/test_challenge_standings.py);
 nothing imports the accumulator to compute its own answer.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,15 @@ D_POST2 = "20261003T010000Z"
 
 
 def _run_summary(
-    policy: str, *, pnl: int, minimum: int, boards: int, entered: int,
-    by_session: dict[str, float], calls: int = 0, fails: int = 0,
+    policy: str,
+    *,
+    pnl: int,
+    minimum: int,
+    boards: int,
+    entered: int,
+    by_session: dict[str, float],
+    calls: int = 0,
+    fails: int = 0,
 ) -> dict:
     return {
         "schema": "desk-lab-run/1",
@@ -35,15 +43,14 @@ def _run_summary(
             "entered": entered,
             "closed_capital_proxy": str(5000 + pnl),
             "minimum_closed_capital_proxy": str(minimum),
-            "by_session": [
-                {"session": s, "closed_pnl": str(v)} for s, v in by_session.items()
-            ],
+            "by_session": [{"session": s, "closed_pnl": str(v)} for s, v in by_session.items()],
         },
     }
 
 
-def _digest(store: Path, digest_id: str, *, status: str = "ok",
-            runs: dict[str, dict] | None = None) -> None:
+def _digest(
+    store: Path, digest_id: str, *, status: str = "ok", runs: dict[str, dict] | None = None
+) -> None:
     runs_dir = store / "evaluations" / "challenge" / digest_id / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     (store / "evaluations" / "challenge" / digest_id / "digest.json").write_text(
@@ -59,38 +66,84 @@ def _digest(store: Path, digest_id: str, *, status: str = "ok",
 def store(tmp_path: Path) -> Path:
     s = tmp_path / "store"
     # the seal-time registration sample NEVER counts
-    _digest(s, D_SEAL, runs={
-        "gepa:alpha": _run_summary("gepa:alpha", pnl=999, minimum=5000, boards=99,
-                                   entered=99, by_session={"2026-09-30": 999.0}),
-    })
+    _digest(
+        s,
+        D_SEAL,
+        runs={
+            "gepa:alpha": _run_summary(
+                "gepa:alpha",
+                pnl=999,
+                minimum=5000,
+                boards=99,
+                entered=99,
+                by_session={"2026-09-30": 999.0},
+            ),
+        },
+    )
     # two counted games (hand arithmetic below):
     #   gepa:alpha  boards 30+25, pnl 8+(-3)=5, entered 5+4, worst min 4980,
     #               sessions 2026-10-02 + 2026-10-03, calls 20, fails 1
     #   no_trade    boards 30+25, pnl 1+0=1, entered 0, min 5000/4999 -> 4999
-    _digest(s, D_POST1, runs={
-        "gepa:alpha": _run_summary("gepa:alpha", pnl=8, minimum=4990, boards=30,
-                                   entered=5, by_session={"2026-10-02": 8.0}, calls=10),
-        "no_trade": _run_summary("no_trade", pnl=1, minimum=5000, boards=30,
-                                 entered=0, by_session={"2026-10-02": 1.0}),
-    })
-    _digest(s, D_POST2, runs={
-        "gepa:alpha": _run_summary("gepa:alpha", pnl=-3, minimum=4980, boards=25,
-                                   entered=4, by_session={"2026-10-03": -3.0},
-                                   calls=10, fails=1),
-        "no_trade": _run_summary("no_trade", pnl=0, minimum=4999, boards=25,
-                                 entered=0, by_session={"2026-10-03": 0.0}),
-    })
+    _digest(
+        s,
+        D_POST1,
+        runs={
+            "gepa:alpha": _run_summary(
+                "gepa:alpha",
+                pnl=8,
+                minimum=4990,
+                boards=30,
+                entered=5,
+                by_session={"2026-10-02": 8.0},
+                calls=10,
+            ),
+            "no_trade": _run_summary(
+                "no_trade",
+                pnl=1,
+                minimum=5000,
+                boards=30,
+                entered=0,
+                by_session={"2026-10-02": 1.0},
+            ),
+        },
+    )
+    _digest(
+        s,
+        D_POST2,
+        runs={
+            "gepa:alpha": _run_summary(
+                "gepa:alpha",
+                pnl=-3,
+                minimum=4980,
+                boards=25,
+                entered=4,
+                by_session={"2026-10-03": -3.0},
+                calls=10,
+                fails=1,
+            ),
+            "no_trade": _run_summary(
+                "no_trade",
+                pnl=0,
+                minimum=4999,
+                boards=25,
+                entered=0,
+                by_session={"2026-10-03": 0.0},
+            ),
+        },
+    )
     return s
 
 
 def _client(store: Path) -> TestClient:
-    return TestClient(create_app(
-        state_dir=str(store.parent / "legacy"),
-        plans_dir=str(store.parent / "plans"),
-        discovery_dir=str(store.parent / "discovery"),
-        desk_state_dir=str(store.parent / "desk-state"),
-        desk_store_dir=str(store),
-    ))
+    return TestClient(
+        create_app(
+            state_dir=str(store.parent / "legacy"),
+            plans_dir=str(store.parent / "plans"),
+            discovery_dir=str(store.parent / "discovery"),
+            desk_state_dir=str(store.parent / "desk-state"),
+            desk_store_dir=str(store),
+        )
+    )
 
 
 def _computed_hand_oracle() -> dict:
@@ -101,9 +154,14 @@ def _computed_hand_oracle() -> dict:
         "games_counted": 2,
         "policies": {
             "gepa:alpha": {
-                "kind": "model", "games": 2, "boards": 55, "entered": 9,
-                "closed_pnl_sum": "5", "worst_minimum_capital": "4980",
-                "model_calls": 20, "model_failures": 1,
+                "kind": "model",
+                "games": 2,
+                "boards": 55,
+                "entered": 9,
+                "closed_pnl_sum": "5",
+                "worst_minimum_capital": "4980",
+                "model_calls": 20,
+                "model_failures": 1,
                 "sessions_distinct": 2,
                 "session_pnl": {
                     f"{D_POST1}:2026-10-02": 8.0,
@@ -111,9 +169,14 @@ def _computed_hand_oracle() -> dict:
                 },
             },
             "no_trade": {
-                "kind": "rules", "games": 2, "boards": 55, "entered": 0,
-                "closed_pnl_sum": "1", "worst_minimum_capital": "4999",
-                "model_calls": 0, "model_failures": 0,
+                "kind": "rules",
+                "games": 2,
+                "boards": 55,
+                "entered": 0,
+                "closed_pnl_sum": "1",
+                "worst_minimum_capital": "4999",
+                "model_calls": 0,
+                "model_failures": 0,
                 "sessions_distinct": 2,
                 "session_pnl": {
                     f"{D_POST1}:2026-10-02": 1.0,
@@ -153,11 +216,21 @@ def test_present_fresh_file_is_served_verbatim(store: Path) -> None:
         "games_counted": 7,
         "registration_sample_through": D_SEAL,
         "cost_baseline_per_game": 14.6,
-        "policies": [{"policy": "gepa:alpha", "kind": "model", "games": 7,
-                      "boards": 700, "entered": 40, "closed_pnl_sum": "123.45",
-                      "worst_minimum_capital": "4900", "model_calls": 700,
-                      "model_failures": 3, "sessions_distinct": 30,
-                      "session_pnl": {}}],
+        "policies": [
+            {
+                "policy": "gepa:alpha",
+                "kind": "model",
+                "games": 7,
+                "boards": 700,
+                "entered": 40,
+                "closed_pnl_sum": "123.45",
+                "worst_minimum_capital": "4900",
+                "model_calls": 700,
+                "model_failures": 3,
+                "sessions_distinct": 30,
+                "session_pnl": {},
+            }
+        ],
         "untrusted_note": "hand-written fixture note",
     }
     path = store / "evaluations" / "challenge" / "standings.json"
@@ -184,24 +257,43 @@ def test_the_store_root_resolution_follows_desk_store_dir(tmp_path: Path) -> Non
     # every other /api/desk/* evidence route uses — never a second resolver.
     # A decoy standings.json under the desk STATE root must lose.
     store = tmp_path / "store"
-    _digest(store, D_POST1, runs={
-        "no_trade": _run_summary("no_trade", pnl=1, minimum=5000, boards=10,
-                                 entered=0, by_session={"2026-10-02": 1.0}),
-    })
+    _digest(
+        store,
+        D_POST1,
+        runs={
+            "no_trade": _run_summary(
+                "no_trade",
+                pnl=1,
+                minimum=5000,
+                boards=10,
+                entered=0,
+                by_session={"2026-10-02": 1.0},
+            ),
+        },
+    )
     real = store / "evaluations" / "challenge" / "standings.json"
     real.parent.mkdir(parents=True, exist_ok=True)
-    real.write_text(json.dumps({"schema": "desk-challenge-standings/1",
-                                "games_counted": 1, "policies": [],
-                                "untrusted_note": "store-side file"}))
+    real.write_text(
+        json.dumps(
+            {
+                "schema": "desk-challenge-standings/1",
+                "games_counted": 1,
+                "policies": [],
+                "untrusted_note": "store-side file",
+            }
+        )
+    )
     decoy_root = tmp_path / "desk-state"
     decoy = decoy_root / "evaluations" / "challenge" / "standings.json"
     decoy.parent.mkdir(parents=True, exist_ok=True)
     decoy.write_text(json.dumps({"games_counted": "decoy"}))
-    app = create_app(state_dir=str(tmp_path / "legacy"),
-                     plans_dir=str(tmp_path / "plans"),
-                     discovery_dir=str(tmp_path / "discovery"),
-                     desk_state_dir=str(decoy_root),
-                     desk_store_dir=str(store))
+    app = create_app(
+        state_dir=str(tmp_path / "legacy"),
+        plans_dir=str(tmp_path / "plans"),
+        discovery_dir=str(tmp_path / "discovery"),
+        desk_state_dir=str(decoy_root),
+        desk_store_dir=str(store),
+    )
     doc = TestClient(app).get("/api/desk/standings").json()
     assert doc["untrusted_note"] == "store-side file"
 

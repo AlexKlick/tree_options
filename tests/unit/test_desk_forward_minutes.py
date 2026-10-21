@@ -72,10 +72,28 @@ def _occ(root: str, expiry: date, right: str, strike: float) -> str:
 def _chain_doc(sym: str, session: date, rows: list[dict], spot: float) -> bytes:
     """A desk chain document (store.build_document shape) for ``sym``."""
     rows = sorted(rows, key=lambda r: (r["expiry"], r["right"], r["strike"], r["occ"]))
-    columns: dict[str, list] = {c: [] for c in (
-        "occ", "exp", "right", "strike", "bid", "ask", "iv", "delta", "gamma",
-        "theta", "vega", "rho", "theo", "oi", "volume", "last",
-        "last_time")}
+    columns: dict[str, list] = {
+        c: []
+        for c in (
+            "occ",
+            "exp",
+            "right",
+            "strike",
+            "bid",
+            "ask",
+            "iv",
+            "delta",
+            "gamma",
+            "theta",
+            "vega",
+            "rho",
+            "theo",
+            "oi",
+            "volume",
+            "last",
+            "last_time",
+        )
+    }
     for r in rows:
         columns["occ"].append(r["occ"])
         columns["exp"].append(r["expiry"].isoformat())
@@ -118,37 +136,109 @@ def _write_chain(store_root: Path, session: date, sym: str, rows: list[dict], sp
 # |delta| 0.75 > 0.70), so the picks are NOT simply the 3 nearest strikes.
 IWM_ROWS = [
     # (10-16 calls) 236 excluded on delta, 242 excluded on volume
-    {"occ": _occ("IWM", MONTHLY_NEAR, "C", 236), "expiry": MONTHLY_NEAR, "right": "C",
-     "strike": 236, "delta": 0.75},
-    {"occ": _occ("IWM", MONTHLY_NEAR, "C", 238), "expiry": MONTHLY_NEAR, "right": "C",
-     "strike": 238, "delta": 0.62},
-    {"occ": _occ("IWM", MONTHLY_NEAR, "C", 240), "expiry": MONTHLY_NEAR, "right": "C",
-     "strike": 240, "delta": 0.51},
-    {"occ": _occ("IWM", MONTHLY_NEAR, "C", 242), "expiry": MONTHLY_NEAR, "right": "C",
-     "strike": 242, "delta": 0.38, "volume": 0},
-    {"occ": _occ("IWM", MONTHLY_NEAR, "C", 244), "expiry": MONTHLY_NEAR, "right": "C",
-     "strike": 244, "delta": 0.25},
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "C", 236),
+        "expiry": MONTHLY_NEAR,
+        "right": "C",
+        "strike": 236,
+        "delta": 0.75,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "C", 238),
+        "expiry": MONTHLY_NEAR,
+        "right": "C",
+        "strike": 238,
+        "delta": 0.62,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "C", 240),
+        "expiry": MONTHLY_NEAR,
+        "right": "C",
+        "strike": 240,
+        "delta": 0.51,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "C", 242),
+        "expiry": MONTHLY_NEAR,
+        "right": "C",
+        "strike": 242,
+        "delta": 0.38,
+        "volume": 0,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "C", 244),
+        "expiry": MONTHLY_NEAR,
+        "right": "C",
+        "strike": 244,
+        "delta": 0.25,
+    },
     # (10-16 puts) 238 excluded on open_interest
-    {"occ": _occ("IWM", MONTHLY_NEAR, "P", 238), "expiry": MONTHLY_NEAR, "right": "P",
-     "strike": 238, "delta": -0.62, "open_interest": 0},
-    {"occ": _occ("IWM", MONTHLY_NEAR, "P", 240), "expiry": MONTHLY_NEAR, "right": "P",
-     "strike": 240, "delta": -0.49},
-    {"occ": _occ("IWM", MONTHLY_NEAR, "P", 242), "expiry": MONTHLY_NEAR, "right": "P",
-     "strike": 242, "delta": -0.36},
-    {"occ": _occ("IWM", MONTHLY_NEAR, "P", 244), "expiry": MONTHLY_NEAR, "right": "P",
-     "strike": 244, "delta": -0.28},
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "P", 238),
+        "expiry": MONTHLY_NEAR,
+        "right": "P",
+        "strike": 238,
+        "delta": -0.62,
+        "open_interest": 0,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "P", 240),
+        "expiry": MONTHLY_NEAR,
+        "right": "P",
+        "strike": 240,
+        "delta": -0.49,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "P", 242),
+        "expiry": MONTHLY_NEAR,
+        "right": "P",
+        "strike": 242,
+        "delta": -0.36,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_NEAR, "P", 244),
+        "expiry": MONTHLY_NEAR,
+        "right": "P",
+        "strike": 244,
+        "delta": -0.28,
+    },
     # (11-20 calls) only two pass
-    {"occ": _occ("IWM", MONTHLY_FAR, "C", 230), "expiry": MONTHLY_FAR, "right": "C",
-     "strike": 230, "delta": 0.68},
-    {"occ": _occ("IWM", MONTHLY_FAR, "C", 240), "expiry": MONTHLY_FAR, "right": "C",
-     "strike": 240, "delta": 0.55},
+    {
+        "occ": _occ("IWM", MONTHLY_FAR, "C", 230),
+        "expiry": MONTHLY_FAR,
+        "right": "C",
+        "strike": 230,
+        "delta": 0.68,
+    },
+    {
+        "occ": _occ("IWM", MONTHLY_FAR, "C", 240),
+        "expiry": MONTHLY_FAR,
+        "right": "C",
+        "strike": 240,
+        "delta": 0.55,
+    },
     # excluded panels: non-monthly Friday, Thursday, dte 76
-    {"occ": _occ("IWM", WEEKLY, "C", 240), "expiry": WEEKLY, "right": "C",
-     "strike": 240, "delta": 0.50},
-    {"occ": _occ("IWM", NOT_FRIDAY, "C", 240), "expiry": NOT_FRIDAY, "right": "C",
-     "strike": 240, "delta": 0.50},
-    {"occ": _occ("IWM", TOO_FAR, "C", 240), "expiry": TOO_FAR, "right": "C",
-     "strike": 240, "delta": 0.50},
+    {
+        "occ": _occ("IWM", WEEKLY, "C", 240),
+        "expiry": WEEKLY,
+        "right": "C",
+        "strike": 240,
+        "delta": 0.50,
+    },
+    {
+        "occ": _occ("IWM", NOT_FRIDAY, "C", 240),
+        "expiry": NOT_FRIDAY,
+        "right": "C",
+        "strike": 240,
+        "delta": 0.50,
+    },
+    {
+        "occ": _occ("IWM", TOO_FAR, "C", 240),
+        "expiry": TOO_FAR,
+        "right": "C",
+        "strike": 240,
+        "delta": 0.50,
+    },
 ]
 IWM_PICKS = {
     "O:" + _occ("IWM", MONTHLY_NEAR, "C", 238),
@@ -162,13 +252,23 @@ IWM_PICKS = {
 }
 
 QQQ_ROWS = [
-    {"occ": _occ("QQQ", MONTHLY_NEAR, "C", s), "expiry": MONTHLY_NEAR, "right": "C",
-     "strike": s, "delta": d}
+    {
+        "occ": _occ("QQQ", MONTHLY_NEAR, "C", s),
+        "expiry": MONTHLY_NEAR,
+        "right": "C",
+        "strike": s,
+        "delta": d,
+    }
     for s, d in ((478, 0.61), (480, 0.50), (482, 0.39))
 ]
 SPY_ROWS = [
-    {"occ": _occ("SPY", MONTHLY_NEAR, "C", s), "expiry": MONTHLY_NEAR, "right": "C",
-     "strike": s, "delta": d}
+    {
+        "occ": _occ("SPY", MONTHLY_NEAR, "C", s),
+        "expiry": MONTHLY_NEAR,
+        "right": "C",
+        "strike": s,
+        "delta": d,
+    }
     for s, d in ((568, 0.62), (570, 0.51), (572, 0.40))
 ]
 
@@ -211,7 +311,8 @@ class TestSelectionRefresh:
         report = fm.refresh_selection(selected_on=SELECT_ON)
         picked = {c["ticker"] for c in report["contracts"]}
         assert picked == IWM_PICKS | {
-            "O:" + t for t in (
+            "O:" + t
+            for t in (
                 _occ("QQQ", MONTHLY_NEAR, "C", 478),
                 _occ("QQQ", MONTHLY_NEAR, "C", 480),
                 _occ("QQQ", MONTHLY_NEAR, "C", 482),
@@ -229,12 +330,18 @@ class TestSelectionRefresh:
     def test_nearest_strikes_dodge_the_excluded_rows(self, chain_store) -> None:
         report = fm.refresh_selection(selected_on=SELECT_ON)
         iwm = [c for c in report["contracts"] if c["underlying"] == "IWM"]
-        near_calls = {c["strike"] for c in iwm
-                      if c["expiry"] == MONTHLY_NEAR.isoformat() and c["right"] == "C"}
+        near_calls = {
+            c["strike"]
+            for c in iwm
+            if c["expiry"] == MONTHLY_NEAR.isoformat() and c["right"] == "C"
+        }
         # 242C is volume 0 and 236C is |delta| 0.75: the third pick is 244
         assert near_calls == {238.0, 240.0, 244.0}
-        near_puts = {c["strike"] for c in iwm
-                     if c["expiry"] == MONTHLY_NEAR.isoformat() and c["right"] == "P"}
+        near_puts = {
+            c["strike"]
+            for c in iwm
+            if c["expiry"] == MONTHLY_NEAR.isoformat() and c["right"] == "P"
+        }
         assert near_puts == {240.0, 242.0, 244.0}  # 238P is oi 0
 
     def test_uses_the_latest_chain_session_at_or_before_the_selection_date(
@@ -311,8 +418,9 @@ def _session_bars(session: date, end: tuple[int, int] = (16, 14)) -> list[dict]:
     moment = datetime.combine(session, time(9, 30), tzinfo=ET)
     last = datetime.combine(session, time(*end), tzinfo=ET)
     while moment <= last:
-        out.append({"t": int(moment.timestamp() * 1000), "o": 1.0, "h": 1.02,
-                    "l": 0.98, "c": 1.0, "v": 12})
+        out.append(
+            {"t": int(moment.timestamp() * 1000), "o": 1.0, "h": 1.02, "l": 0.98, "c": 1.0, "v": 12}
+        )
         moment += timedelta(minutes=1)
     return out
 
@@ -332,8 +440,9 @@ class FakeWire:
         body = self.bodies.get(ticker, {"status": "OK", "request_id": "r0", "results": []})
         if isinstance(body, Exception):
             raise body
-        return HttpResponse(200, json.dumps(
-            dict(body, ticker=ticker, resultsCount=len(body["results"]))).encode())
+        return HttpResponse(
+            200, json.dumps(dict(body, ticker=ticker, resultsCount=len(body["results"]))).encode()
+        )
 
 
 def _client(wire: FakeWire, cache: Path) -> MassiveClient:
@@ -361,14 +470,21 @@ class TestCapture:
         # selection postdates them, and the Monday catch-up re-refused the
         # banked session (exit 4, unit failed). A banked session is terminal.
         good = fm.refresh_selection(selected_on=SELECT_ON)
-        wire = FakeWire(_full_bodies() | {
-            t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
-            for t in good["tickers"] if t not in IWM_PICKS
-        })
+        wire = FakeWire(
+            _full_bodies()
+            | {
+                t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
+                for t in good["tickers"]
+                if t not in IWM_PICKS
+            }
+        )
         first = fm.capture_session(
-            SESSION, selection=good, client=_client(wire, chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=100),
+            SESSION,
+            selection=good,
+            client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(
+                chain_store["forward"] / "budget" / "2026-10-05.json", cap=100
+            ),
             now=NOW,
         )
         assert first.exit_code == 0 and first.status == "written"
@@ -376,27 +492,34 @@ class TestCapture:
         later = fm.refresh_selection(selected_on=date(2026, 10, 10))
         assert later["selected_on"] > SESSION.isoformat()  # the refusing shape
         recheck = fm.capture_session(
-            SESSION, selection=later,
+            SESSION,
+            selection=later,
             client=_client(FakeWire({}), chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=100),
+            budget=fm.WireBudget.load(
+                chain_store["forward"] / "budget" / "2026-10-05.json", cap=100
+            ),
             now=NOW,
         )
         assert recheck.exit_code == 0 and recheck.status == "exists"
         assert (chain_store["forward"] / "bars" / "2026-10-05.json").read_bytes() == written
 
-    def test_captures_every_contract_once_and_records_dte_at_session(
-        self, chain_store
-    ) -> None:
+    def test_captures_every_contract_once_and_records_dte_at_session(self, chain_store) -> None:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
-        wire = FakeWire(_full_bodies() | {
-            t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
-            for t in selection["tickers"] if t not in IWM_PICKS
-        })
+        wire = FakeWire(
+            _full_bodies()
+            | {
+                t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
+                for t in selection["tickers"]
+                if t not in IWM_PICKS
+            }
+        )
         result = fm.capture_session(
-            SESSION, selection=selection, client=_client(wire, chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=fm.DAILY_BUDGET_DEFAULT),
+            SESSION,
+            selection=selection,
+            client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(
+                chain_store["forward"] / "budget" / "2026-10-05.json", cap=fm.DAILY_BUDGET_DEFAULT
+            ),
             now=NOW,
         )
         assert result.exit_code == 0
@@ -413,27 +536,35 @@ class TestCapture:
         assert iwm["dte_at_selection"] == 13
         assert len(iwm["bars"]) == 390 + 15  # 09:30..16:14 inclusive
 
-    def test_second_run_is_pure_cache_and_does_not_rewrite(
-        self, chain_store
-    ) -> None:
+    def test_second_run_is_pure_cache_and_does_not_rewrite(self, chain_store) -> None:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
         first = fm.capture_session(
-            SESSION, selection=selection,
-            client=_client(FakeWire(_full_bodies() | {
-                t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
-                for t in selection["tickers"] if t not in IWM_PICKS
-            }), chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=100),
+            SESSION,
+            selection=selection,
+            client=_client(
+                FakeWire(
+                    _full_bodies()
+                    | {
+                        t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
+                        for t in selection["tickers"]
+                        if t not in IWM_PICKS
+                    }
+                ),
+                chain_store["cache"],
+            ),
+            budget=fm.WireBudget.load(
+                chain_store["forward"] / "budget" / "2026-10-05.json", cap=100
+            ),
             now=NOW,
         )
         assert first.exit_code == 0
         written = (chain_store["forward"] / "bars" / "2026-10-05.json").read_bytes()
         wire = FakeWire({})
         result = fm.capture_session(
-            SESSION, selection=selection, client=_client(wire, chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=1),
+            SESSION,
+            selection=selection,
+            client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json", cap=1),
             now=NOW,
         )
         assert result.exit_code == 0 and result.status == "exists"
@@ -441,15 +572,14 @@ class TestCapture:
         assert wire.urls == []
         assert (chain_store["forward"] / "bars" / "2026-10-05.json").read_bytes() == written
 
-    def test_budget_stop_marks_the_rest_and_spends_no_wire(
-        self, chain_store
-    ) -> None:
+    def test_budget_stop_marks_the_rest_and_spends_no_wire(self, chain_store) -> None:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
         wire = FakeWire(_full_bodies())
         result = fm.capture_session(
-            SESSION, selection=selection, client=_client(wire, chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=3),
+            SESSION,
+            selection=selection,
+            client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json", cap=3),
             now=NOW,
         )
         assert result.wire_requests == 3
@@ -457,8 +587,7 @@ class TestCapture:
         statuses = [c["status"] for c in doc["contracts"].values()]
         assert statuses.count("ok") == 3
         assert statuses.count("budget") == len(selection["tickers"]) - 3
-        ledger = json.loads(
-            (chain_store["forward"] / "budget" / "2026-10-05.json").read_text())
+        ledger = json.loads((chain_store["forward"] / "budget" / "2026-10-05.json").read_text())
         assert ledger["spent"] == 3
         assert len(ledger["refusals"]) == len(selection["tickers"]) - 3
 
@@ -470,9 +599,12 @@ class TestCapture:
         selection = fm.refresh_selection(selected_on=stale_on)
         wire = FakeWire(_full_bodies())
         result = fm.capture_session(
-            SESSION, selection=selection, client=_client(wire, chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=100),
+            SESSION,
+            selection=selection,
+            client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(
+                chain_store["forward"] / "budget" / "2026-10-05.json", cap=100
+            ),
             now=NOW,
         )
         assert result.exit_code == fm.STALE_SELECTION_EXIT
@@ -482,26 +614,31 @@ class TestCapture:
     def test_selection_must_not_postdate_the_session(self, chain_store) -> None:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
         result = fm.capture_session(
-            date(2026, 10, 2), selection=selection,
+            date(2026, 10, 2),
+            selection=selection,
             client=_client(FakeWire({}), chain_store["cache"]),
             budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "d.json", cap=10),
             now=NOW,
         )
         assert result.exit_code == fm.STALE_SELECTION_EXIT
 
-    def test_truncated_or_unusable_bars_are_flagged_not_swallowed(
-        self, chain_store
-    ) -> None:
+    def test_truncated_or_unusable_bars_are_flagged_not_swallowed(self, chain_store) -> None:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
         bodies = _full_bodies()
         ticker = sorted(IWM_PICKS)[0]
-        bodies[ticker] = {"status": "OK", "request_id": "bad",
-                          "results": [{"t": 1, "o": 1, "h": 1, "l": 1, "c": 1, "v": 0}]}
+        bodies[ticker] = {
+            "status": "OK",
+            "request_id": "bad",
+            "results": [{"t": 1, "o": 1, "h": 1, "l": 1, "c": 1, "v": 0}],
+        }
         wire = FakeWire(bodies)
         result = fm.capture_session(
-            SESSION, selection=selection, client=_client(wire, chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=100),
+            SESSION,
+            selection=selection,
+            client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(
+                chain_store["forward"] / "budget" / "2026-10-05.json", cap=100
+            ),
             now=NOW,
         )
         assert result.exit_code == 0  # one bad contract must not lose the session
@@ -512,10 +649,14 @@ class TestCapture:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
         wire = FakeWire(_full_bodies())
         result = fm.capture_session(
-            SESSION, selection=selection, client=_client(wire, chain_store["cache"]),
-            budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "2026-10-05.json",
-                                      cap=100),
-            now=NOW, dry_run=True,
+            SESSION,
+            selection=selection,
+            client=_client(wire, chain_store["cache"]),
+            budget=fm.WireBudget.load(
+                chain_store["forward"] / "budget" / "2026-10-05.json", cap=100
+            ),
+            now=NOW,
+            dry_run=True,
         )
         assert result.status == "dry-run"
         assert result.exit_code == 0
@@ -532,7 +673,8 @@ class TestVerify:
     def test_full_coverage_verdict_ok(self, chain_store) -> None:
         selection = fm.refresh_selection(selected_on=SELECT_ON)
         fm.capture_session(
-            SESSION, selection=selection,
+            SESSION,
+            selection=selection,
             client=_client(FakeWire(_full_bodies()), chain_store["cache"]),
             budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "d.json", cap=100),
             now=NOW,
@@ -553,7 +695,8 @@ class TestVerify:
             for t in selection["tickers"]
         }
         fm.capture_session(
-            SESSION, selection=selection,
+            SESSION,
+            selection=selection,
             client=_client(FakeWire(bodies), chain_store["cache"]),
             budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "d.json", cap=100),
             now=NOW,
@@ -569,7 +712,8 @@ class TestVerify:
         empty = {"status": "OK", "request_id": "e", "results": []}
         bodies = {t: empty for t in selection["tickers"]}
         fm.capture_session(
-            SESSION, selection=selection,
+            SESSION,
+            selection=selection,
             client=_client(FakeWire(bodies), chain_store["cache"]),
             budget=fm.WireBudget.load(chain_store["forward"] / "budget" / "d.json", cap=100),
             now=NOW,
@@ -585,8 +729,13 @@ class TestVerify:
 
     def test_clock_coverage_boundaries(self) -> None:
         def bar(hour: int, minute: int) -> dict:
-            return {"t": int(datetime.combine(SESSION, time(hour, minute), tzinfo=ET)
-                            .timestamp() * 1000), "v": 1}
+            return {
+                "t": int(
+                    datetime.combine(SESSION, time(hour, minute), tzinfo=ET).timestamp() * 1000
+                ),
+                "v": 1,
+            }
+
         assert fm._clock_covered([bar(10, 0)], SESSION, "10:00") is True
         assert fm._clock_covered([bar(9, 59)], SESSION, "10:00") is False
         assert fm._clock_covered([bar(10, 1)], SESSION, "10:00") is False
@@ -622,7 +771,8 @@ class TestTimerSchedule:
         slots = _calendar_slots(DEPLOY / "desk-forward-minutes.timer")
         assert slots, "desk-forward-minutes.timer has no OnCalendar line"
         rendered = {
-            (frozenset(days), at) for days, at in (
+            (frozenset(days), at)
+            for days, at in (
                 [fm.CAPTURE_DAYS, fm.CAPTURE_SLOT],
                 [fm.CAPTURE_CATCHUP_DAYS, fm.CAPTURE_CATCHUP_SLOT],
             )
@@ -670,8 +820,9 @@ class TestTimerSchedule:
             assert "PYTHONPATH=/home/alexk/documents/tree_options/src" in text, unit
 
     def test_decision_clocks_stay_pinned_to_the_cost_module(self) -> None:
-        outcomes = (Path(__file__).resolve().parents[2]
-                    / "src/tree_options/desk/outcomes.py").read_text()
+        outcomes = (
+            Path(__file__).resolve().parents[2] / "src/tree_options/desk/outcomes.py"
+        ).read_text()
         assert 'decision_clocks_et=("10:00", "10:15", "15:15")' in outcomes, (
             "outcomes.py's decision clocks moved: forward_minutes must be revisited"
         )
@@ -688,26 +839,38 @@ class TestCli:
         # the Monday-morning catch-up after a Saturday selection: the newest
         # file (10-10) postdates the session, so the newest LEGAL selection
         # (10-03) must feed the capture instead of refusing it
-        assert run_cli(["forward-select", "--selected-on", str(SELECT_ON)],
-                       cal=static_calendar) == 0
-        assert run_cli(["forward-select", "--selected-on", "2026-10-10"],
-                       cal=static_calendar) == 0
+        assert (
+            run_cli(["forward-select", "--selected-on", str(SELECT_ON)], cal=static_calendar) == 0
+        )
+        assert run_cli(["forward-select", "--selected-on", "2026-10-10"], cal=static_calendar) == 0
         newest = fm.latest_selection(root=chain_store["forward"])
         assert newest is not None
         assert newest["selected_on"] == "2026-10-10"  # latest_selection stays newest
-        assert fm.latest_selection_for(
-            SESSION, root=chain_store["forward"])["selected_on"] == SELECT_ON.isoformat()
-        assert fm.latest_selection_for(
-            date(2026, 10, 2), root=chain_store["forward"]) is None  # nothing legal
-        wire = FakeWire(_full_bodies() | {
-            t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
-            for t in fm.latest_selection_for(
-                SESSION, root=chain_store["forward"])["tickers"]
-            if t not in IWM_PICKS
-        })
+        assert (
+            fm.latest_selection_for(SESSION, root=chain_store["forward"])["selected_on"]
+            == SELECT_ON.isoformat()
+        )
+        assert (
+            fm.latest_selection_for(date(2026, 10, 2), root=chain_store["forward"]) is None
+        )  # nothing legal
+        wire = FakeWire(
+            _full_bodies()
+            | {
+                t: {"status": "OK", "request_id": "q", "results": _session_bars(SESSION)}
+                for t in fm.latest_selection_for(SESSION, root=chain_store["forward"])["tickers"]
+                if t not in IWM_PICKS
+            }
+        )
         rc = run_cli(
-            ["forward-minutes", "--session", str(SESSION),
-             "--massive-cache", str(chain_store["cache"]), "--budget", "100"],
+            [
+                "forward-minutes",
+                "--session",
+                str(SESSION),
+                "--massive-cache",
+                str(chain_store["cache"]),
+                "--budget",
+                "100",
+            ],
             forward_client=_client(wire, chain_store["cache"]),
             now=NOW,
             cal=static_calendar,
@@ -719,11 +882,17 @@ class TestCli:
     def test_no_legal_selection_for_the_session_exits_stale(
         self, chain_store, static_calendar
     ) -> None:
-        assert run_cli(["forward-select", "--selected-on", "2026-10-10"],
-                       cal=static_calendar) == 0
+        assert run_cli(["forward-select", "--selected-on", "2026-10-10"], cal=static_calendar) == 0
         rc = run_cli(
-            ["forward-minutes", "--session", str(SESSION),
-             "--massive-cache", str(chain_store["cache"]), "--budget", "100"],
+            [
+                "forward-minutes",
+                "--session",
+                str(SESSION),
+                "--massive-cache",
+                str(chain_store["cache"]),
+                "--budget",
+                "100",
+            ],
             forward_client=_client(FakeWire({}), chain_store["cache"]),
             now=NOW,
             cal=static_calendar,
@@ -731,33 +900,41 @@ class TestCli:
         assert rc == fm.STALE_SELECTION_EXIT
         assert not (chain_store["forward"] / "bars" / "2026-10-05.json").exists()
 
-    def test_forward_minutes_and_verify_through_run_cli(
-        self, chain_store, static_calendar
-    ) -> None:
-        assert run_cli(["forward-select", "--selected-on", str(SELECT_ON)],
-                       cal=static_calendar) == 0
+    def test_forward_minutes_and_verify_through_run_cli(self, chain_store, static_calendar) -> None:
+        assert (
+            run_cli(["forward-select", "--selected-on", str(SELECT_ON)], cal=static_calendar) == 0
+        )
         selection = chain_store["forward"] / "selection" / "2026-10-03.json"
         assert selection.exists()
         wire = FakeWire(_full_bodies())
         rc = run_cli(
-            ["forward-minutes", "--session", str(SESSION),
-             "--massive-cache", str(chain_store["cache"]), "--budget", "100"],
+            [
+                "forward-minutes",
+                "--session",
+                str(SESSION),
+                "--massive-cache",
+                str(chain_store["cache"]),
+                "--budget",
+                "100",
+            ],
             forward_client=_client(wire, chain_store["cache"]),
             now=NOW,
             cal=static_calendar,
         )
         assert rc == 0
         assert (chain_store["forward"] / "bars" / "2026-10-05.json").exists()
-        assert run_cli(["forward-verify", "--session", str(SESSION)], now=NOW,
-                       cal=static_calendar) == 0
-        assert KEY.encode() not in (
-            chain_store["forward"] / "bars" / "2026-10-05.json").read_bytes()
+        assert (
+            run_cli(["forward-verify", "--session", str(SESSION)], now=NOW, cal=static_calendar)
+            == 0
+        )
+        assert (
+            KEY.encode() not in (chain_store["forward"] / "bars" / "2026-10-05.json").read_bytes()
+        )
 
     def test_forward_verify_without_bars_reports_coverage_exit(
         self, chain_store, static_calendar
     ) -> None:
-        rc = run_cli(["forward-verify", "--session", str(SESSION)], now=NOW,
-                     cal=static_calendar)
+        rc = run_cli(["forward-verify", "--session", str(SESSION)], now=NOW, cal=static_calendar)
         assert rc == fm.COVERAGE_EXIT
 
 
@@ -771,16 +948,20 @@ class TestCliExitMapping:
         from tree_options.desk import __main__ as main_mod
 
         monkeypatch.setattr(
-            main_mod.forward_minutes, "capture_session",
+            main_mod.forward_minutes,
+            "capture_session",
             lambda *a, **k: (_ for _ in ()).throw(exc),
         )
         monkeypatch.setattr(
-            main_mod.forward_minutes, "latest_selection_for",
-            lambda session, root=None: {"schema": "desk-forward-selection/1",
-                                        "contracts": []},
+            main_mod.forward_minutes,
+            "latest_selection_for",
+            lambda session, root=None: {"schema": "desk-forward-selection/1", "contracts": []},
         )
         args = argparse.Namespace(
-            session=None, selection=None, budget=None, dry_run=True,
+            session=None,
+            selection=None,
+            budget=None,
+            dry_run=True,
             massive_cache=None,
         )
         captured = {}
@@ -789,7 +970,9 @@ class TestCliExitMapping:
             captured["out"] = captured.get("out", "") + " ".join(map(str, a))
 
         monkeypatch.setattr(main_mod.sys, "stderr", _Sink(fake_print))
-        rc = main_mod._forward_minutes(args, client=object(), clock=lambda: NOW, cal=static_calendar)
+        rc = main_mod._forward_minutes(
+            args, client=object(), clock=lambda: NOW, cal=static_calendar
+        )
         return rc, captured.get("out", "")
 
     def test_not_entitled_maps_to_exit_2_purchase_decision(self, monkeypatch, static_calendar):
@@ -816,6 +999,11 @@ class TestCliExitMapping:
 
 
 class _Sink:
-    def __init__(self, write): self._write = write
-    def write(self, s): self._write(s)
-    def flush(self): pass
+    def __init__(self, write):
+        self._write = write
+
+    def write(self, s):
+        self._write(s)
+
+    def flush(self):
+        pass

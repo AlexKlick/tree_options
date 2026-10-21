@@ -769,7 +769,8 @@ def test_redigest_arms_subset_scores_the_intersection_only(
     # since the assessment-class adoption the RETROSPECTIVE DESCRIPTIVE label
     # leads (every redigest is descriptive; the subset scope nests inside it)
     assert doc["headline"].startswith(
-        "RETROSPECTIVE DESCRIPTIVE - ARM SUBSET (4 boards where all 2 arms answered) - ")
+        "RETROSPECTIVE DESCRIPTIVE - ARM SUBSET (4 boards where all 2 arms answered) - "
+    )
     assert doc["complete"] is False  # m#2 still owes boards even on the subset
     md = (out / "digest.md").read_text()
     assert "ARM SUBSET (4 boards where all 2 arms answered)" in md

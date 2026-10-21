@@ -44,9 +44,13 @@ from tree_options.desk import longrun
 
 
 def _digest(skill: Any) -> dict[str, Any]:
-    return {"schema": longrun.DIGEST_SCHEMA,
-            "promotion": {"promoted": False, "rule": "pre-registered"},
-            "standings": [], "walk_forward": {}, "skill": skill}
+    return {
+        "schema": longrun.DIGEST_SCHEMA,
+        "promotion": {"promoted": False, "rule": "pre-registered"},
+        "standings": [],
+        "walk_forward": {},
+        "skill": skill,
+    }
 
 
 # numbers: STRICT run in tests/unit/test_desk_no_price_propagation.py (#48)
@@ -57,54 +61,67 @@ REFUSALS = {"s3": "unknown_symbol", "s4": "no_delta", "s5": "delta_out_of_univer
 COST_PROVENANCE = {
     "source": "cboe-delayed-eod-chains",
     "snapshot_window_et": "17:45-06:30",
-    "universe_filter": ("symbol in IWM/QQQ/SPY, 7 <= dte <= 60, volume > 0, "
-                        "oi > 0, |delta| <= 0.70"),
+    "universe_filter": (
+        "symbol in IWM/QQQ/SPY, 7 <= dte <= 60, volume > 0, oi > 0, |delta| <= 0.70"
+    ),
     "n_rows": 18_783,
     "decision_clocks_et": ["10:00", "10:15", "15:15"],
     "describes_fill_clock": False,
-    "gap": ("the cboe-delayed-eod-chains corpus was captured 17:45-06:30 ET, "
-            "outside every decision clock this desk trades (10:00, 10:15, "
-            "15:15 ET); no instant of the capture window describes a fill at "
-            "a decision clock, and this gap is not falsifiable from the corpus"),
+    "gap": (
+        "the cboe-delayed-eod-chains corpus was captured 17:45-06:30 ET, "
+        "outside every decision clock this desk trades (10:00, 10:15, "
+        "15:15 ET); no instant of the capture window describes a fill at "
+        "a decision clock, and this gap is not falsifiable from the corpus"
+    ),
 }
 
 SECTION_WITH_LEDGER = {
-    "no_price": {"total": 3, "by_arm": {"m#1": 3},
-                 "by_reason": {"unknown_symbol": 1, "no_delta": 1,
-                               "delta_out_of_universe": 1}},
+    "no_price": {
+        "total": 3,
+        "by_arm": {"m#1": 3},
+        "by_reason": {"unknown_symbol": 1, "no_delta": 1, "delta_out_of_universe": 1},
+    },
     "arms": {
-        "m#1": {"verdict": "NO PRICE (3 dropped): NO SKILL DETECTED (excess CI "
-                           "straddles 0) — Descriptive; nothing promoted.",
-                "excess_total": 0.0,
-                "no_price": {"total": 3, "snapshots": ["s3", "s4", "s5"],
-                             "reasons": REFUSALS},
-                "boards_dropped_unpriced": 3,
-                "cost_provenance": COST_PROVENANCE},
+        "m#1": {
+            "verdict": "NO PRICE (3 dropped): NO SKILL DETECTED (excess CI "
+            "straddles 0) — Descriptive; nothing promoted.",
+            "excess_total": 0.0,
+            "no_price": {"total": 3, "snapshots": ["s3", "s4", "s5"], "reasons": REFUSALS},
+            "boards_dropped_unpriced": 3,
+            "cost_provenance": COST_PROVENANCE,
+        },
         # a clean arm on #48 carries a ZERO ledger and no invented provenance
-        "no_trade": {"verdict": "NO TRADES (entered 0) — Descriptive; nothing "
-                                "promoted.", "excess_total": 0.0,
-                     "no_price": {"total": 0, "snapshots": [], "reasons": {}},
-                     "boards_dropped_unpriced": 0, "cost_provenance": None},
+        "no_trade": {
+            "verdict": "NO TRADES (entered 0) — Descriptive; nothing promoted.",
+            "excess_total": 0.0,
+            "no_price": {"total": 0, "snapshots": [], "reasons": {}},
+            "boards_dropped_unpriced": 0,
+            "cost_provenance": None,
+        },
     },
 }
 
 SECTION_WITHOUT_LEDGER = {  # a digest that predates #48 entirely
-    "arms": {"m#1": {"verdict": "NO SKILL DETECTED (excess CI straddles 0) — "
-                                "Descriptive; nothing promoted.",
-                     "excess_total": 0.0}},
+    "arms": {
+        "m#1": {
+            "verdict": "NO SKILL DETECTED (excess CI straddles 0) — Descriptive; nothing promoted.",
+            "excess_total": 0.0,
+        }
+    },
 }
 
 
 def test_the_view_carries_the_no_price_ledger_and_cost_provenance() -> None:
     view = longrun._project_digest(_digest(SECTION_WITH_LEDGER))
     whole = view["skill"]["no_price"]
-    assert whole == {"total": 3, "by_arm": {"m#1": 3},
-                     "by_reason": {"unknown_symbol": 1, "no_delta": 1,
-                                   "delta_out_of_universe": 1}}
+    assert whole == {
+        "total": 3,
+        "by_arm": {"m#1": 3},
+        "by_reason": {"unknown_symbol": 1, "no_delta": 1, "delta_out_of_universe": 1},
+    }
     arm = view["skill"]["arms"]["m#1"]
     assert arm["boards_dropped_unpriced"] == 3
-    assert arm["no_price"] == {"total": 3, "snapshots": ["s3", "s4", "s5"],
-                               "reasons": REFUSALS}
+    assert arm["no_price"] == {"total": 3, "snapshots": ["s3", "s4", "s5"], "reasons": REFUSALS}
     assert arm["verdict"].startswith("NO PRICE (3 dropped): ")
     # the pre-existing projection keys are untouched
     assert arm["excess_total"] == 0.0

@@ -131,14 +131,25 @@ MAX_DTE: int = 60
 
 #: MEASURED median FULL two-sided quoted spread ($/share) per |delta| band.
 MEASURED_MEDIAN_FULL_SPREAD: tuple[Decimal, ...] = (
-    Decimal("0.020"), Decimal("0.030"), Decimal("0.050"),
-    Decimal("0.060"), Decimal("0.190"),
+    Decimal("0.020"),
+    Decimal("0.030"),
+    Decimal("0.050"),
+    Decimal("0.060"),
+    Decimal("0.190"),
 )
 DELTA_BUCKET_EDGES: tuple[Decimal, ...] = (
-    Decimal("0.10"), Decimal("0.20"), Decimal("0.35"), Decimal("0.50"), Decimal("0.70"),
+    Decimal("0.10"),
+    Decimal("0.20"),
+    Decimal("0.35"),
+    Decimal("0.50"),
+    Decimal("0.70"),
 )
 DELTA_BUCKET_LABELS: tuple[str, ...] = (
-    "0.00-0.10", "0.10-0.20", "0.20-0.35", "0.35-0.50", "0.50-0.70",
+    "0.00-0.10",
+    "0.10-0.20",
+    "0.20-0.35",
+    "0.35-0.50",
+    "0.50-0.70",
 )
 
 #: MEASURED dte marginals, as the ratio to the shortest band, at 3 dp.
@@ -146,7 +157,9 @@ DELTA_BUCKET_LABELS: tuple[str, ...] = (
 DTE_BANDS: tuple[tuple[int, int], ...] = ((7, 21), (22, 45), (46, 60))
 DTE_BAND_LABELS: tuple[str, ...] = ("7-21", "22-45", "46-60")
 DTE_BAND_MULTIPLIER: tuple[Decimal, ...] = (
-    Decimal("1.000"), Decimal("1.333"), Decimal("1.667"),
+    Decimal("1.000"),
+    Decimal("1.333"),
+    Decimal("1.667"),
 )
 
 #: the refusal vocabulary, in DETECTION ORDER -- the first match wins.
@@ -190,8 +203,7 @@ class UnpricedCostError(CostModelError):
 
     def __init__(self, reason: str, key: Leg | LegRef) -> None:
         if reason not in REASON_TOKENS:
-            raise ValueError(f"unknown refusal reason {reason!r}; "
-                             f"known: {list(REASON_TOKENS)}")
+            raise ValueError(f"unknown refusal reason {reason!r}; known: {list(REASON_TOKENS)}")
         super().__init__(f"no price ({reason}) for {key.describe()}")
         self.reason = reason
         self.key = key
@@ -235,8 +247,7 @@ def _dte_index(dte: int) -> int:
     for band, (low, high) in enumerate(DTE_BANDS):
         if low <= dte <= high:
             return band
-    raise LegOutsideTradeableUniverseError(
-        "dte_out_of_universe", LegRef("", Decimal("0"), dte))
+    raise LegOutsideTradeableUniverseError("dte_out_of_universe", LegRef("", Decimal("0"), dte))
 
 
 def _checked_delta_index(abs_delta: Decimal) -> int:
@@ -248,14 +259,14 @@ def _checked_delta_index(abs_delta: Decimal) -> int:
     """
     if abs_delta < 0 or abs_delta > MAX_ABS_DELTA:
         raise LegOutsideTradeableUniverseError(
-            "delta_out_of_universe", LegRef("", abs_delta, MIN_DTE))
+            "delta_out_of_universe", LegRef("", abs_delta, MIN_DTE)
+        )
     return _delta_index(abs_delta)
 
 
 def _checked_dte_index(dte: int) -> int:
     if isinstance(dte, bool) or not isinstance(dte, int) or dte < MIN_DTE or dte > MAX_DTE:
-        raise LegOutsideTradeableUniverseError(
-            "dte_out_of_universe", LegRef("", Decimal("0"), dte))
+        raise LegOutsideTradeableUniverseError("dte_out_of_universe", LegRef("", Decimal("0"), dte))
     return _dte_index(dte)
 
 
@@ -292,9 +303,14 @@ class LegRef:
         return f"symbol={self.symbol!r} |delta|={self.abs_delta} dte={self.dte}"
 
     def to_json(self) -> dict[str, Any]:
-        return {"symbol": self.symbol, "abs_delta": str(self.abs_delta),
-                "dte": self.dte, "source_session": "", "source_timestamp_et": "",
-                "is_eod_snapshot": None}
+        return {
+            "symbol": self.symbol,
+            "abs_delta": str(self.abs_delta),
+            "dte": self.dte,
+            "source_session": "",
+            "source_timestamp_et": "",
+            "is_eod_snapshot": None,
+        }
 
 
 # --------------------------------------------------------------- the leg
@@ -338,15 +354,18 @@ class Leg:
         if self.observed_at_a_decision_clock:
             raise ProvenanceError(
                 f"leg {self.describe()} claims a decision-clock observation, which the "
-                "EOD snapshot corpus cannot support")
+                "EOD snapshot corpus cannot support"
+            )
 
     def observation_gap(self) -> str:
         """The non-falsifiable gap, in words. Calls the assert first."""
         self.assert_never_observed_at_a_decision_clock()
-        return (f"the leg was observed at {self.source_timestamp_et} on "
-                f"{self.source_session} from a CBOE-delayed end-of-day snapshot, not at a "
-                "decision clock; the 10:00-15:15 ET fill it is used to cost is therefore "
-                "not described by this observation")
+        return (
+            f"the leg was observed at {self.source_timestamp_et} on "
+            f"{self.source_session} from a CBOE-delayed end-of-day snapshot, not at a "
+            "decision clock; the 10:00-15:15 ET fill it is used to cost is therefore "
+            "not described by this observation"
+        )
 
     def describe(self) -> str:
         delta = "None" if self.abs_delta is None else str(self.abs_delta)
@@ -419,18 +438,22 @@ class SpreadQuote:
     def total_round_trip(self) -> Decimal:
         """Every leg, both fills. The quantized scale is preserved so that
         ``str()`` of the total is the same string on every call site."""
-        return sum((leg.round_trip() for leg in self.legs),
-                   Decimal("0")).quantize(HALF_SPREAD_QUANTUM)
+        return sum((leg.round_trip() for leg in self.legs), Decimal("0")).quantize(
+            HALF_SPREAD_QUANTUM
+        )
 
     @property
     def spread_total(self) -> Decimal:
-        return sum((leg.half_spread_per_share * leg.multiplier * FILLS_PER_LEG
-                    for leg in self.legs), Decimal("0")).quantize(HALF_SPREAD_QUANTUM)
+        return sum(
+            (leg.half_spread_per_share * leg.multiplier * FILLS_PER_LEG for leg in self.legs),
+            Decimal("0"),
+        ).quantize(HALF_SPREAD_QUANTUM)
 
     @property
     def commission_total(self) -> Decimal:
-        return (Decimal(len(self.legs)) * FILLS_PER_LEG
-                * self.commission_per_leg).quantize(HALF_SPREAD_QUANTUM)
+        return (Decimal(len(self.legs)) * FILLS_PER_LEG * self.commission_per_leg).quantize(
+            HALF_SPREAD_QUANTUM
+        )
 
     @property
     def provenance(self) -> tuple[Leg, ...]:
@@ -510,11 +533,11 @@ class SpreadCostModel:
         """
         bucket = _checked_delta_index(abs_delta)
         band = _checked_dte_index(dte)
-        return (MEASURED_MEDIAN_FULL_SPREAD[bucket] / 2
-                * DTE_BAND_MULTIPLIER[band]).quantize(HALF_SPREAD_QUANTUM)
+        return (MEASURED_MEDIAN_FULL_SPREAD[bucket] / 2 * DTE_BAND_MULTIPLIER[band]).quantize(
+            HALF_SPREAD_QUANTUM
+        )
 
-    def price(self, legs: Sequence[Leg], *,
-              delta_unavailable: Sequence[Leg] = ()) -> SpreadQuote:
+    def price(self, legs: Sequence[Leg], *, delta_unavailable: Sequence[Leg] = ()) -> SpreadQuote:
         """Price a whole package, or refuse it. One unpriceable leg refuses
         every leg: pricing the cheap one and charging for it alone is exactly
         the flattering error this gate exists to prevent.
@@ -548,27 +571,30 @@ class SpreadCostModel:
             if leg.dte < MIN_DTE or leg.dte > MAX_DTE:
                 raise LegOutsideTradeableUniverseError("dte_out_of_universe", leg)
             band = _dte_index(leg.dte)
-            quoted.append(LegQuote(
-                leg_index=index,
-                abs_delta=leg.abs_delta,
-                dte=leg.dte,
-                delta_bucket=bucket,
-                dte_band=band,
-                measured_full_spread=MEASURED_MEDIAN_FULL_SPREAD[bucket],
-                dte_multiplier=DTE_BAND_MULTIPLIER[band],
-                half_spread_per_share=(MEASURED_MEDIAN_FULL_SPREAD[bucket] / 2
-                                       * DTE_BAND_MULTIPLIER[band]).quantize(
-                                           HALF_SPREAD_QUANTUM),
-                provenance=leg,
-                commission_per_leg=self.commission_per_leg,
-                multiplier=self.multiplier,
-            ))
-        return SpreadQuote(legs=tuple(quoted),
-                           commission_per_leg=self.commission_per_leg,
-                           multiplier=self.multiplier)
+            quoted.append(
+                LegQuote(
+                    leg_index=index,
+                    abs_delta=leg.abs_delta,
+                    dte=leg.dte,
+                    delta_bucket=bucket,
+                    dte_band=band,
+                    measured_full_spread=MEASURED_MEDIAN_FULL_SPREAD[bucket],
+                    dte_multiplier=DTE_BAND_MULTIPLIER[band],
+                    half_spread_per_share=(
+                        MEASURED_MEDIAN_FULL_SPREAD[bucket] / 2 * DTE_BAND_MULTIPLIER[band]
+                    ).quantize(HALF_SPREAD_QUANTUM),
+                    provenance=leg,
+                    commission_per_leg=self.commission_per_leg,
+                    multiplier=self.multiplier,
+                )
+            )
+        return SpreadQuote(
+            legs=tuple(quoted),
+            commission_per_leg=self.commission_per_leg,
+            multiplier=self.multiplier,
+        )
 
-    def round_trip(self, legs: Sequence[Leg], *,
-                   delta_unavailable: Sequence[Leg] = ()) -> Decimal:
+    def round_trip(self, legs: Sequence[Leg], *, delta_unavailable: Sequence[Leg] = ()) -> Decimal:
         """The whole package's round trip in dollars.
 
         ``legs`` is a REQUIRED POSITIONAL argument: ``outcomes._evaluate``
@@ -611,18 +637,21 @@ class CostProvenance:
         return cls(
             source="cboe-delayed-eod-chains",
             snapshot_window_et="17:45-06:30",
-            universe_filter=("symbol in IWM/QQQ/SPY, 7 <= dte <= 60, volume > 0, "
-                             "oi > 0, |delta| <= 0.70"),
+            universe_filter=(
+                "symbol in IWM/QQQ/SPY, 7 <= dte <= 60, volume > 0, oi > 0, |delta| <= 0.70"
+            ),
             n_rows=18_783,
             decision_clocks_et=("10:00", "10:15", "15:15"),
         )
 
     def as_dict(self) -> dict[str, Any]:
-        gap = (f"the {self.source} corpus was captured {self.snapshot_window_et} ET, "
-               f"outside every decision clock this desk trades "
-               f"({', '.join(self.decision_clocks_et)} ET); no instant of the capture "
-               "window describes a fill at a decision clock, and this gap is not "
-               "falsifiable from the corpus")
+        gap = (
+            f"the {self.source} corpus was captured {self.snapshot_window_et} ET, "
+            f"outside every decision clock this desk trades "
+            f"({', '.join(self.decision_clocks_et)} ET); no instant of the capture "
+            "window describes a fill at a decision clock, and this gap is not "
+            "falsifiable from the corpus"
+        )
         return {
             "source": self.source,
             "snapshot_window_et": self.snapshot_window_et,
@@ -656,8 +685,7 @@ class NoPriceLedger:
     def __init__(self) -> None:
         self._by_arm: dict[str, dict[str, str]] = {}
 
-    def record(self, *, arm: str, snapshot: str, key: Leg | LegRef,
-               reason: str) -> None:
+    def record(self, *, arm: str, snapshot: str, key: Leg | LegRef, reason: str) -> None:
         if reason not in REASON_TOKENS:
             raise ValueError(f"unknown refusal reason {reason!r}")
         self._by_arm.setdefault(arm, {})[snapshot] = reason

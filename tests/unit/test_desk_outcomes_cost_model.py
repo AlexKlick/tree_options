@@ -75,6 +75,7 @@ def test_the_flat_branch_is_byte_identical_to_before(tmp_path: Path) -> None:
     from decimal import Decimal
 
     from tree_options.desk.outcomes import CostModel
+
     assert CostModel().round_trip() == Decimal("14.60")
 
 
@@ -82,8 +83,9 @@ def test_an_unknown_cost_model_is_refused(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle.json"
     bundle.write_text(json.dumps(ladder_bundle()))
     out = tmp_path / "table.jsonl"
-    rc = run_cli(["outcome-table", "--bundle", str(bundle), "--out", str(out),
-                  "--cost-model", "guess"])
+    rc = run_cli(
+        ["outcome-table", "--bundle", str(bundle), "--out", str(out), "--cost-model", "guess"]
+    )
     assert rc == 2, "an unknown cost model must be refused, not defaulted"
 
 
@@ -100,8 +102,9 @@ def test_the_measured_branch_publishes_a_table_not_a_scalar(tmp_path: Path) -> N
     assert len(flat) == 15
     assert "14.600000" in flat
     assert not all(cell == "14.600000" for cell in flat)
-    assert isinstance(doc["round_trip_cost"], dict), \
+    assert isinstance(doc["round_trip_cost"], dict), (
         "round_trip_cost must be the table, not one number"
+    )
 
 
 def test_the_measured_branch_carries_the_corpus_provenance(tmp_path: Path) -> None:
@@ -123,7 +126,10 @@ def test_the_measured_branch_renames_the_colliding_cli_key(tmp_path: Path) -> No
     key without saying which would be ambiguous at best."""
     doc = _run(tmp_path, ["--cost-model", "measured"])
     assert "half_spread_per_share" not in doc["costs"]
-    assert doc["costs"]["half_spread_basis"] == "derived: measured |delta| marginal / 2 * dte multiplier"
+    assert (
+        doc["costs"]["half_spread_basis"]
+        == "derived: measured |delta| marginal / 2 * dte multiplier"
+    )
 
 
 def test_the_wiring_gap_is_counted_not_silently_flattened(tmp_path: Path) -> None:
@@ -133,13 +139,16 @@ def test_the_wiring_gap_is_counted_not_silently_flattened(tmp_path: Path) -> Non
     to prevent."""
     doc = _run(tmp_path, ["--cost-model", "measured"])
     gap = doc["costs"]["no_price"]
-    assert gap["total"] > 0, \
+    assert gap["total"] > 0, (
         "the board carries no delta, so nothing that fills can have been priced; a zero here means something priced it"
+    )
     assert gap["by_reason"] == {"delta_unavailable": gap["total"]}, gap["by_reason"]
     assert doc["costs"]["boards_dropped_unpriced"] == gap["total"]
     # and the FLAT branch reports none, from the same ledger
     flat = _run(tmp_path, ["--cost-model", "flat"])
-    assert "no_price" not in flat["costs"], "the flat branch must not claim a wiring gap it does not have"
+    assert "no_price" not in flat["costs"], (
+        "the flat branch must not claim a wiring gap it does not have"
+    )
 
 
 def test_an_unpriced_candidate_is_never_scored_at_a_net_of_zero(tmp_path: Path) -> None:
@@ -153,8 +162,20 @@ def test_an_unpriced_candidate_is_never_scored_at_a_net_of_zero(tmp_path: Path) 
     bundle = tmp_path / "bundle.json"
     bundle.write_text(json.dumps(ladder_bundle()))
     out = tmp_path / "table.jsonl"
-    assert run_cli(["outcome-table", "--bundle", str(bundle), "--out", str(out),
-                    "--cost-model", "measured"]) == 0
+    assert (
+        run_cli(
+            [
+                "outcome-table",
+                "--bundle",
+                str(bundle),
+                "--out",
+                str(out),
+                "--cost-model",
+                "measured",
+            ]
+        )
+        == 0
+    )
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert rows
     unpriced = [r for r in rows if r["status"] != "no_fill"]

@@ -55,6 +55,7 @@ from tree_options.desk.longrun import Board
 
 try:  # pragma: no cover - the RED path is the point
     from tree_options.desk import cost as measured_costs
+
     _IMPORT_ERROR: Exception | None = None
 except Exception as exc:  # any import failure is the RED
     measured_costs = None  # type: ignore[assignment]
@@ -63,9 +64,9 @@ except Exception as exc:  # any import failure is the RED
 
 ARM = "arm-A"
 HORIZONS = ("h1",)
-FLAT = Decimal("14.60")          # outcomes.CostModel().round_trip(), being replaced
-CHEAP_HALF = Decimal("0.010")   # SPY |delta| 0.05 @ dte 14: full median 0.020 / 2
-LEG_COST = CHEAP_HALF * 100 * 2 + Decimal("0.65") * 2   # 3.30
+FLAT = Decimal("14.60")  # outcomes.CostModel().round_trip(), being replaced
+CHEAP_HALF = Decimal("0.010")  # SPY |delta| 0.05 @ dte 14: full median 0.020 / 2
+LEG_COST = CHEAP_HALF * 100 * 2 + Decimal("0.65") * 2  # 3.30
 
 #: snapshot -> (symbol, delta-or-None, gross)
 FIXTURE: dict[str, tuple[str, str | None, str]] = {
@@ -95,9 +96,15 @@ def mc() -> Any:
 
 
 def boards() -> list[Board]:
-    return [Board(s, f"2026-06-0{index + 1}", "10:00",
-                  [{"id": f"{s}R", "structure": "put_credit", "underlying": symbol}])
-            for index, (s, (symbol, _, _)) in enumerate(FIXTURE.items())]
+    return [
+        Board(
+            s,
+            f"2026-06-0{index + 1}",
+            "10:00",
+            [{"id": f"{s}R", "structure": "put_credit", "underlying": symbol}],
+        )
+        for index, (s, (symbol, _, _)) in enumerate(FIXTURE.items())
+    ]
 
 
 @contextlib.contextmanager
@@ -136,21 +143,27 @@ def price_every_board(the_model: Any, ledger: Any) -> Any:
 
     This is the seam the desk must wire: price -> raise -> count -> drop.
     """
+
     def get(snapshot: str, row_id: str, horizon: str | None) -> tuple[float, float] | None:
         symbol, abs_delta, gross = FIXTURE[snapshot]
-        legs = [mc().Leg(symbol=symbol,
-                         abs_delta=None if abs_delta is None else Decimal(abs_delta),
-                         dte=14,
-                         source_session="2026-06-01",
-                         source_timestamp_et="2026-06-01T18:05:00-04:00",
-                         is_eod_snapshot=True)]
+        legs = [
+            mc().Leg(
+                symbol=symbol,
+                abs_delta=None if abs_delta is None else Decimal(abs_delta),
+                dte=14,
+                source_session="2026-06-01",
+                source_timestamp_et="2026-06-01T18:05:00-04:00",
+                is_eod_snapshot=True,
+            )
+        ]
         try:
             cost = the_model.round_trip(legs)
         except mc().UnpricedCostError as exc:
             ledger.record(arm=ARM, snapshot=snapshot, key=exc.key, reason=exc.reason)
-            return None                      # dropped from scoring, never priced
+            return None  # dropped from scoring, never priced
         net = float(Decimal(gross) - cost)
         return (float(gross), net)
+
     return get
 
 
@@ -160,14 +173,23 @@ def run_digest(sources: tuple[str, ...]) -> tuple[dict[str, Any], Any]:
         the_model = model()
         ledger = mc().NoPriceLedger()
         get = price_every_board(the_model, ledger)
-        for snapshot in FIXTURE:              # drive the refusals into the ledger
+        for snapshot in FIXTURE:  # drive the refusals into the ledger
             get(snapshot, f"{snapshot}R", "h1")
         book = skill.ValueBook(get, HORIZONS)
         doc = skill.arm_skill(
-            book, boards(), DECISIONS, window=boards(),
-            options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1,
-            arm=ARM, no_price=ledger,
-            cost_provenance=provenance().as_dict())
+            book,
+            boards(),
+            DECISIONS,
+            window=boards(),
+            options=skill.SkillOptions(),
+            draws=200,
+            seed=1,
+            bound=None,
+            base_block=1,
+            arm=ARM,
+            no_price=ledger,
+            cost_provenance=provenance().as_dict(),
+        )
     return doc, ledger
 
 
@@ -190,14 +212,25 @@ def run_clean_digest() -> tuple[dict[str, Any], Any]:
         ledger = mc().NoPriceLedger()
         get = price_every_board(the_model, ledger)
         for snapshot in CLEAN:
-            assert get(snapshot, f"{snapshot}R", "h1") is not None, \
+            assert get(snapshot, f"{snapshot}R", "h1") is not None, (
                 f"{snapshot} is supposed to price; if it does not, the fixture is wrong"
+            )
         kept = clean_boards()
         book = skill.ValueBook(get, HORIZONS)
         doc = skill.arm_skill(
-            book, kept, [(f"{s}R", "h1") for s in CLEAN], window=kept,
-            options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1,
-            arm=ARM, no_price=ledger, cost_provenance=provenance().as_dict())
+            book,
+            kept,
+            [(f"{s}R", "h1") for s in CLEAN],
+            window=kept,
+            options=skill.SkillOptions(),
+            draws=200,
+            seed=1,
+            bound=None,
+            base_block=1,
+            arm=ARM,
+            no_price=ledger,
+            cost_provenance=provenance().as_dict(),
+        )
     return doc, ledger
 
 
@@ -213,14 +246,13 @@ def test_the_ledger_counts_every_refusal_by_arm_snapshot_and_reason() -> None:
     whole = ledger.as_dict()
     assert whole["total"] == 3
     assert whole["by_arm"] == {ARM: 3}
-    assert whole["by_reason"] == {"unknown_symbol": 1, "no_delta": 1,
-                                  "delta_out_of_universe": 1}
+    assert whole["by_reason"] == {"unknown_symbol": 1, "no_delta": 1, "delta_out_of_universe": 1}
     # the count is per arm, so one arm's hole never hides behind another's
     assert ledger.for_arm("some-other-arm")["total"] == 0
 
 
 def test_a_fully_priced_run_reports_no_drops() -> None:
-    doc, ledger = run_digest(("SPY", "XLF"))     # only the no_delta / 0.90 legs still refuse
+    doc, ledger = run_digest(("SPY", "XLF"))  # only the no_delta / 0.90 legs still refuse
     assert ledger.for_arm(ARM)["total"] == 2
     assert ledger.for_arm(ARM)["snapshots"] == ["s4", "s5"]
     assert doc["boards"] == 3 and doc["entered"] == 3
@@ -228,6 +260,7 @@ def test_a_fully_priced_run_reports_no_drops() -> None:
 
 def test_the_ledger_is_json_serialisable_so_a_digest_can_carry_it() -> None:
     import json
+
     _, ledger = run_digest(("SPY",))
     payload = json.loads(json.dumps(ledger.as_dict(), default=str))
     assert payload["total"] == 3
@@ -269,8 +302,9 @@ def test_the_drop_is_named_in_the_verdict_a_human_reads() -> None:
     # a run where NOTHING was refused carries no such prefix
     clean, ledger = run_clean_digest()
     assert ledger.for_arm(ARM)["total"] == 0
-    assert clean["verdict"].startswith("NO SKILL DETECTED") or \
-        clean["verdict"].startswith("NO TRADES")
+    assert clean["verdict"].startswith("NO SKILL DETECTED") or clean["verdict"].startswith(
+        "NO TRADES"
+    )
     assert not clean["verdict"].startswith("NO PRICE")
     assert clean["no_price"]["total"] == 0
     assert clean["boards_dropped_unpriced"] == 0
@@ -286,8 +320,8 @@ def test_pricing_one_more_source_moves_both_the_count_and_the_total() -> None:
     assert (strict["no_price"]["total"], extended["no_price"]["total"]) == (3, 2)
     assert strict["net_total"] == pytest.approx(58.40)
     assert extended["net_total"] == pytest.approx(65.10)
-    assert strict["cost_drag"] == pytest.approx(6.60)     # 2 x 3.30
-    assert extended["cost_drag"] == pytest.approx(9.90)   # 3 x 3.30
+    assert strict["cost_drag"] == pytest.approx(6.60)  # 2 x 3.30
+    assert extended["cost_drag"] == pytest.approx(9.90)  # 3 x 3.30
     assert extended["gross_total"] == pytest.approx(75.00)
 
 
@@ -324,18 +358,33 @@ def test_a_digest_with_no_ledger_serves_none_never_an_invented_zero() -> None:
     zero drops."""
     with measured_symbols(("SPY", "XLF")):
         the_model = model()
-        book = skill.ValueBook(price_every_board(the_model, mc().NoPriceLedger()),
-                               HORIZONS)
+        book = skill.ValueBook(price_every_board(the_model, mc().NoPriceLedger()), HORIZONS)
     doc = skill.arm_skill(
-        book, boards(), DECISIONS, window=boards(),
-        options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1)
+        book,
+        boards(),
+        DECISIONS,
+        window=boards(),
+        options=skill.SkillOptions(),
+        draws=200,
+        seed=1,
+        bound=None,
+        base_block=1,
+    )
     assert doc["no_price"] is None
     assert doc["boards_dropped_unpriced"] is None
     assert doc["cost_provenance"] is None, "never invent provenance that was not supplied"
     looked = skill.arm_skill(
-        book, boards(), DECISIONS, window=boards(),
-        options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1,
-        no_price=mc().NoPriceLedger())
+        book,
+        boards(),
+        DECISIONS,
+        window=boards(),
+        options=skill.SkillOptions(),
+        draws=200,
+        seed=1,
+        bound=None,
+        base_block=1,
+        no_price=mc().NoPriceLedger(),
+    )
     assert looked["no_price"]["total"] == 0
     assert looked["boards_dropped_unpriced"] == 0
 

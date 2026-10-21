@@ -97,9 +97,9 @@ CLOCK_RETRY_PAUSE_S = 60.0
 def clock_instant(session: date, clock: str) -> datetime:
     """A decision clock like "10:00" -> its ET instant on ``session``."""
     hh, mm = clock.split(":")
-    return datetime(
-        session.year, session.month, session.day, int(hh), int(mm), tzinfo=ET
-    )
+    return datetime(session.year, session.month, session.day, int(hh), int(mm), tzinfo=ET)
+
+
 # completeness floors: a partially published payload must stay retryable
 # (KO's real chain on 2026-09-22: 1038 rows over 18 expiries, 89% bid)
 MIN_PER_RIGHT = 10
@@ -255,9 +255,7 @@ class ChainStore:
                 continue
             stale = sorted(s for s, r in symbols.items() if str(r.get("status")) == "stale")
             ok = sum(
-                1
-                for r in symbols.values()
-                if str(r.get("status")) in ("ok", "exists", "conflict")
+                1 for r in symbols.values() if str(r.get("status")) in ("ok", "exists", "conflict")
             )
             rows.append({"clock": clock, "ok": ok, "stale": len(stale), "stale_names": stale})
         return rows
@@ -366,7 +364,9 @@ def validate(
     # evening freshness mirrors this post-close tail with the session close
     # itself as the boundary (no options-close wait, no late-close class
     # logic: by 18:05 ET every publication has rolled past the close)
-    cutoff = close if clock == EVENING else options_close(session, cal, late=_late_close(parsed, close))
+    cutoff = (
+        close if clock == EVENING else options_close(session, cal, late=_late_close(parsed, close))
+    )
     if parsed.source_as_of < cutoff:
         boundary = "session close" if clock == EVENING else "options close"
         return Verdict(

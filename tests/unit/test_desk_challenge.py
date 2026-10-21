@@ -377,7 +377,11 @@ def test_the_archive_front_plays_and_the_digest_snapshots_stats_only(tmp_path: P
         store_root=store, now=T0, lab_root=lab_root, transport=BoardTransport()
     )
     assert document["status"] == "ok"
-    assert [p["policy"] for p in document["policies"]] == ["no_trade", "first_row", f"gepa:{champion['id']}"]
+    assert [p["policy"] for p in document["policies"]] == [
+        "no_trade",
+        "first_row",
+        f"gepa:{champion['id']}",
+    ]
     cards = {card["policy"]: card for card in document["rounds"][0]["scorecards"]}
     assert cards[f"gepa:{champion['id']}"]["model_calls"] >= 1
     # the archive snapshot AFTER the challenge: ids + mechanical stats only

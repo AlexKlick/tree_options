@@ -135,9 +135,7 @@ def _read_chain_quiet(
 ) -> dict[str, Any] | None:
     # ChainStore owns the namespace layout: eod keeps chains/<D>/<SYM>.json.gz
     # byte-for-byte; a decision clock reads chains/clock=<C>/<D>/<SYM>.json.gz
-    path = ChainStore(Path(store_root)).chain_path(
-        date.fromisoformat(session), sym, clock=clock
-    )
+    path = ChainStore(Path(store_root)).chain_path(date.fromisoformat(session), sym, clock=clock)
     try:
         return read_chain(path)
     except (OSError, ValueError):

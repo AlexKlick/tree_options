@@ -162,9 +162,7 @@ def clock_coverage(
     detail: dict[str, dict[str, Any]] = {}
     for ticker in tickers:
         row = hits[ticker]
-        covered = [
-            clock for (clock, _lo, _hi), hit in zip(windows, row, strict=True) if hit
-        ]
+        covered = [clock for (clock, _lo, _hi), hit in zip(windows, row, strict=True) if hit]
         status = str(entries[ticker].get("status", "unknown"))
         ts = stamps[ticker]
         has_gap = len(covered) < len(clocks_list)
@@ -174,18 +172,15 @@ def clock_coverage(
             "covered_clocks": covered,
             "missing_clocks": [c for c in clocks_list if c not in covered],
             "gap_reason": (
-                f"capture status: {status}" if has_gap and status != "ok"
+                f"capture status: {status}"
+                if has_gap and status != "ok"
                 else ("no bar in [clock, clock+15min) ET" if has_gap else "")
             ),
             "first_bar_et": (
-                datetime.fromtimestamp(min(ts) / 1000).astimezone(ET).isoformat()
-                if ts
-                else None
+                datetime.fromtimestamp(min(ts) / 1000).astimezone(ET).isoformat() if ts else None
             ),
             "last_bar_et": (
-                datetime.fromtimestamp(max(ts) / 1000).astimezone(ET).isoformat()
-                if ts
-                else None
+                datetime.fromtimestamp(max(ts) / 1000).astimezone(ET).isoformat() if ts else None
             ),
         }
     clocks_table: dict[str, dict[str, Any]] = {}
@@ -204,9 +199,7 @@ def clock_coverage(
     summary = {
         "contracts": total,
         "clocks": len(windows),
-        "clocks_fully_covered": sum(
-            c["covered"] == c["total"] for c in clocks_table.values()
-        ),
+        "clocks_fully_covered": sum(c["covered"] == c["total"] for c in clocks_table.values()),
         "scheduled_points": scheduled_points,
         "covered_points": covered_points,
         "covered_points_pct": round(covered_points / scheduled_points * 100, 2),
@@ -254,9 +247,7 @@ def _load_selection(bars_doc: Mapping[str, Any], root: Path | None) -> dict[str,
     return selection
 
 
-def _selection_check(
-    selection: Mapping[str, Any], bars_doc: Mapping[str, Any]
-) -> dict[str, Any]:
+def _selection_check(selection: Mapping[str, Any], bars_doc: Mapping[str, Any]) -> dict[str, Any]:
     """Provenance/roster facts (recorded, never enforced)."""
     selected = sorted(str(t) for t in selection.get("tickers", []))
     captured = sorted(bars_doc.get("contracts", {}))
@@ -328,8 +319,7 @@ def render_lines(doc: Mapping[str, Any]) -> list[str]:
     ]
     if check.get("missing_from_bars") or check.get("extra_in_bars"):
         lines.append(
-            "  selection roster vs bars: {} selected, missing_from_bars={} "
-            "extra_in_bars={}".format(
+            "  selection roster vs bars: {} selected, missing_from_bars={} extra_in_bars={}".format(
                 check.get("contracts"),
                 len(check.get("missing_from_bars", [])),
                 len(check.get("extra_in_bars", [])),
@@ -339,10 +329,10 @@ def render_lines(doc: Mapping[str, Any]) -> list[str]:
     for clock in doc["schedule"]:
         row = doc["clocks"][clock]
         missing = row["missing_contracts"]
-        shown = ",".join(missing[:3]) + (
-            f" +{len(missing) - 3} more" if len(missing) > 3 else ""
+        shown = ",".join(missing[:3]) + (f" +{len(missing) - 3} more" if len(missing) > 3 else "")
+        lines.append(
+            f"{clock}  {row['covered']}/{row['total']}  {row['pct']:5.1f}%  {shown}".rstrip()
         )
-        lines.append(f"{clock}  {row['covered']}/{row['total']}  {row['pct']:5.1f}%  {shown}".rstrip())
     summary = doc["summary"]
     lines.append(
         "points: {covered}/{scheduled} covered ({pct}%); clocks fully covered "

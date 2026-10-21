@@ -43,6 +43,7 @@ import pytest
 
 try:  # pragma: no cover - the RED path is the point
     from tree_options.desk import cost
+
     _IMPORT_ERROR: Exception | None = None
 except Exception as exc:  # any import failure is the RED
     cost = None  # type: ignore[assignment]
@@ -128,10 +129,17 @@ FLAT_ROUND_TRIP = Decimal("14.60")
 
 
 def _legs(*deltas: str, dte: int = 14):
-    return [mc().Leg(symbol="SPY", abs_delta=Decimal(d), dte=dte,
-                     source_session="2026-06-01",
-                     source_timestamp_et="2026-06-01T18:05:00-04:00",
-                     is_eod_snapshot=True) for d in deltas]
+    return [
+        mc().Leg(
+            symbol="SPY",
+            abs_delta=Decimal(d),
+            dte=dte,
+            source_session="2026-06-01",
+            source_timestamp_et="2026-06-01T18:05:00-04:00",
+            is_eod_snapshot=True,
+        )
+        for d in deltas
+    ]
 
 
 def _model(*deltas: str, dte: int = 14):
@@ -164,7 +172,9 @@ def test_every_delta_row_is_strictly_increasing_in_moneyness() -> None:
     model = mc().SpreadCostModel.measured()
     for dte in DTE_REPS:
         row = [model.half_spread_per_share(Decimal(d), dte) for d in DELTA_REPS]
-        assert row[0] < row[1] < row[2] < row[3] < row[4], f"flat or non-monotone at dte {dte}: {row}"
+        assert row[0] < row[1] < row[2] < row[3] < row[4], (
+            f"flat or non-monotone at dte {dte}: {row}"
+        )
 
 
 def test_deep_otm_and_near_the_money_differ_by_almost_ten_times() -> None:
@@ -245,7 +255,7 @@ def test_adding_a_leg_adds_exactly_that_leg() -> None:
     """
     one = _model("0.60", dte=14)
     two = _model("0.60", "0.05", dte=14)
-    assert one.total_round_trip == Decimal("20.30")   # 19.00 + 1.30
+    assert one.total_round_trip == Decimal("20.30")  # 19.00 + 1.30
     assert len(one.legs) == 1
     assert two.total_round_trip - one.total_round_trip == Decimal("3.30")  # 2.00 + 1.30
     assert one.spread_total == Decimal("19.00")
@@ -366,10 +376,14 @@ def test_a_refused_leg_can_be_built_but_never_priced() -> None:
     miner produced is data, not a programming error) but costing it must
     explode loudly. The danger this guards is a silent default creeping in.
     """
-    leg = mc().Leg(symbol="SPY", abs_delta=Decimal("0.95"), dte=120,
-                   source_session="2026-06-01",
-                   source_timestamp_et="2026-06-01T18:05:00-04:00",
-                   is_eod_snapshot=True)
+    leg = mc().Leg(
+        symbol="SPY",
+        abs_delta=Decimal("0.95"),
+        dte=120,
+        source_session="2026-06-01",
+        source_timestamp_et="2026-06-01T18:05:00-04:00",
+        is_eod_snapshot=True,
+    )
     assert leg.abs_delta == Decimal("0.95")
     with pytest.raises(mc().UnpricedCostError):
         mc().SpreadCostModel.measured().price([leg, _legs("0.05", dte=120)[0]])
@@ -417,7 +431,7 @@ def test_a_strategy_that_trades_one_moneyness_is_moved_by_the_shape() -> None:
     wing = _model("0.05", "0.05", dte=30)
     core = _model("0.60", "0.60", dte=30)
     # dte 30 is band 1 (22-45), so the halves are 0.013330 and 0.126635
-    assert wing.spread_total == Decimal("5.332")   # (0.013330 + 0.013330) * 200
+    assert wing.spread_total == Decimal("5.332")  # (0.013330 + 0.013330) * 200
     assert core.spread_total == Decimal("50.654")  # (0.126635 + 0.126635) * 200
     assert core.total_round_trip - wing.total_round_trip == Decimal("45.322")
 
@@ -433,10 +447,14 @@ def test_the_shape_survives_the_change_in_moneyness_alone() -> None:
         0.50-0.70  0.095000 * 400 + 2.60 = $40.60
     A constant table returns 14.60 five times and dies at the first pair.
     """
-    got = [_model(d, d).total_round_trip
-           for d in ("0.05", "0.15", "0.275", "0.425", "0.60")]
-    assert got == [Decimal("6.600000"), Decimal("8.600000"), Decimal("12.600000"),
-                   Decimal("14.600000"), Decimal("40.600000")]
+    got = [_model(d, d).total_round_trip for d in ("0.05", "0.15", "0.275", "0.425", "0.60")]
+    assert got == [
+        Decimal("6.600000"),
+        Decimal("8.600000"),
+        Decimal("12.600000"),
+        Decimal("14.600000"),
+        Decimal("40.600000"),
+    ]
 
 
 # ----------------------------------------- 5. buckets and their boundaries
@@ -444,16 +462,18 @@ def test_the_shape_survives_the_change_in_moneyness_alone() -> None:
 
 @pytest.mark.parametrize(
     ("abs_delta", "bucket"),
-    (("0.00", "0.00-0.10"),  # zero itself is in the first bucket
-     ("0.10", "0.00-0.10"),  # the edge belongs to the LOWER bucket ((lo, hi])
-     ("0.10001", "0.10-0.20"),
-     ("0.20", "0.10-0.20"),
-     ("0.20001", "0.20-0.35"),
-     ("0.35", "0.20-0.35"),
-     ("0.35001", "0.35-0.50"),
-     ("0.50", "0.35-0.50"),
-     ("0.50001", "0.50-0.70"),
-     ("0.70", "0.50-0.70")),
+    (
+        ("0.00", "0.00-0.10"),  # zero itself is in the first bucket
+        ("0.10", "0.00-0.10"),  # the edge belongs to the LOWER bucket ((lo, hi])
+        ("0.10001", "0.10-0.20"),
+        ("0.20", "0.10-0.20"),
+        ("0.20001", "0.20-0.35"),
+        ("0.35", "0.20-0.35"),
+        ("0.35001", "0.35-0.50"),
+        ("0.50", "0.35-0.50"),
+        ("0.50001", "0.50-0.70"),
+        ("0.70", "0.50-0.70"),
+    ),
 )
 def test_bucket_boundaries_pinned_on_both_sides(abs_delta: str, bucket: str) -> None:
     """(lo, hi] buckets, pinned a micro-tick either side of every edge."""
@@ -462,8 +482,15 @@ def test_bucket_boundaries_pinned_on_both_sides(abs_delta: str, bucket: str) -> 
 
 @pytest.mark.parametrize(
     ("dte", "bucket"),
-    ((7, "7-21"), (14, "7-21"), (21, "7-21"), (22, "22-45"),
-     (45, "22-45"), (46, "46-60"), (60, "46-60")),
+    (
+        (7, "7-21"),
+        (14, "7-21"),
+        (21, "7-21"),
+        (22, "22-45"),
+        (45, "22-45"),
+        (46, "46-60"),
+        (60, "46-60"),
+    ),
 )
 def test_dte_buckets_are_closed_at_both_ends(dte: int, bucket: str) -> None:
     """dte is integral, so its buckets are plainly inclusive on both ends."""
@@ -500,9 +527,12 @@ def test_is_eod_snapshot_cannot_be_omitted() -> None:
     """
     with pytest.raises(TypeError):
         mc().Leg(  # type: ignore[call-arg]
-            symbol="SPY", abs_delta=Decimal("0.30"), dte=14,
+            symbol="SPY",
+            abs_delta=Decimal("0.30"),
+            dte=14,
             source_session="2026-06-01",
-            source_timestamp_et="2026-06-01T18:05:00-04:00")
+            source_timestamp_et="2026-06-01T18:05:00-04:00",
+        )
 
 
 def test_provenance_is_declared_after_the_required_fields() -> None:
@@ -518,21 +548,32 @@ def test_provenance_is_declared_after_the_required_fields() -> None:
 
     fields = list(dataclasses.fields(mc().Leg))
     names = [f.name for f in fields]
-    assert names == ["symbol", "abs_delta", "dte", "source_session",
-                     "source_timestamp_et", "is_eod_snapshot"]
+    assert names == [
+        "symbol",
+        "abs_delta",
+        "dte",
+        "source_session",
+        "source_timestamp_et",
+        "is_eod_snapshot",
+    ]
     for field in fields:
         assert field.default is dataclasses.MISSING, f"{field.name} must have no default"
-        assert field.default_factory is dataclasses.MISSING, \
+        assert field.default_factory is dataclasses.MISSING, (
             f"{field.name} must have no default factory either"
+        )
 
 
 def test_a_blank_provenance_field_is_refused() -> None:
     """A whitespace-only session or timestamp is not a provenance record."""
     for field in ("source_session", "source_timestamp_et"):
-        kwargs = {"symbol": "SPY", "abs_delta": Decimal("0.30"), "dte": 14,
-                  "source_session": "2026-06-01",
-                  "source_timestamp_et": "2026-06-01T18:05:00-04:00",
-                  "is_eod_snapshot": True}
+        kwargs = {
+            "symbol": "SPY",
+            "abs_delta": Decimal("0.30"),
+            "dte": 14,
+            "source_session": "2026-06-01",
+            "source_timestamp_et": "2026-06-01T18:05:00-04:00",
+            "is_eod_snapshot": True,
+        }
         kwargs[field] = "   "
         with pytest.raises(mc().ProvenanceError):
             mc().Leg(**kwargs)
@@ -540,13 +581,17 @@ def test_a_blank_provenance_field_is_refused() -> None:
 
 def test_the_shipped_provenance_admits_it_is_not_a_decision_clock_quote() -> None:
     """The record must say what it is: a delayed EOD snapshot."""
-    payload = mc().CostProvenance(
-        source="cboe-delayed-eod-chains",
-        snapshot_window_et="17:45-06:30",
-        universe_filter="|delta|<=0.70, 7<=dte<=60, volume>0, oi>0",
-        n_rows=18783,
-        decision_clocks_et=("10:00", "15:15"),
-    ).as_dict()
+    payload = (
+        mc()
+        .CostProvenance(
+            source="cboe-delayed-eod-chains",
+            snapshot_window_et="17:45-06:30",
+            universe_filter="|delta|<=0.70, 7<=dte<=60, volume>0, oi>0",
+            n_rows=18783,
+            decision_clocks_et=("10:00", "15:15"),
+        )
+        .as_dict()
+    )
     assert payload["source"].strip()
     assert payload["snapshot_window_et"] == "17:45-06:30"
     assert payload["snapshot_window_et"] not in ("", "10:00-15:15")
@@ -578,18 +623,26 @@ def test_the_lookup_is_pure_no_io_no_network() -> None:
 
     with open(the_module.__file__, encoding="utf-8") as handle:
         source = handle.read()
-    for forbidden in ("open(", "Path(", "os.environ", "socket", "requests",
-                      "urllib", "httpx", "subprocess", "read_text", "json.load"):
+    for forbidden in (
+        "open(",
+        "Path(",
+        "os.environ",
+        "socket",
+        "requests",
+        "urllib",
+        "httpx",
+        "subprocess",
+        "read_text",
+        "json.load",
+    ):
         assert forbidden not in source, f"the cost model must stay pure: found {forbidden!r}"
 
 
 def test_the_lookup_is_deterministic() -> None:
     """Same inputs, same Decimal, every time -- no clock, no cache, no RNG."""
     model = mc().SpreadCostModel.measured()
-    first = [model.half_spread_per_share(Decimal(d), t)
-             for d in DELTA_REPS for t in DTE_REPS]
-    second = [model.half_spread_per_share(Decimal(d), t)
-              for d in DELTA_REPS for t in DTE_REPS]
+    first = [model.half_spread_per_share(Decimal(d), t) for d in DELTA_REPS for t in DTE_REPS]
+    second = [model.half_spread_per_share(Decimal(d), t) for d in DELTA_REPS for t in DTE_REPS]
     assert first == second
     assert all(isinstance(v, Decimal) for v in first)
 
@@ -612,8 +665,9 @@ def test_the_flat_cost_model_is_untouched() -> None:
     assert CostModel().round_trip() == FLAT_ROUND_TRIP
     assert CostModel().round_trip(legs=2) == FLAT_ROUND_TRIP
     fields = {f.name: f for f in dataclasses.fields(CostModel)}
-    assert isinstance(fields["half_spread_per_share"].default, Decimal), \
+    assert isinstance(fields["half_spread_per_share"].default, Decimal), (
         "the flat model's half_spread_per_share must stay a Decimal field"
+    )
 
 
 def test_a_flat_candidate_can_be_priced_by_the_shaped_model() -> None:
