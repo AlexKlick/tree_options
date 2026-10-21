@@ -67,6 +67,7 @@ from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.execution import ExecutionLifecycleError, OrderIntent
 from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.trex import notify
+from tree_options.trex.admission import entry_send_blockers
 from tree_options.trex.clock import ET, is_session
 from tree_options.trex.desk_runtime import (
     DeskPaths,
@@ -601,10 +602,16 @@ class SupervisedDesk:
             }
 
     def enter(self, request: EntryRequest, now: datetime) -> dict[str, Any]:
-        """Mandate -> preflight -> screening -> intent -> permit -> register
-        -> send. Every refusal happens before the send."""
+        """Kill files -> mandate -> preflight -> screening -> kill files ->
+        intent -> permit -> register -> send. Every refusal happens before
+        the send. ``PAUSE_ENTRIES`` / ``HALT`` in the run dir refuse before
+        any authority is spent, and again after the screening (a stop
+        placed while it read the broker); exits never pass through here."""
         effect = request.effect
         structure = effect.structure
+        stopped = entry_send_blockers(self.paths.root)
+        if stopped:
+            return {"status": "blocked", "blockers": list(stopped)}
         if effect.side != "BUY":
             return {"status": "blocked", "blockers": ["credit_open_not_supported_v1"]}
         if (now - request.send_deadline).total_seconds() >= 0:
@@ -652,6 +659,9 @@ class SupervisedDesk:
         }
         if not screening.clear or screening.facts is None:
             return {"status": "blocked", "blockers": list(screening.blockers), **facts}
+        stopped = entry_send_blockers(self.paths.root)
+        if stopped:
+            return {"status": "blocked", "blockers": list(stopped), **facts}
         intent = SupervisedIntent(
             intent=OrderIntent(
                 intent_id=effect.intent_id,

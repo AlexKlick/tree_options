@@ -5,6 +5,20 @@ composes and validates entry requests locally (the live screening stays
 with the desk), reads the desk's on-disk state, and flips the kill files.
 Every command is safe to run from any agent session: nothing here can
 reach the broker.
+
+Stop states, from mildest:
+
+- ``pause`` (alias ``pause-entries``) / ``resume-entries``: the
+  entries-only pause (``PAUSE_ENTRIES``, ``trex.pause``). New entries are
+  refused (``entries_paused``; ``request`` refuses to write the live
+  inbox); exits, fills and reconciliation continue.
+- ``halt`` / ``flatten`` / ``resume``: the existing kill files, unchanged.
+  ``HALT`` also gates exit orders; ``resume`` removes HALT and FLATTEN and
+  never the entries-only pause (lifting it is its own explicit verb).
+
+``status`` shows the pause, HALT, and the owner's facts admission reads
+(risk snapshot and reconciliation with their ages, the exit owner's
+health) with the resulting entry blockers.
 """
 
 from __future__ import annotations
@@ -20,6 +34,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
+from tree_options.trex import pause
+from tree_options.trex.admission import entry_blockers, owner_fact_report
 from tree_options.trex.desk_runtime import DeskPaths
 from tree_options.trex.plan import ExitRules, Leg, LegStructure, TakeProfit, validate_package_order
 from tree_options.trex.supervised import SupervisedPaths
@@ -81,6 +97,13 @@ def collect_status(
         "run_dir": str(paths.root),
     }
     report["kill_files"] = sorted(f.name for f in (paths.halt(), paths.flatten()) if f.exists())
+    # the entries-only pause is reported on its own: it is not a kill file
+    # (exits continue under it), and HALT keeps its own flag beside it
+    report["entries_paused"] = pause.is_paused(paths.root)
+    report["pause"] = pause.pause_record(paths.root)
+    report["halt"] = paths.halt().exists()
+    report["owner_facts"] = owner_fact_report(paths.root, now)
+    report["entry_blockers"] = list(entry_blockers(paths.root, now))
     owner = paths.root / "owner.json"
     report["owner"] = json.loads(owner.read_bytes()) if owner.exists() else None
     book = paths.book()
@@ -201,7 +224,14 @@ def _cli(argv: list[str] | None = None) -> int:
     events_p.add_argument("-n", type=int, default=20)
     sub.add_parser("halt", help="place HALT (no new orders)")
     sub.add_parser("flatten", help="place FLATTEN (close everything)")
-    sub.add_parser("resume", help="remove HALT and FLATTEN")
+    sub.add_parser("resume", help="remove HALT and FLATTEN (never the entries-only pause)")
+    for verb, aliases, what in (
+        ("pause", ["pause-entries"], "place PAUSE_ENTRIES (no new entries; exits continue)"),
+        ("resume-entries", [], "remove PAUSE_ENTRIES (HALT and FLATTEN untouched)"),
+    ):
+        flip = sub.add_parser(verb, aliases=aliases, help=what)
+        flip.add_argument("--reason", default="", help="audited with the request")
+        flip.add_argument("--actor", default="operator-terminal", help="who asks (audited)")
     drill = sub.add_parser("drill-check", help="read-only Stage-B drill readiness gates (G2-G6)")
     drill.add_argument(
         "--buy-strike",
@@ -308,6 +338,19 @@ def _cli(argv: list[str] | None = None) -> int:
         for flag in (paths.halt(), paths.flatten()):
             flag.unlink(missing_ok=True)
         print("HALT/FLATTEN removed")
+        if pause.is_paused(paths.root):
+            print("PAUSE_ENTRIES still present: entries stay paused (resume-entries lifts it)")
+        return 0
+    if args.command in ("pause", "pause-entries", "resume-entries"):
+        flip_fn = pause.resume_entries if args.command == "resume-entries" else pause.pause_entries
+        try:
+            outcome = flip_fn(paths.root, actor=args.actor, reason=args.reason, now=now)
+        except ValueError as error:
+            print(f"refused: {error}", file=sys.stderr)
+            return 2
+        state = "paused" if outcome["entries_paused"] else "resumed"
+        note = "" if outcome["changed"] else " (already)"
+        print(f"entries {state}{note}; exits are unaffected")
         return 0
     if args.command == "drill-check":
         from tree_options.trex import drill_check
@@ -329,7 +372,11 @@ def _cli(argv: list[str] | None = None) -> int:
             plans_root=args.plans_dir,
         )
 
-    # request
+    # request: the live inbox is an entry path, so the entries-only pause
+    # refuses it here (the request bytes themselves are unchanged)
+    if pause.is_paused(paths.root):
+        print("refused: entries_paused (resume-entries lifts the pause)", file=sys.stderr)
+        return 2
     entry_date = args.entry_date or now.date()
     inbox = paths.requests_dir() if hasattr(paths, "requests_dir") else paths.root / "requests"
     inbox.mkdir(parents=True, exist_ok=True)

@@ -1,16 +1,42 @@
-"""E6 shadow previews: desk-parseable request files, never the live inbox."""
+"""E6 shadow drafts: miner deals become entry PROPOSAL drafts, never requests.
+
+A draft carries the ``trex-entry-proposal/1`` body with every live-only
+binding (quote, screening digest, owner epoch, profile digest, proposal
+times) left null, so it is never approvable as written; the owner flow
+completes it from live facts. Oracles: the frozen contract models
+(``EntryProposalBody`` / ``EntryProposal`` / ``EFFECT_V1_ADAPTER``) and the
+desk's own spec builder, never enter_supervised internals.
+"""
 
 from __future__ import annotations
 
 import json
-from datetime import date
+import re
+from datetime import UTC, date, datetime
+from decimal import ROUND_CEILING, Decimal
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from tree_options.desk import enter_supervised
+from tree_options.time.sessions import shift_instant
+from tree_options.trex import pause
+from tree_options.trex.contracts import (
+    EFFECT_V1_ADAPTER,
+    PROPOSAL_SCHEMA,
+    Blocker,
+    EntryProposal,
+    EntryProposalBody,
+    Quote,
+    SupervisedEffect,
+    desk_spec_v2_for,
+    effect_v1_sha256,
+)
 from tree_options.trex.plan import LegStructure
 from tree_options.trex.supervised_desk import EntryRequest
+
+PATH_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 
 
 def run(world, **kwargs):
@@ -24,50 +50,142 @@ def run(world, **kwargs):
     )
 
 
-def test_an_admissible_deal_becomes_a_desk_parseable_preview(world):
+def drafts_dir(world):
+    return world.root / "execution" / "proposal-drafts"
+
+
+def the_draft(world, doc) -> dict:
+    (candidate,) = doc["written"]
+    return json.loads((drafts_dir(world) / f"{candidate}.json").read_text())
+
+
+def live_bindings(world, *, ttl_s: int = 300) -> dict:
+    proposed_at = world.now.astimezone(UTC)
+    return {
+        "proposed_at": proposed_at,
+        "send_deadline": shift_instant(proposed_at, ttl_s),
+        "quote": Quote(
+            bid_cents=215, ask_cents=225, market_data_type="realtime", as_of=proposed_at
+        ),
+        "screening_sha256": "a" * 64,
+        "owner_epoch": "owner-20261022T133000Z-4242",
+        "profile_digest": "b" * 64,
+    }
+
+
+def test_a_debit_deal_becomes_a_proposal_draft(world):
     world.queue_file()
     doc = run(world)
     assert doc["status"] == "ok" and len(doc["written"]) == 1
-    deal_id = doc["written"][0]
-    previews = world.root / "execution" / "requests-preview"
-    request = EntryRequest.model_validate(  # the desk's own parser
-        json.loads((previews / f"{deal_id}.json").read_text())
-    )
-    effect = request.effect
-    assert effect.intent_id == deal_id == effect.structure.id
-    assert request.strategy_version == "desk-row/R1"
-    assert request.requested_by == "desk-enter-shadow"
-    assert effect.side == "BUY"
-    assert str(effect.limit) == str(world.queue["admissible"][0]["fill"])
-    assert effect.order_ref == f"trex:sup:{deal_id}"
-    assert request.send_deadline is not None
+    draft = the_draft(world, doc)
+    assert draft["schema"] == enter_supervised.DRAFT_SCHEMA
+    assert draft["execution_enabled"] is False
+    body = draft["body"]
+    assert body["schema"] == PROPOSAL_SCHEMA
+    effect = EFFECT_V1_ADAPTER.validate_python(body["effect"])
+    assert isinstance(effect, SupervisedEffect)
+    assert body["effect_sha256"] == effect_v1_sha256(effect)
+    deal = world.queue["admissible"][0]
+    assert draft["deal_id"] == deal["deal_id"] == effect.structure.deal_id
+    assert effect.side == "BUY" and effect.quantity == 1
+    assert effect.limit == Decimal(deal["fill"])
+    assert effect.order_ref == f"trex:sup:{effect.intent_id}"
+    assert effect.intent_id == effect.structure.id == draft["candidate_id"]
+    assert body["strategy_version"] == "desk-row/R1"
+    # the reviewed cost: the order's limit x100 per package x quantity, in cents
+    cost = Decimal(deal["fill"]) * 100 * deal["quantity"] * 100
+    cents = int(cost.to_integral_value(rounding=ROUND_CEILING))
+    assert body["review"]["max_loss_cents"] == body["review"]["notional_cents"] == cents
 
 
-def test_the_live_inbox_is_never_touched(world):
+def test_a_draft_is_never_approvable_as_written(world):
+    world.queue_file()
+    draft = the_draft(world, run(world))
+    assert sorted(draft["missing"]) == sorted(enter_supervised.LIVE_BINDINGS)
+    with pytest.raises(ValidationError):
+        EntryProposalBody.model_validate(draft["body"])
+    with pytest.raises(ValidationError):
+        EntryProposal.model_validate(draft["body"])
+    with pytest.raises(ValidationError):
+        EntryRequest.model_validate(draft)  # and never a direct request
+
+
+def test_live_bindings_complete_a_draft_into_a_contract_proposal(world):
+    world.queue_file()
+    draft = the_draft(world, run(world))
+    proposal = enter_supervised.complete_draft(draft, **live_bindings(world))
+    assert isinstance(proposal, EntryProposal)
+    # completing never changes what the owner approves
+    assert proposal.effect_sha256 == draft["body"]["effect_sha256"]
+    assert effect_v1_sha256(proposal.effect) == draft["body"]["effect_sha256"]
+    assert proposal.review.max_loss_cents == draft["body"]["review"]["max_loss_cents"]
+    # an independent re-validation of the minted document agrees
+    assert EntryProposal.model_validate(proposal.model_dump(mode="json", by_alias=True))
+
+
+def test_a_completion_past_the_candidate_horizon_refuses(world):
+    world.queue_file()
+    draft = the_draft(world, run(world))
+    bindings = live_bindings(world)
+    horizon = datetime.fromisoformat(world.queue["valid_until"]).astimezone(UTC)
+    bindings["proposed_at"] = shift_instant(horizon, -60)
+    bindings["quote"] = bindings["quote"].model_copy(update={"as_of": bindings["proposed_at"]})
+    bindings["send_deadline"] = shift_instant(horizon, 1)
+    with pytest.raises(ValueError, match="horizon"):
+        enter_supervised.complete_draft(draft, **bindings)
+    bindings["send_deadline"] = horizon
+    assert enter_supervised.complete_draft(draft, **bindings).send_deadline == horizon
+
+
+def test_the_candidate_id_is_path_safe_so_mandate_and_spec_v2_accept_it(world):
+    """Miner deal ids carry ':'; mandate/2 and spec/2 ids are path-safe."""
+    world.queue_file()
+    assert not PATH_SAFE.match(world.queue["admissible"][0]["deal_id"])
+    draft = the_draft(world, run(world))
+    assert PATH_SAFE.match(draft["candidate_id"])
+    effect = EFFECT_V1_ADAPTER.validate_python(draft["body"]["effect"])
+    spec = desk_spec_v2_for(effect, world.now)
+    assert spec.intent_id == draft["candidate_id"]
+
+
+@pytest.mark.parametrize(
+    "deal_id",
+    ["plain-id", "2025-03-03:R1:AAPL:example", "::weird::", "x" * 200, ".hidden"],
+)
+def test_candidate_ids_are_path_safe_and_distinct(deal_id):
+    cid = enter_supervised.candidate_id(deal_id)
+    assert PATH_SAFE.match(cid)
+    assert cid == enter_supervised.candidate_id(deal_id)  # deterministic
+    if PATH_SAFE.match(deal_id):
+        assert cid == deal_id
+    else:
+        assert cid != enter_supervised.candidate_id(deal_id + "x")
+
+
+def test_the_live_inbox_and_the_proposals_dir_are_never_touched(world):
     world.queue_file()
     run(world)
-    inbox = world.root / "execution" / "requests"
-    assert not inbox.exists() or list(inbox.iterdir()) == []
+    for name in ("requests", "proposals", "requests-preview"):
+        path = world.root / "execution" / name
+        assert not path.exists() or list(path.iterdir()) == []
 
 
-def test_previews_cannot_pass_any_canary_mandate(world):
-    """strategy_version desk-row/* is out of every mandate's scope."""
-    world.queue_file()
-    doc = run(world)
-    assert doc["decisions"][0]["row"] == "R1"
-    request = json.loads(
-        (world.root / "execution" / "requests-preview" / f"{doc['written'][0]}.json").read_text()
-    )
-    assert request["strategy_version"] == "desk-row/R1" != "operational-canary/1"
-
-
-def test_operator_flags_stop_previews(world):
+def test_operator_flags_stop_drafts(world):
     world.queue_file()
     (world.root / "execution").mkdir(parents=True, exist_ok=True)
     (world.root / "execution" / "HALT").touch()
     doc = run(world)
     assert doc["status"] == "halted" and doc["written"] == []
-    assert not (world.root / "execution" / "requests-preview").exists()
+    assert not drafts_dir(world).exists()
+
+
+def test_an_entries_pause_stops_drafts_with_its_blocker(world):
+    world.queue_file()
+    pause.pause_entries(world.root / "execution", actor="owner", now=world.now)
+    doc = run(world)
+    assert doc["status"] == "paused" and doc["written"] == []
+    assert doc["blockers"] == [Blocker.ENTRIES_PAUSED.value]
+    assert not drafts_dir(world).exists()
 
 
 def test_off_window_and_missing_queue_are_statuses_not_errors(world):
@@ -78,11 +196,13 @@ def test_off_window_and_missing_queue_are_statuses_not_errors(world):
 def test_dry_run_writes_no_files_but_records_evidence(world):
     world.queue_file()
     doc = run(world, dry_run=True)
-    assert doc["written"] == [world.queue["admissible"][0]["deal_id"]]
-    assert not (world.root / "execution" / "requests-preview").exists()
+    assert doc["written"] == [
+        enter_supervised.candidate_id(world.queue["admissible"][0]["deal_id"])
+    ]
+    assert not drafts_dir(world).exists()
 
 
-def test_a_credit_kind_writes_a_blocked_diagnostic_never_a_request():
+def _credit_deal():
     spec = LegStructure(
         id="d-credit",
         underlying="AAPL",
@@ -97,17 +217,41 @@ def test_a_credit_kind_writes_a_blocked_diagnostic_never_a_request():
         limit="1.00",
         exits={"touch": False, "breach": True},
     )
-    deal = SimpleNamespace(deal_id="d-credit", spec=spec, fill=spec.limit, raw={"row": "R2"})
-    doc = enter_supervised._preview_doc(deal, date(2025, 3, 4), world_now(), "DUT143714")
+    return SimpleNamespace(deal_id="d-credit", spec=spec, fill=spec.limit, raw={"row": "R2"})
+
+
+def test_a_credit_kind_writes_a_blocked_diagnostic_never_a_draft():
+    doc = enter_supervised._preview_doc(_credit_deal(), date(2025, 3, 4), world_now(), "DUT143714")
     assert doc["schema"] == "supervised-preview-blocked/1"
     assert doc["reason"] == "credit_open_not_supported_v1"
+    assert "body" not in doc
     with pytest.raises(ValueError):
         EntryRequest.model_validate(doc)  # a diagnostic is never a request
+    with pytest.raises(ValueError):
+        enter_supervised.complete_draft(doc, **live_bindings(SimpleNamespace(now=world_now())))
+
+
+def test_a_credit_deal_in_the_queue_lands_as_blocked(world):
+    deal = world.queue["admissible"][0]
+    # a bear call credit vertical the miner contract accepts: floor credit
+    # 2.00 on width 5, so max loss (5 - 2.00) x 100
+    legs = [
+        {**deal["legs"][0], "action": "SELL", "strike": "100"},
+        {**deal["legs"][1], "action": "BUY", "strike": "105"},
+    ]
+    prices = {"limit": "2.00", "ref_mid": "2.05"}
+    deal.update(kind="credit_vertical", legs=legs, fill="2.10", max_loss="300.00", **prices)
+    deal["structure"].update(
+        kind="credit_vertical", legs=legs, exits={"touch": False, "breach": True}, **prices
+    )
+    world.queue_file()
+    doc = run(world)
+    assert doc["written"] == [] and len(doc["blocked"]) == 1
+    (blocked,) = list(drafts_dir(world).glob("*.BLOCKED.json"))
+    assert json.loads(blocked.read_text())["reason"] == "credit_open_not_supported_v1"
 
 
 def world_now():
-    from datetime import datetime
-
     from tree_options.trex.clock import ET
 
     return datetime(2025, 3, 4, 10, 0, tzinfo=ET)
