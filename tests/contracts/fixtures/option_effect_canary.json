@@ -1,0 +1,46 @@
+{
+  "account_id": "DU0000001",
+  "intent_id": "canary-001",
+  "limit": "0.48",
+  "order_ref": "trex:sup:canary-001",
+  "quantity": 1,
+  "schema": "supervised-effect/1",
+  "side": "BUY",
+  "structure": {
+    "deal_id": null,
+    "entry_date": "2026-10-14",
+    "exit_deadline": "2026-10-15",
+    "exits": {
+      "breach": false,
+      "stop_confirm_ticks": 3,
+      "stop_loss": null,
+      "take_profit": {
+        "basis": "gain_frac",
+        "value": "0.5"
+      },
+      "touch": false
+    },
+    "id": "canary-001",
+    "kind": "debit_vertical",
+    "legs": [
+      {
+        "action": "BUY",
+        "expiry": "2026-11-20",
+        "ratio": 1,
+        "right": "P",
+        "strike": "760"
+      },
+      {
+        "action": "SELL",
+        "expiry": "2026-11-20",
+        "ratio": 1,
+        "right": "P",
+        "strike": "758"
+      }
+    ],
+    "limit": "1.20",
+    "quantity": 1,
+    "ref_mid": null,
+    "underlying": "SPY"
+  }
+}

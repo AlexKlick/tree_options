@@ -1,0 +1,16 @@
+{
+  "args": {
+    "reason": "owner away from the desk"
+  },
+  "expires_at": "2026-10-22T15:05:00Z",
+  "idempotency_key": "0a9b8c7d-6e5f-4a3b-8c1d-0e9f8a7b6c5d",
+  "issued_at": "2026-10-22T15:00:00Z",
+  "issued_by": {
+    "ingress": "loopback",
+    "request_id": "req-0002",
+    "request_sha256": "6210c0bf05396716df932f0729df69de0533933e5ad9871fd07b61811c4c28df",
+    "sub": "operator"
+  },
+  "kind": "pause_entries",
+  "schema": "trex-command/1"
+}

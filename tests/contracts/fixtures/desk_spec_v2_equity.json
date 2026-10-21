@@ -1,0 +1,22 @@
+{
+  "account_id": "DU0000001",
+  "asset_kind": "equity",
+  "entry_order_ref": "trex:sup:eq-spy-001",
+  "intent_id": "eq-spy-001",
+  "position": {
+    "con_id": 756733,
+    "entry_limit_cents": 67150,
+    "exit_policy": {
+      "exit_deadline_session": "2026-10-23",
+      "forced_exit_et": "15:45",
+      "stop_confirm_ticks": 3,
+      "stop_price_cents": 66500,
+      "target_price_cents": 68000
+    },
+    "position_id": "eq-spy-001",
+    "quantity": 2,
+    "symbol": "SPY"
+  },
+  "registered_at": "2026-10-22T14:02:30Z",
+  "schema": "trex-desk-spec/2"
+}

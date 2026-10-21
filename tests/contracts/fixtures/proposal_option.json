@@ -1,0 +1,69 @@
+{
+  "effect": {
+    "account_id": "DU0000001",
+    "intent_id": "canary-001",
+    "limit": "0.48",
+    "order_ref": "trex:sup:canary-001",
+    "quantity": 1,
+    "schema": "supervised-effect/1",
+    "side": "BUY",
+    "structure": {
+      "deal_id": null,
+      "entry_date": "2026-10-14",
+      "exit_deadline": "2026-10-15",
+      "exits": {
+        "breach": false,
+        "stop_confirm_ticks": 3,
+        "stop_loss": null,
+        "take_profit": {
+          "basis": "gain_frac",
+          "value": "0.5"
+        },
+        "touch": false
+      },
+      "id": "canary-001",
+      "kind": "debit_vertical",
+      "legs": [
+        {
+          "action": "BUY",
+          "expiry": "2026-11-20",
+          "ratio": 1,
+          "right": "P",
+          "strike": "760"
+        },
+        {
+          "action": "SELL",
+          "expiry": "2026-11-20",
+          "ratio": 1,
+          "right": "P",
+          "strike": "758"
+        }
+      ],
+      "limit": "1.20",
+      "quantity": 1,
+      "ref_mid": null,
+      "underlying": "SPY"
+    }
+  },
+  "effect_sha256": "9beed2502c1d3c0950ed4adb94dac3881430ece3df8a464fb12007291cee13ea",
+  "program_id": "prog-canary",
+  "proposal_id": "ce94e447818d3b9209793baa449495c14e457a8216b8d28e0ae7462d5d49fb21",
+  "proposed_at": "2026-10-14T13:50:00Z",
+  "review": {
+    "max_loss_cents": 4800,
+    "notional_cents": 4800,
+    "owner_epoch": "owner-20261022T133000Z-4242",
+    "profile_digest": "d11e81bc8942960c211bce52582136c6852e1131625828cefe5c9b5412062d07",
+    "quote": {
+      "as_of": "2026-10-14T13:49:55Z",
+      "ask_cents": 52,
+      "bid_cents": 44,
+      "market_data_type": "realtime"
+    },
+    "screening_sha256": "e95d43374e80a2a957232bf1a0874e0866f3e1ceb8fdc488c8c1a461520e4722"
+  },
+  "schema": "trex-entry-proposal/1",
+  "send_deadline": "2026-10-14T14:05:00Z",
+  "sleeve_ref": null,
+  "strategy_version": "operational-canary/1"
+}

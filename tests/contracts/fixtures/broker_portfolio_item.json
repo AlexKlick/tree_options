@@ -1,0 +1,11 @@
+{
+  "account_id": "DU0000001",
+  "as_of": "2026-10-22T14:04:00Z",
+  "avg_cost_micros": 671980000,
+  "con_id": 756733,
+  "market_price_micros": 671500000,
+  "market_value_cents": 134300,
+  "position": 2,
+  "sec_type": "STK",
+  "symbol": "SPY"
+}

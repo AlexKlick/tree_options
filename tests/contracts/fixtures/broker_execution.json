@@ -1,0 +1,16 @@
+{
+  "account_id": "DU0000001",
+  "base_exec_id": "0000e0d5.6576d6a5.01",
+  "commission_micros": 1000000,
+  "con_id": 756733,
+  "exec_id": "0000e0d5.6576d6a5.01.01",
+  "multiplier": 1,
+  "order_ref": "trex:sup:eq-spy-001",
+  "perm_id": 1234567890,
+  "price_micros": 671480000,
+  "quantity": 2,
+  "sec_type": "STK",
+  "side": "BOT",
+  "symbol": "SPY",
+  "time": "2026-10-22T14:03:05Z"
+}

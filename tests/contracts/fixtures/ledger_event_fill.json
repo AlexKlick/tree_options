@@ -1,0 +1,25 @@
+{
+  "account_id": "DU0000001",
+  "at": "2026-10-22T14:03:05Z",
+  "attribution": {
+    "intent_id": "eq-spy-001",
+    "program_id": "prog-equity-pilot",
+    "sleeve_ref": "sleeve-equity-01",
+    "strategy_version": "equity-pilot/1"
+  },
+  "base_exec_id": "0000e0d5.6576d6a5.01",
+  "cash_delta_micros": -1342960000,
+  "con_id": 756733,
+  "detail": "",
+  "event_id": "fill:0000e0d5.6576d6a5.01.01",
+  "exec_id": "0000e0d5.6576d6a5.01.01",
+  "kind": "fill",
+  "order_ref": "trex:sup:eq-spy-001",
+  "perm_id": 1234567890,
+  "quantity_delta": 2,
+  "recorded_at": "2026-10-22T14:03:06Z",
+  "ref_sha256": null,
+  "schema": "trex-ledger-event/1",
+  "sec_type": "STK",
+  "supersedes_event_id": null
+}

@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-22T14:02:00Z",
+  "command_body_sha256": "2f7bdcf61bd6fe1935e4bdf0a50af8b31444e86ae206ba20b62fb3f2d8b2a117",
+  "detail": "",
+  "idempotency_key": "6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d",
+  "kind": "approve_entry",
+  "reason": null,
+  "result": {
+    "expires_at": "2026-10-22T14:07:00Z",
+    "mandate": "mandates/eq-spy-001.json"
+  },
+  "schema": "trex-command-result/1",
+  "status": "applied"
+}
