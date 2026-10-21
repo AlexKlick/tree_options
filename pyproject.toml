@@ -74,7 +74,10 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
-markers = ["soak: hermetic multi-session supervised desk recovery exercise"]
+markers = [
+    "soak: hermetic multi-session supervised desk recovery exercise",
+    "host_state: reads the real host (passwd home, launch env); opts out of the per-test HOME/XDG/TREX_*/DESK_* isolation in tests/conftest.py",
+]
 testpaths = ["tests"]
 addopts = "-q"
 # Fail-closed default: strict about unexpected warnings would be nice, but the

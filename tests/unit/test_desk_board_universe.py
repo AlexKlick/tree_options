@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -406,20 +406,57 @@ def _as_pinned_v1(prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _v1_bundle() -> Path | None:
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _primary_checkout(root: Path) -> Path:
+    """``root`` itself, or, when it is a linked git worktree, the checkout that
+    owns the shared .git: artifacts/ is gitignored, so the frozen bundle only
+    exists in the primary tree."""
+    dot_git = root / ".git"
+    if not dot_git.is_file():
+        return root
+    label, _, target = dot_git.read_text(encoding="utf-8").partition(":")
+    if label.strip() != "gitdir":
+        return root
+    gitdir = (root / target.strip()).resolve()
+    commondir = gitdir / "commondir"
+    if not commondir.is_file():
+        return root
+    return (gitdir / commondir.read_text(encoding="utf-8").strip()).resolve().parent
+
+
+def _v1_bundle(pin_override: str = "") -> Path | None:
+    """The frozen bundle: an explicit override, the desk store, else the repo's
+    own artifacts (this checkout, then its primary checkout). Never HOME."""
     from tree_options.desk import paths
 
     options = [
-        os.environ.get("TREX_V1_PIN_BUNDLE", ""),
+        pin_override,
         str(paths.store_root() / V1_REL),
-        str(Path.home() / "documents/tree_options/artifacts/desk-store" / V1_REL),
+        str(REPO_ROOT / "artifacts" / "desk-store" / V1_REL),
+        str(_primary_checkout(REPO_ROOT) / "artifacts" / "desk-store" / V1_REL),
     ]
     return next((Path(p) for p in options if p and Path(p).is_file()), None)
 
 
-def test_the_frozen_v1_vintage_is_byte_identical_under_the_new_rules() -> None:
+def test_the_v1_bundle_lookup_never_follows_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HOME is per-test scratch (tests/conftest.py): a bundle planted under it
+    must not be what the pin hashes."""
+    decoy = tmp_path / "home" / "documents/tree_options/artifacts/desk-store" / V1_REL
+    decoy.parent.mkdir(parents=True)
+    decoy.write_bytes(b"{}")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert _v1_bundle() != decoy
+
+
+def test_the_frozen_v1_vintage_is_byte_identical_under_the_new_rules(
+    host_environ: Mapping[str, str],
+) -> None:
     """Digests produced by the pre-change code (main 229b238) on the frozen bundle."""
-    path = _v1_bundle()
+    path = _v1_bundle(host_environ.get("TREX_V1_PIN_BUNDLE", ""))
     if path is None:
         pytest.skip("the 20260927-v1 bundle is not on this host")
     data = path.read_bytes()
