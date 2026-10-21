@@ -1,0 +1,14 @@
+[Service]
+# Drop-in for trex-web-staging.service (loopback :8091). Code only: the base
+# unit's staging state roots (desk state, paper workspace, research, discovery)
+# and its single staging ReadWritePaths stay in force. Never point staging at
+# the release's production state; this file sets no state variable.
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+ExecStartPre=
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
+ExecStart=
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.trex_web --host 127.0.0.1 --port 8091
+ExecStartPost=

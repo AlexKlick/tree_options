@@ -15,5 +15,6 @@ ExecStartPre=
 ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
 ExecStart=
 ExecStart=@SOURCE@/.venv/bin/python -m tree_options.trex_web --host 127.0.0.1 --port 8090
+ExecStartPost=
 # Inherit ingress and filesystem restrictions from the base unit. Evidence
 # publication is owned by its service, never a ReadWritePaths exception here.

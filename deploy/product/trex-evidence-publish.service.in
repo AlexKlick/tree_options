@@ -7,8 +7,14 @@ Environment=PYTHONPATH=@SOURCE@/src
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=TREX_DESK_STATE=@DESK_STATE@
 Environment=DESK_STORE=@DESK_STORE@
-ExecStart=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.desk publish-evidence --database @DESK_STATE@/evidence/desk.sqlite3 --out @READ_SNAPSHOT@ --source-release @RELEASE_HEAD@
+# Direct interpreter, not host-work: under ProtectHome= the wrapper cannot write
+# its /run/user payload, and its transient unit would drop this sandbox. Memory
+# is capped here instead (the desk-evidence caps; same SQLite read workload).
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.desk publish-evidence --database @DESK_STATE@/evidence/desk.sqlite3 --out @READ_SNAPSHOT@ --source-release @RELEASE_HEAD@
 SuccessExitStatus=3
+Slice=host-work.slice
+MemoryHigh=384M
+MemoryMax=512M
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

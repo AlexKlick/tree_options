@@ -1,0 +1,20 @@
+[Service]
+# Drop-in for desk-admission-preview.service: blocked previews only, never
+# orders (desk-enter defaults to shadow; --armed is refused by the build).
+# The base unit keeps its Slice, memory caps and sandbox (AF_UNIX only).
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
+Environment=TREX_DESK_STATE=@DESK_STATE@
+Environment=DESK_STORE=@DESK_STORE@
+ReadWritePaths=@DESK_STATE@/evidence
+# The base budget (45 s) was sized for the preview alone; the identity check
+# runs inside the same start budget.
+TimeoutStartSec=120
+ExecStartPre=
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
+ExecStart=
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.desk desk-enter
+ExecStartPost=
