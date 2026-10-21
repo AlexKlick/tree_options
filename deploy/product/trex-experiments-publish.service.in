@@ -5,6 +5,11 @@ Type=oneshot
 WorkingDirectory=@SOURCE@
 Environment=PYTHONPATH=@SOURCE@/src
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
+# The inventory is stamped with RELEASE_HEAD, so the release identity check
+# gates the start. Its failure report is best effort under this sandbox.
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
 # Direct interpreter, not host-work: under ProtectHome= the wrapper cannot write
 # its /run/user payload, and its transient unit would drop this sandbox. Memory
 # is capped here instead (unmeasured; confirm on the first supervised run).
@@ -15,7 +20,8 @@ Slice=host-work.slice
 MemoryHigh=384M
 MemoryMax=512M
 Nice=10
-TimeoutStartSec=90
+# The identity check runs inside the same start budget (was 90 s unchecked).
+TimeoutStartSec=120
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

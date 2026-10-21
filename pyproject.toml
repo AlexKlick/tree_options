@@ -109,6 +109,7 @@ files = [
     "scripts/build_lane1_manifest.py",
     "scripts/g4_seal.py",
     "scripts/launch_bars_era.py",
+    "scripts/trex_inventory.py",
 ]
 mypy_path = "src"
 # The point is catching real unit/ordering bugs, not satisfying a strictness

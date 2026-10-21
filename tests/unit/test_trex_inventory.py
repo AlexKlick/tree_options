@@ -476,6 +476,35 @@ def test_release_dirs_report_identity_and_references(host, doc):
         [str(host.old), str(host.rc1)]
     )
     assert doc["summary"]["untracked_copies_in_use"] == [str(host.rc2)]
+    assert all(d["previous_release_of"] == [] for d in doc["release_dirs"])
+
+
+def test_rollback_target_and_release_dir_gate_count_as_references(host):
+    # The live web release names the old one as its rollback target, and a gate
+    # reads config.json from TREX_RELEASE_DIR: neither directory is prunable.
+    (host.web / "config.json").write_text(
+        json.dumps(
+            {"schema": "trex-research-release/2", "previous_release": f"{host.old}/config.json"}
+        )
+    )
+    (host.qsl / "config.json").write_text("{not json")
+    (host.old / "config.json").write_text(json.dumps({"previous_release": None}))
+    host.services["trex-gated.service"] = _show(
+        "trex-gated.service",
+        wd=host.serving,
+        env=[f"PYTHONPATH={host.serving}/src", f"TREX_RELEASE_DIR={host.rc1}"],
+        execs=[("ExecStart", [host._py(host.serving), "-m", "tree_options.trex_web"])],
+    )
+    doc = inv.build_inventory(host.paths(), host)
+    dirs = {d["path"]: d for d in doc["release_dirs"]}
+    old = dirs[str(host.old)]
+    assert old["previous_release_of"] == [str(host.web)]
+    assert (old["referenced"], old["referenced_by"]) == (True, [])
+    assert dirs[str(host.rc1)]["referenced_by"] == ["trex-gated.service"]
+    assert dirs[str(host.web)]["previous_release_of"] == []
+    assert doc["summary"]["unreferenced_release_dirs"] == []
+    # TREX_RELEASE_DIR names code identity, not a state root.
+    assert str(host.rc1) not in {r["path"] for r in doc["state_roots"]}
 
 
 def test_worktrees_and_unpushed_branches(host, doc):
