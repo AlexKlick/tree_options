@@ -55,6 +55,36 @@ Assignment risk: ``assignment_plan`` is the canary's
 covered by the engine's expiry safety; one with a short call needs a fresh
 declared-dividend feed and no projected (undeclared) ex-date inside its
 hold window, because the engine's pre-ex-date rule needs the exact date.
+
+Wave 2 (lane C, docs/product/WAVE2-CONTRACTS.md): the same owner exits
+desk-owned long EQUITY positions.
+
+- **Specs.** ``specs/<sid>.json`` holds ``trex-desk-spec/1`` (options; still
+  what ``register`` writes for an option effect, byte for byte) or
+  ``trex-desk-spec/2`` (``desk_spec.load_spec``): a v2 option spec runs as
+  the option it describes; an equity spec (its id is the intent id) runs in
+  the equity lane. ``specs()`` stays the OPTION view; ``equity_specs()`` is
+  the equity one. An unknown schema fails the tick (exposure is uncertain).
+- **Rules** come from the bound ``exit_policy`` through the pure
+  ``trex.equity_exits`` (stop confirmed over consecutive new real-time
+  ticks, target, forced exit on the deadline session at min(15:45, close
+  minus 15 min), deadline passed). Every exit is a DAY limit SELL
+  marketable at the real-time bid, tagged ``trex:desk:<intent_id>``, for
+  the open whole shares only, repriced down (cancel, confirm, replace) when
+  the bid falls below it. No resting broker stop exists.
+- **Holdings check** before ANY sell: the broker's position in the bound
+  account and conId must equal the book's open shares (every live desk
+  equity position on that contract summed). A mismatch, a fractional or
+  non-STK row sends nothing and records ``reconciliation_required`` (urgent
+  push); the next tick retries.
+- **PAUSE_ENTRIES** (``contracts.layout``) cancels the unfilled remainder
+  of any working entry, option or equity; it never blocks an exit. HALT is
+  unchanged (no new orders, exits included). A partial entry that ends
+  (pause, rule, expiry) opens with exactly the shares filled.
+- **Health.** While an equity position is held, ``monitor.json`` adds
+  ``quote_guarded`` (symbols) and ``quote_blind`` (symbol: first instant
+  without a fresh real-time quote in the regular session) for
+  ``trex.exit_watch``; an option-only book keeps the nine-key schema.
 """
 
 from __future__ import annotations
@@ -66,16 +96,23 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.desk.dividends import DividendSnapshot, ex_dividends
 from tree_options.trex.clock import ET, EntryWindow
+from tree_options.trex.contracts.books import base_exec_id_of
+from tree_options.trex.contracts.canonical import model_bytes
+from tree_options.trex.contracts.desk_spec_v2 import EquityDeskSpecV2, desk_spec_v2_for
+from tree_options.trex.contracts.effects import SupervisedEquityEffect
+from tree_options.trex.contracts.layout import PAUSE_ENTRIES
+from tree_options.trex.contracts.vocabulary import DeskEvent
 from tree_options.trex.desk_backup import OwnerBackups, default_backup_root
 from tree_options.trex.desk_spec import SPEC_SCHEMA as SPEC_SCHEMA
 from tree_options.trex.desk_spec import DeskSpec as DeskSpec
+from tree_options.trex.desk_spec import load_spec, spec_id
 from tree_options.trex.engine import (
     AbortEntry,
     CloseOrder,
@@ -84,6 +121,7 @@ from tree_options.trex.engine import (
     EntryOrder,
     ExitReason,
     NoAction,
+    Role,
     Snapshot,
     WorkingOrder,
     adopted_role,
@@ -93,9 +131,19 @@ from tree_options.trex.engine import (
     short_call_key,
     step,
 )
+from tree_options.trex.equity_exits import (
+    EXIT_EVENTS,
+    EquityAbort,
+    EquityClose,
+    EquityExitReason,
+    EquityQuote,
+    decide_equity,
+    in_regular_session,
+    marketable_limit,
+)
 from tree_options.trex.ibkr import DONE_STATES, ORDER_REF_PREFIX, IbkrTrex, OrderRef
 from tree_options.trex.plan import LegStructure, cents
-from tree_options.trex.state import BookState, Status, StructureState
+from tree_options.trex.state import ENTRY_LANE, BookState, Status, StructureState
 from tree_options.trex.supervised import SupervisedPaths
 from tree_options.trex.supervised_ibkr import (
     IbkrSupervisedBroker,
@@ -112,10 +160,49 @@ HEARTBEAT_MAX_AGE_S = 30
 CANCEL_CONFIRM_POLLS = 6
 CANCEL_POLL_S = 0.5
 _CANCELLED = frozenset({"Cancelled", "ApiCancelled", "Inactive"})
+#: an equity quote older than this (or not real-time) leaves its symbol
+#: blind in monitor.json: the stop and target exits cannot act on it
+QUOTE_FRESH_S = 60
+#: ib_async ``Ticker.marketDataType``: 1 real-time (2 frozen, 3 delayed, 4
+#: delayed-frozen); only real-time quotes drive equity exits
+REALTIME_MARKET_DATA = 1
 
 
 def desk_order_ref(structure_id: str) -> str:
     return DESK_REF_PREFIX + structure_id
+
+
+def _decimal(value: Any) -> Decimal | None:
+    """A broker number (ib_async floats) exactly as reported; None for junk,
+    NaN or infinity."""
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _shares(value: Any) -> int | None:
+    """A whole, non-negative share count, else None (fractional, junk)."""
+    number = _decimal(value)
+    if number is None or number < 0 or number != number.to_integral_value():
+        return None
+    return int(number)
+
+
+def _cents_floor(value: Any) -> int | None:
+    """A positive broker price (dollars) as integer cents, rounded DOWN (a
+    SELL priced from it stays marketable); None when there is no price."""
+    number = _decimal(value)
+    if number is None or number <= 0:
+        return None
+    cents_ = int((number * 100).to_integral_value(rounding=ROUND_FLOOR))
+    return cents_ if cents_ > 0 else None
+
+
+def _qty_text(qty: Decimal) -> str:
+    """A broker quantity for an event: whole numbers without a fraction."""
+    return str(int(qty)) if qty == qty.to_integral_value() else str(qty.normalize())
 
 
 @dataclass(frozen=True)
@@ -152,6 +239,11 @@ class DeskPaths:
 
     def flatten(self) -> Path:
         return self.root / "FLATTEN"
+
+    def pause_entries(self) -> Path:
+        """Wave 2 entries-only pause: cancels working entries' unfilled
+        remainders; exits, fills and reconciliation continue."""
+        return self.root / PAUSE_ENTRIES
 
     def resolve_flat(self, structure_id: str) -> Path:
         """Operator confirmation that a structure is flat at the broker."""
@@ -238,6 +330,10 @@ _NOTIFY_EVENTS: dict[str, str] = {
     "entry_uncertain_held": "urgent",
     "gateway_lost": "urgent",
     "exit_blocked": "urgent",
+    # Wave 2 equities: an exit that cannot go out until someone looks
+    DeskEvent.RECONCILIATION_REQUIRED.value: "urgent",
+    "equity_contract_mismatch": "urgent",
+    "equity_unqualified": "urgent",
     "backup_failed": "default",
     "entry_request": "default",
     "entry_filled": "default",
@@ -282,6 +378,12 @@ class DeskRuntime:
         self._started_at: float | None = None
         self._tick_failures = 0
         self._last_tick_ok_at: float | None = None
+        # Wave 2 equities: intent id -> the qualified Stock (its market data
+        # is held through IbkrTrex's shared per-conId subscription)
+        self._equity_contracts: dict[str, Any] = {}
+        self._tick_equities: dict[str, EquityDeskSpecV2] = {}
+        self._quote_guarded: set[str] = set()
+        self._quote_blind: dict[str, str] = {}  # symbol -> first blind instant
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -334,7 +436,7 @@ class DeskRuntime:
                 self._last_tick_ok_at = now
             elif tick_ran:
                 self._tick_failures += 1
-            payload = {
+            payload: dict[str, Any] = {
                 "at": now,
                 "started_at": self._started_at,
                 "pid": os.getpid(),
@@ -345,6 +447,9 @@ class DeskRuntime:
                 "halt": self.paths.halt().exists(),
                 "flatten": self.paths.flatten().exists(),
             }
+            if self._quote_guarded:  # only while an equity is held
+                payload["quote_guarded"] = sorted(self._quote_guarded)
+                payload["quote_blind"] = dict(self._quote_blind)
             path = self.paths.health()
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(json.dumps(payload))
@@ -361,18 +466,35 @@ class DeskRuntime:
         return now.astimezone(ET)
 
     def specs(self) -> dict[str, DeskSpec]:
-        out: dict[str, DeskSpec] = {}
-        if not self.paths.specs().is_dir():
-            return out
-        for path in sorted(self.paths.specs().glob("*.json")):
-            spec = DeskSpec.model_validate(json.loads(path.read_bytes()))
-            if path.stem != spec.structure.id:
-                raise ValueError(f"{path.name}: names structure {spec.structure.id}")
-            out[spec.structure.id] = spec
-        return out
+        """The OPTION specs (v1, and v2 option specs as the option they
+        describe). Equity specs are ``equity_specs``; any unreadable or
+        unknown spec raises (the run dir's exposure is uncertain)."""
+        return self._all_specs()[0]
 
-    def _book(self, specs: Mapping[str, DeskSpec]) -> BookState:
-        return BookState.load(self.paths.book(), list(specs))
+    def equity_specs(self) -> dict[str, EquityDeskSpecV2]:
+        """The ``trex-desk-spec/2`` equity specs, by intent id."""
+        return self._all_specs()[1]
+
+    def _all_specs(self) -> tuple[dict[str, DeskSpec], dict[str, EquityDeskSpecV2]]:
+        options: dict[str, DeskSpec] = {}
+        equities: dict[str, EquityDeskSpecV2] = {}
+        if not self.paths.specs().is_dir():
+            return options, equities
+        for path in sorted(self.paths.specs().glob("*.json")):
+            spec = load_spec(json.loads(path.read_bytes()))
+            sid = spec_id(spec)
+            if path.stem != sid:
+                raise ValueError(f"{path.name}: names structure {sid}")
+            if isinstance(spec, DeskSpec):
+                options[sid] = spec
+            else:
+                equities[sid] = spec
+        return options, equities
+
+    def _book(
+        self, specs: Mapping[str, DeskSpec], equities: Mapping[str, EquityDeskSpecV2] | None = None
+    ) -> BookState:
+        return BookState.load(self.paths.book(), [*specs, *(equities or {})])
 
     def _save(self, book: BookState) -> None:
         book.save(self.paths.book())
@@ -402,10 +524,22 @@ class DeskRuntime:
 
     # -- registration --------------------------------------------------------
 
-    def register(self, effect: SupervisedEffect) -> DeskSpec:
-        """Own a supervised effect BEFORE it is sent (idempotent)."""
+    @overload
+    def register(self, effect: SupervisedEffect) -> DeskSpec: ...
+
+    @overload
+    def register(self, effect: SupervisedEquityEffect) -> EquityDeskSpecV2: ...
+
+    def register(
+        self, effect: SupervisedEffect | SupervisedEquityEffect
+    ) -> DeskSpec | EquityDeskSpecV2:
+        """Own a supervised effect BEFORE it is sent (idempotent). An option
+        effect writes its ``trex-desk-spec/1`` spec exactly as before; an
+        equity effect its ``trex-desk-spec/2`` spec (``desk_spec_v2_for``)."""
         if self._lock_handle is None:
             raise RuntimeLocked("register requires the runtime lock")
+        if isinstance(effect, SupervisedEquityEffect):
+            return self._register_equity(effect)
         sid = effect.structure.id
         spec = DeskSpec(
             intent_id=effect.intent_id,
@@ -431,6 +565,31 @@ class DeskRuntime:
         self.ib.prepare([effect.structure])
         return spec
 
+    def _register_equity(self, effect: SupervisedEquityEffect) -> EquityDeskSpecV2:
+        sid = effect.intent_id
+        spec = desk_spec_v2_for(effect, self._now())
+        assert isinstance(spec, EquityDeskSpecV2)
+        path = self.paths.spec(sid)
+        if path.exists():
+            existing = load_spec(json.loads(path.read_bytes()))
+            if not isinstance(existing, EquityDeskSpecV2) or (
+                existing.intent_id,
+                existing.account_id,
+                existing.entry_order_ref,
+                existing.position,
+            ) != (spec.intent_id, spec.account_id, spec.entry_order_ref, spec.position):
+                raise ValueError(f"{sid}: already registered for {existing.intent_id}")
+            return existing
+        self.paths.specs().mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(model_bytes(spec))
+        os.replace(tmp, path)
+        options, equities = self._all_specs()
+        self._save(self._book(options, equities))
+        self._event("registered", structure=sid, intent=sid, asset_kind="equity")
+        self._equity_contract(spec)  # qualify and subscribe now; a failure is noted
+        return spec
+
     # -- one tick ------------------------------------------------------------
 
     def tick(self) -> None:
@@ -447,22 +606,38 @@ class DeskRuntime:
 
     def _tick(self) -> None:
         now = self._now()
-        specs = self.specs()
-        book = self._book(specs)
+        specs, equities = self._all_specs()
+        self._tick_equities = equities
+        book = self._book(specs, equities)
         if specs:
             self.ib.prepare([s.structure for s in specs.values()])
         live = {str(getattr(t.order, "orderRef", "") or ""): t for t in self.ib._ib.openTrades()}
         snap = self._snapshot(specs, now)
         halt = self.paths.halt().exists()
         flatten = self.paths.flatten().exists()
+        paused = self.paths.pause_entries().exists()
         for sid, spec in specs.items():
             st = book.structures[sid]
             if st.status is Status.CLOSED:
                 continue
             try:
-                self._structure_tick(spec, st, snap, live, halt=halt, flatten=flatten, now=now)
+                self._structure_tick(
+                    spec, st, snap, live, halt=halt, flatten=flatten, paused=paused, now=now
+                )
             finally:
                 self._save(book)
+        for sid, equity in equities.items():
+            st = book.structures[sid]
+            if st.status is not Status.CLOSED:
+                try:
+                    self._equity_tick(
+                        equity, st, book, live, halt=halt, flatten=flatten, paused=paused, now=now
+                    )
+                finally:
+                    self._save(book)
+            if st.status is Status.CLOSED:
+                self._equity_release(sid)
+        self._equity_watch(equities, book, now)
         book.heartbeat = now
         self._save(book)
 
@@ -471,7 +646,7 @@ class DeskRuntime:
         Also refreshes ``monitor.json`` without claiming a good tick."""
         if self._lock_handle is None:
             raise RuntimeLocked("beat requires the runtime lock")
-        book = self._book(self.specs())
+        book = self._book(*self._all_specs())
         book.heartbeat = self._now()
         self._save(book)
         self._write_health(None, tick_ran=False)
@@ -517,9 +692,16 @@ class DeskRuntime:
         )
 
     def _trade_for(self, spec: DeskSpec, st: StructureState, live: Mapping[str, Any]) -> Any:
-        sid = spec.structure.id
+        return self._trade_by(spec.structure.id, spec.entry_order_ref, st, live)
+
+    def _trade_by(
+        self, sid: str, entry_order_ref: str, st: StructureState, live: Mapping[str, Any]
+    ) -> Any:
+        """The structure's current order: the live one carrying its entry
+        tag (entry lane) or desk tag, else the last one this process saw
+        when it is still the book's entry/exit order."""
         if st.status in (Status.PLANNED, Status.ENTER_WORKING):
-            trade = live.get(spec.entry_order_ref)
+            trade = live.get(entry_order_ref)
         else:
             trade = live.get(desk_order_ref(sid))
         if trade is not None:
@@ -571,6 +753,7 @@ class DeskRuntime:
         halt: bool,
         flatten: bool,
         now: datetime,
+        paused: bool = False,
     ) -> None:
         sid = spec.structure.id
         if st.status is Status.PLANNED:
@@ -597,6 +780,10 @@ class DeskRuntime:
         if flatten:
             self._flatten(spec, st, trade, snap, halt=halt, now=now)
             return
+        if paused and st.status is Status.ENTER_WORKING and trade is not None:
+            # entries-only pause: the unfilled remainder goes; exits never wait
+            self._cancel(sid, trade, why="entries_paused")
+            return
         action = decision.action
         if isinstance(action, NoAction):
             return
@@ -617,8 +804,22 @@ class DeskRuntime:
     def _resolve_planned(
         self, spec: DeskSpec, st: StructureState, live: Mapping[str, Any], now: datetime
     ) -> None:
-        sid = spec.structure.id
-        trade = live.get(spec.entry_order_ref)
+        self._resolve_planned_by(
+            spec.structure.id, spec.intent_id, spec.entry_order_ref, st, live, now
+        )
+
+    def _resolve_planned_by(
+        self,
+        sid: str,
+        intent_id: str,
+        entry_order_ref: str,
+        st: StructureState,
+        live: Mapping[str, Any],
+        now: datetime,
+    ) -> None:
+        """A PLANNED structure (option or equity) from the broker's live
+        tagged order and the supervised outbox of its intent."""
+        trade = live.get(entry_order_ref)
         if trade is not None:
             st.entry_order = str(trade.order.orderId)
             st.to(Status.ENTER_WORKING, now)
@@ -626,8 +827,8 @@ class DeskRuntime:
             self._event("entry_adopted", structure=sid, order=st.entry_order)
             return
         sup = self.supervised
-        terminal = sup.terminal(spec.intent_id)
-        reconciled = sup.reconciled(spec.intent_id)
+        terminal = sup.terminal(intent_id)
+        reconciled = sup.reconciled(intent_id)
         if reconciled.exists():
             verdict = json.loads(reconciled.read_bytes())
             if verdict.get("verdict") == "confirmed_not_submitted":
@@ -651,7 +852,7 @@ class DeskRuntime:
             else:
                 self._note_once(sid, "entry_uncertain_held", reason=receipt.get("reason"))
             return
-        pending = sup.pending(spec.intent_id)
+        pending = sup.pending(intent_id)
         if pending.exists():
             deadline = datetime.fromisoformat(json.loads(pending.read_bytes())["send_deadline"])
             if (now - deadline).total_seconds() >= 0:
@@ -700,10 +901,16 @@ class DeskRuntime:
     def _transitions(
         self, spec: DeskSpec, st: StructureState, order_status: str, now: datetime
     ) -> None:
-        sid = spec.structure.id
+        self._transitions_by(spec.structure.id, spec.structure.quantity, st, order_status, now)
+
+    def _transitions_by(
+        self, sid: str, quantity: int, st: StructureState, order_status: str, now: datetime
+    ) -> None:
+        """Filled entry -> OPEN (a dead partial opens with what filled);
+        unfilled dead entry -> CLOSED; flat exit -> CLOSED."""
         done = order_status in DONE_STATES
         if st.status is Status.ENTER_WORKING:
-            if st.filled_qty >= spec.structure.quantity or (done and st.filled_qty > 0):
+            if st.filled_qty >= quantity or (done and st.filled_qty > 0):
                 st.to(Status.OPEN, now)
                 self._event(
                     "entry_filled", structure=sid, filled=st.filled_qty, avg=str(st.entry_fill)
@@ -868,6 +1075,56 @@ class DeskRuntime:
             found[key] = str(oid) if oid else key
         return found
 
+    def _exit_cleared(
+        self, sid: str, account_id: str, st: StructureState, *, halt: bool
+    ) -> tuple[bool, str | None]:
+        """The exit guards every close order (option or equity) passes
+        before it exists: the supervised paper session, and no OTHER open
+        order carrying the desk tag (an unreadable view refuses). Passing is
+        the ``exit_authority`` evidence; (cleared, owner epoch)."""
+        blockers = self._guard.paper_blockers(account_id)
+        if blockers:
+            self._note_once(
+                sid,
+                "exit_blocked",
+                key=",".join(blockers),
+                blockers=blockers,
+                reason=st.exit_reason,
+            )
+            return False, None
+        existing = self._open_tagged(desk_order_ref(sid))
+        if existing is None:
+            self._note_once(
+                sid,
+                "exit_blocked",
+                key="duplicate_check_unreadable",
+                reason="duplicate_check_unreadable",
+                exit_reason=st.exit_reason,
+            )
+            return False, None
+        if existing:
+            self._note_once(
+                sid,
+                "exit_blocked",
+                key="duplicate:" + ",".join(sorted(existing)),
+                reason="exit_tag_already_open",
+                orders=sorted(existing.values()),
+                exit_reason=st.exit_reason,
+            )
+            return False, None
+        owner_epoch = self._owner_epoch()
+        self._note_once(
+            sid,
+            "exit_authority",
+            owner_epoch=owner_epoch,
+            pid=os.getpid(),
+            client_id=self.ib.client_id,
+            port=self.ib.port,
+            account=account_id,
+            halt=halt,
+        )
+        return True, owner_epoch
+
     def _place_close(
         self,
         spec: DeskSpec,
@@ -884,47 +1141,9 @@ class DeskRuntime:
         lane. An expired mandate NEVER blocks an exit (ruling 2b): the
         supervised mandate covers entries only, so it is not consulted."""
         s = spec.structure
-        blockers = self._guard.paper_blockers(spec.account_id)
-        if blockers:
-            self._note_once(
-                s.id,
-                "exit_blocked",
-                key=",".join(blockers),
-                blockers=blockers,
-                reason=st.exit_reason,
-            )
+        cleared, owner_epoch = self._exit_cleared(s.id, spec.account_id, st, halt=halt)
+        if not cleared:
             return None
-        existing = self._open_tagged(desk_order_ref(s.id))
-        if existing is None:
-            self._note_once(
-                s.id,
-                "exit_blocked",
-                key="duplicate_check_unreadable",
-                reason="duplicate_check_unreadable",
-                exit_reason=st.exit_reason,
-            )
-            return None
-        if existing:
-            self._note_once(
-                s.id,
-                "exit_blocked",
-                key="duplicate:" + ",".join(sorted(existing)),
-                reason="exit_tag_already_open",
-                orders=sorted(existing.values()),
-                exit_reason=st.exit_reason,
-            )
-            return None
-        owner_epoch = self._owner_epoch()
-        self._note_once(
-            s.id,
-            "exit_authority",
-            owner_epoch=owner_epoch,
-            pid=os.getpid(),
-            client_id=self.ib.client_id,
-            port=self.ib.port,
-            account=spec.account_id,
-            halt=halt,
-        )
         contract, order = self.ib._order(s, side, qty, limit)
         order.orderRef = desk_order_ref(s.id)
         order.account = spec.account_id
@@ -1032,3 +1251,531 @@ class DeskRuntime:
         if st.status is Status.EXIT_WORKING:
             st.exit_reason = ExitReason.FLATTEN.value
         self._close(spec, st, action, trade, halt=halt, now=now)
+
+    # -- Wave 2: equity positions ---------------------------------------------
+
+    def _equity_tick(
+        self,
+        spec: EquityDeskSpecV2,
+        st: StructureState,
+        book: BookState,
+        live: Mapping[str, Any],
+        *,
+        halt: bool,
+        flatten: bool,
+        paused: bool,
+        now: datetime,
+    ) -> None:
+        """One equity position, one tick: resolve the entry, drain the
+        working order's fills, record transitions, then act on the rules."""
+        sid = spec.intent_id
+        if self._equity_contract(spec) is None:
+            return  # unqualified or a different conId: noted, nothing acted on
+        if st.status is Status.PLANNED:
+            self._resolve_planned_by(sid, spec.intent_id, spec.entry_order_ref, st, live, now)
+            if st.status is not Status.ENTER_WORKING:
+                return
+        trade = self._trade_by(sid, spec.entry_order_ref, st, live)
+        if trade is None and st.status is Status.ENTER_WORKING:
+            self._equity_entry_without_trade(spec, st, book, now)
+            if st.status is not Status.OPEN:
+                return
+        if trade is None and st.status is Status.EXIT_WORKING and st.exit_order:
+            if not self._equity_exit_without_trade(spec, st, book, now):
+                return
+            if st.status is Status.CLOSED:
+                return
+        if trade is not None:
+            working = self._equity_working(spec, st, trade)
+            if working is None:
+                return  # unknown exposure: noted, never acted on
+            drain(st, working)
+        status = str(getattr(trade.orderStatus, "status", "")) if trade is not None else ""
+        self._transitions_by(sid, spec.position.quantity, st, status, now)
+        if st.status is Status.CLOSED:
+            return
+        quote = self._equity_quote(spec)
+        decision = decide_equity(spec.position.exit_policy, st, quote, now)
+        st.stop_ticks, st.stop_tick_at = decision.stop_ticks, decision.stop_tick_at
+        entry_working = (
+            st.status is Status.ENTER_WORKING and trade is not None and status not in DONE_STATES
+        )
+        if flatten:
+            if entry_working:
+                self._cancel(sid, trade, why="flatten")
+            elif st.status in (Status.OPEN, Status.EXIT_WORKING):
+                if st.status is Status.EXIT_WORKING:
+                    st.exit_reason = EquityExitReason.FLATTEN.value
+                flat = EquityClose(EquityExitReason.FLATTEN, st.open_qty, marketable_limit(quote))
+                self._equity_close(spec, st, flat, trade, book, halt=halt, now=now)
+            return
+        if paused and entry_working:
+            # entries-only pause: the unfilled remainder goes; exits never wait
+            self._cancel(sid, trade, why="entries_paused")
+            return
+        action = decision.action
+        if isinstance(action, EquityAbort):
+            if entry_working:
+                self._cancel(sid, trade, why=action.reason)
+            return
+        if isinstance(action, EquityClose):
+            self._equity_close(spec, st, action, trade, book, halt=halt, now=now)
+
+    def _equity_contract(self, spec: EquityDeskSpecV2) -> Any:
+        """The position's qualified ``Stock`` (SMART, USD), subscribed to
+        market data once per process; None (noted) when IBKR cannot qualify
+        it or resolves the symbol to another conId than the bound one."""
+        sid = spec.intent_id
+        held = self._equity_contracts.get(sid)
+        if held is not None:
+            return held
+        from ib_async import Stock  # lazy: optional dependency group
+
+        pos = spec.position
+        stock = Stock(pos.symbol, "SMART", "USD")
+        try:
+            self.ib._ib.qualifyContracts(stock)
+        except Exception as error:  # the class only: broker errors carry details
+            self._note_once(
+                sid, "equity_unqualified", key=type(error).__name__, error=type(error).__name__
+            )
+            return None
+        con_id = int(getattr(stock, "conId", 0) or 0)
+        if con_id != pos.con_id:
+            self._note_once(
+                sid,
+                "equity_contract_mismatch",
+                key=str(con_id),
+                symbol=pos.symbol,
+                qualified=con_id,
+                bound=pos.con_id,
+            )
+            return None
+        self.ib._subscribe(stock)
+        self._equity_contracts[sid] = stock
+        return stock
+
+    def _equity_release(self, sid: str) -> None:
+        """Drop a CLOSED position's claim on its market-data stream."""
+        stock = self._equity_contracts.pop(sid, None)
+        if stock is not None:
+            self.ib._unsubscribe(int(stock.conId))
+
+    def _equity_quote(self, spec: EquityDeskSpecV2) -> EquityQuote | None:
+        """The stock's latest NBBO from the shared stream: cents (rounded
+        down), real-time or not (``Ticker.marketDataType``), and its tick
+        instant; None without a stream."""
+        sub = self.ib._md.get(spec.position.con_id)
+        if sub is None:
+            return None
+        ticker = sub.ticker
+        at = getattr(ticker, "time", None)
+        if not isinstance(at, datetime) or at.tzinfo is None:
+            at = None
+        return EquityQuote(
+            bid_cents=_cents_floor(getattr(ticker, "bid", None)),
+            ask_cents=_cents_floor(getattr(ticker, "ask", None)),
+            realtime=getattr(ticker, "marketDataType", None) == REALTIME_MARKET_DATA,
+            at=at,
+        )
+
+    def _equity_working(
+        self, spec: EquityDeskSpecV2, st: StructureState, trade: Any
+    ) -> WorkingOrder | None:
+        """The lane a live stock order belongs to (a BUY in the entry lane is
+        the entry, a SELL of an open position the exit) with its cumulative
+        fills; None (noted) for anything else: unknown exposure."""
+        sid = spec.intent_id
+        side = str(getattr(trade.order, "action", ""))
+        con_id = int(getattr(trade.contract, "conId", 0) or 0)
+        role: Role | None = None
+        if side == "BUY" and st.status in ENTRY_LANE:
+            role = "entry"
+        elif side == "SELL" and st.status in (Status.OPEN, Status.EXIT_WORKING):
+            role = "exit"
+        order_id = str(getattr(trade.order, "orderId", "?"))
+        if role is None or con_id != spec.position.con_id:
+            self._note_once(
+                sid,
+                "unknown_exposure",
+                order=order_id,
+                side=side,
+                status=st.status.value,
+                con_id=con_id,
+            )
+            return None
+        filled = _shares(getattr(trade.orderStatus, "filled", 0) or 0)
+        if filled is None:
+            self._note_once(
+                sid,
+                DeskEvent.RECONCILIATION_REQUIRED.value,
+                key=f"order_fill:{order_id}",
+                why="order_fill_not_whole_shares",
+                order=order_id,
+            )
+            return None
+        avg = _decimal(getattr(trade.orderStatus, "avgFillPrice", 0)) if filled else None
+        return WorkingOrder(
+            role=role,
+            filled=filled,
+            avg_fill_price=avg if avg is not None and avg > 0 else Decimal(0),
+            order_id=order_id,
+        )
+
+    def _equity_executions(
+        self, spec: EquityDeskSpecV2, order_id: str | None
+    ) -> tuple[int, Decimal | None] | None:
+        """What today's executions PROVE of ``order_id`` (this client, the
+        bound conId): (shares, average price), a corrected execution counted
+        once at its latest version (same base exec id, highest last
+        segment); (0, None) when there are none; None when the view cannot
+        be read or does not add up to whole shares (never guessed)."""
+        if order_id is None or not order_id.isdigit():
+            return 0, None
+        oid = int(order_id)
+        try:
+            fills = list(self.ib._ib.fills())
+        except Exception:  # any failed read: nothing is proven
+            return None
+        latest: dict[str, tuple[int, Any]] = {}
+        for fill in fills:
+            ex = fill.execution
+            if getattr(ex, "orderId", None) != oid:
+                continue
+            if getattr(ex, "clientId", None) != self.ib.client_id:
+                continue
+            if int(getattr(fill.contract, "conId", 0) or 0) != spec.position.con_id:
+                continue
+            exec_id = str(getattr(ex, "execId", "") or "")
+            try:
+                version = int(exec_id.rpartition(".")[2], 16)
+            except ValueError:
+                return None
+            base = base_exec_id_of(exec_id)
+            if base not in latest or version > latest[base][0]:
+                latest[base] = (version, ex)
+        qty = 0
+        notional = Decimal(0)
+        for _, ex in latest.values():
+            shares = _shares(getattr(ex, "shares", None))
+            price = _decimal(getattr(ex, "price", None))
+            if shares is None or price is None or price <= 0:
+                return None
+            qty += shares
+            notional += price * shares
+        return (qty, notional / qty) if qty else (0, None)
+
+    def _equity_book_qty(self, spec: EquityDeskSpecV2, st: StructureState, book: BookState) -> int:
+        """Shares the book says the account holds in the position's
+        contract: its open shares plus every other live desk equity
+        position's on the same (account, conId)."""
+        total = max(st.open_qty, 0)
+        key = (spec.account_id, spec.position.con_id)
+        for other_sid, other in self._tick_equities.items():
+            if other_sid == spec.intent_id or (other.account_id, other.position.con_id) != key:
+                continue
+            other_st = book.structures.get(other_sid)
+            if other_st is not None and other_st.status is not Status.CLOSED:
+                total += max(other_st.open_qty, 0)
+        return total
+
+    def _reconcile(
+        self, spec: EquityDeskSpecV2, *, why: str, broker_qty: Decimal, book_qty: int
+    ) -> None:
+        self._note_once(
+            spec.intent_id,
+            DeskEvent.RECONCILIATION_REQUIRED.value,
+            key=f"{why}:{_qty_text(broker_qty)}/{book_qty}",
+            why=why,
+            symbol=spec.position.symbol,
+            con_id=spec.position.con_id,
+            broker_qty=_qty_text(broker_qty),
+            book_qty=book_qty,
+        )
+
+    def _equity_held(self, spec: EquityDeskSpecV2, book_qty: int) -> int | None:
+        """The bound account's whole shares in the position's conId; None
+        when unreadable (``holdings_unverifiable``) or not representable (a
+        fractional or non-STK row: ``reconciliation_required``)."""
+        try:
+            rows = self.ib.positions(spec.account_id)
+        except Exception as error:  # the class only: broker errors carry details
+            self._note_once(
+                spec.intent_id,
+                "holdings_unverifiable",
+                key=type(error).__name__,
+                error=type(error).__name__,
+            )
+            return None
+        mine = [r for r in rows if r.con_id == spec.position.con_id]
+        total = sum((r.qty for r in mine), Decimal(0))
+        if any(r.sec_type != "STK" for r in mine):
+            self._reconcile(spec, why="not_a_stock_row", broker_qty=total, book_qty=book_qty)
+            return None
+        if total != total.to_integral_value():
+            self._reconcile(spec, why="fractional_position", broker_qty=total, book_qty=book_qty)
+            return None
+        return int(total)
+
+    def _holdings_ok(self, spec: EquityDeskSpecV2, st: StructureState, book: BookState) -> bool:
+        """The holdings check every sell passes: the broker holds exactly
+        the shares the book says (never sell what is not shown held)."""
+        want = self._equity_book_qty(spec, st, book)
+        held = self._equity_held(spec, want)
+        if held is None:
+            return False
+        if held != want or st.open_qty > held:
+            self._reconcile(spec, why="holdings_mismatch", broker_qty=Decimal(held), book_qty=want)
+            return False
+        return True
+
+    def _equity_entry_without_trade(
+        self, spec: EquityDeskSpecV2, st: StructureState, book: BookState, now: datetime
+    ) -> None:
+        """The entry left the live view (filled or died, maybe while this
+        process was down): only broker evidence moves the book."""
+        sid = spec.intent_id
+        evidence = self._equity_executions(spec, st.entry_order)
+        if evidence is None:
+            self._note_once(sid, "entry_evidence_inconclusive", order=st.entry_order)
+            return
+        qty, avg = evidence
+        if qty:  # executions prove the fill: the position is open
+            drain(
+                st,
+                WorkingOrder(
+                    role="entry",
+                    filled=qty,
+                    avg_fill_price=avg or Decimal(0),
+                    order_id=str(st.entry_order),
+                ),
+            )
+        else:  # no execution today: only matching holdings prove it ended
+            want = self._equity_book_qty(spec, st, book)
+            held = self._equity_held(spec, want)
+            if held is None or held != want:
+                self._note_once(sid, "entry_evidence_inconclusive", order=st.entry_order)
+                return
+        if st.filled_qty > 0:
+            st.to(Status.OPEN, now)
+            self._event(
+                "entry_filled",
+                structure=sid,
+                filled=st.filled_qty,
+                avg=str(st.entry_fill),
+                via="evidence",
+            )
+        else:
+            self._close_unentered(st, "entry_unfilled", now, sid)
+
+    def _equity_exit_without_trade(
+        self, spec: EquityDeskSpecV2, st: StructureState, book: BookState, now: datetime
+    ) -> bool:
+        """The exit left the live view (filled or expired, maybe while this
+        process was down). Record what the broker PROVES filled, then the
+        holdings check. True: the book agrees with the broker (closed now,
+        or a remainder the normal flow re-sells). False: held, noted.
+
+        Shares flat beyond what today's executions explain wait for the
+        operator's ``RESOLVE-FLAT-<sid>`` file, as for options."""
+        sid = spec.intent_id
+        evidence = self._equity_executions(spec, st.exit_order)
+        if evidence is None:
+            self._note_once(sid, "exit_evidence_inconclusive", order=st.exit_order)
+            return False
+        executed, avg = evidence
+        if executed and drain(
+            st,
+            WorkingOrder(
+                role="exit",
+                filled=executed,
+                avg_fill_price=avg or Decimal(0),
+                order_id=str(st.exit_order),
+            ),
+        ):
+            self._event(
+                "exit_fill",
+                structure=sid,
+                filled=st.exit_filled_qty,
+                avg=str(st.exit_fill),
+                via="evidence",
+            )
+        want = self._equity_book_qty(spec, st, book)
+        held = self._equity_held(spec, want)
+        if held is None:
+            return False
+        if held == want:
+            if st.open_qty <= 0:
+                st.to(Status.CLOSED, now)
+                st.close_reason = st.exit_reason or "flat"
+                self._event(
+                    "closed",
+                    structure=sid,
+                    reason=st.close_reason,
+                    exit_fill=str(st.exit_fill),
+                    via="evidence",
+                )
+            return True
+        if st.open_qty > 0 and held == want - st.open_qty:
+            resolve = self.paths.resolve_flat(sid)
+            if resolve.exists():
+                unpriced = st.open_qty
+                st.exit_filled_qty += unpriced
+                st.exit_unpriced_qty += unpriced
+                st.to(Status.CLOSED, now)
+                st.close_reason = "operator_confirmed_flat"
+                os.replace(resolve, resolve.with_name(resolve.name + ".applied"))
+                self._event(
+                    "closed", structure=sid, reason=st.close_reason, unpriced_shares=unpriced
+                )
+                return True
+            self._note_once(
+                sid,
+                "exit_flat_unexplained",
+                open_qty=st.open_qty,
+                exit_order=st.exit_order,
+                operator=f"verify flat at the broker, then touch {resolve.name}",
+            )
+            return False
+        self._reconcile(spec, why="holdings_mismatch", broker_qty=Decimal(held), book_qty=want)
+        return False
+
+    def _equity_close(
+        self,
+        spec: EquityDeskSpecV2,
+        st: StructureState,
+        action: EquityClose,
+        trade: Any,
+        book: BookState,
+        *,
+        halt: bool,
+        now: datetime,
+    ) -> None:
+        """Start or keep an equity exit: SELL the open shares at the bid,
+        repriced (cancel, confirm, merge the final fills, replace the
+        remainder) only when the bid falls below the working limit."""
+        sid = spec.intent_id
+        limit = action.limit_cents
+        if limit is None:
+            self._note_once(sid, "exit_pending_no_quote", reason=action.reason.value)
+            return
+        if halt:
+            self._note_once(sid, "halt_no_new_orders", reason=action.reason.value)
+            return
+        if st.status is Status.OPEN:
+            if st.open_qty <= 0 or not self._holdings_ok(spec, st, book):
+                return
+            st.to(Status.EXIT_WORKING, now)
+            st.exit_reason = action.reason.value
+            self._event("exit_begin", structure=sid, reason=action.reason.value, qty=st.open_qty)
+            rule = EXIT_EVENTS.get(action.reason)
+            if rule is not None:
+                policy = spec.position.exit_policy
+                self._event(
+                    rule.value,
+                    structure=sid,
+                    symbol=spec.position.symbol,
+                    qty=st.open_qty,
+                    bid_cents=limit,
+                    stop_cents=policy.stop_price_cents,
+                    target_cents=policy.target_price_cents,
+                    stop_ticks=st.stop_ticks,
+                    deadline_session=policy.exit_deadline_session.isoformat(),
+                )
+            self._place_equity_sell(spec, st, st.open_qty, limit, halt=halt)
+            return
+        if st.status is not Status.EXIT_WORKING:
+            return
+        if trade is not None and str(trade.orderStatus.status) not in DONE_STATES:
+            working_limit = _cents_floor(getattr(trade.order, "lmtPrice", None))
+            if working_limit is not None and working_limit <= limit:
+                return  # at or below the bid: still marketable
+            if not self._cancel(sid, trade, why="reprice"):
+                return
+            st.exit_cycles += 1
+        if trade is not None:
+            working = self._equity_working(spec, st, trade)
+            if working is None:
+                return
+            drain(st, working)
+        if st.open_qty <= 0:
+            return  # the final fills flattened it: the next tick closes the book
+        if not self._holdings_ok(spec, st, book):
+            return
+        self._place_equity_sell(spec, st, st.open_qty, limit, halt=halt)
+
+    def _place_equity_sell(
+        self,
+        spec: EquityDeskSpecV2,
+        st: StructureState,
+        qty: int,
+        limit_cents: int,
+        *,
+        halt: bool,
+    ) -> Any:
+        """Send one guarded SELL: whole shares, DAY limit at ``limit_cents``,
+        regular hours only, ``trex:desk:<intent_id>``, the bound account."""
+        sid = spec.intent_id
+        stock = self._equity_contracts.get(sid)
+        if stock is None or qty <= 0:
+            return None
+        cleared, owner_epoch = self._exit_cleared(sid, spec.account_id, st, halt=halt)
+        if not cleared:
+            return None
+        from ib_async import LimitOrder  # lazy: optional dependency group
+
+        order = LimitOrder(
+            "SELL",
+            qty,
+            float(Decimal(limit_cents) / 100),  # the wire's float, from exact cents
+            tif="DAY",
+            outsideRth=False,
+            transmit=True,
+            orderRef=desk_order_ref(sid),
+            account=spec.account_id,
+        )
+        trade = self.ib._ib.placeOrder(stock, order)
+        self.orders[sid] = trade
+        st.exit_order = str(trade.order.orderId)
+        st.exit_order_seen, st.exit_order_notional, st.exit_order_unpriced = 0, None, 0
+        self._event(
+            "exit_order",
+            structure=sid,
+            side="SELL",
+            qty=qty,
+            limit_cents=limit_cents,
+            order=st.exit_order,
+            reason=st.exit_reason,
+            owner_epoch=owner_epoch,
+        )
+        return trade
+
+    def _equity_watch(
+        self, equities: Mapping[str, EquityDeskSpecV2], book: BookState, now: datetime
+    ) -> None:
+        """What ``monitor.json`` tells trex.exit_watch about equity exits:
+        the symbols guarded (shares held) and those without a fresh
+        real-time quote inside the regular session, since when."""
+        guarded: set[str] = set()
+        fresh: set[str] = set()
+        for sid, spec in equities.items():
+            st = book.structures.get(sid)
+            if st is None or st.status in (Status.PLANNED, Status.CLOSED) or st.open_qty <= 0:
+                continue
+            symbol = spec.position.symbol
+            guarded.add(symbol)
+            quote = self._equity_quote(spec)
+            if (
+                quote is not None
+                and quote.realtime
+                and quote.bid_cents is not None
+                and quote.at is not None
+                and now.timestamp() - quote.at.timestamp() <= QUOTE_FRESH_S
+            ):
+                fresh.add(symbol)
+        self._quote_guarded = guarded
+        if not in_regular_session(now):
+            self._quote_blind = {}
+            return
+        stamp = now.isoformat()
+        self._quote_blind = {s: self._quote_blind.get(s, stamp) for s in sorted(guarded - fresh)}

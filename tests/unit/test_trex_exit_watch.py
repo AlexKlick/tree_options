@@ -24,6 +24,7 @@ from tree_options.trex.exit_watch import (
     GATEWAY_SETTLE_S,
     HEALTH_STALE_S,
     HEARTBEAT_STALE_S,
+    QUOTE_BLIND_S,
     TICK_FAILURES_BAD,
     TOUCH_BLIND_S,
     BookObs,
@@ -67,6 +68,7 @@ def _obs(
     gateway_since: float | None = NOON - 3600,
     market: bool = True,
     touch_window: bool | None = None,
+    quote_window: bool | None = None,
 ) -> ExitObs:
     return ExitObs(
         now=now,
@@ -76,6 +78,7 @@ def _obs(
         market=market,
         unit_state="active",
         touch_window=touch_window,
+        quote_window=quote_window,
     )
 
 
@@ -564,3 +567,118 @@ class TestTouchBlind:
         book = BookObs("p", NOON - 20, {**_health(NOON), "calendar_horizon_warn": True})
         state, _ = decide(_obs([book]), {}, urgency=LOUD)
         assert state["books"][0]["calendar_horizon_warn"] is True
+
+
+# ------------------------------------------------- Wave 2: equity quote blind
+#
+# A desk-owned equity has no resting broker stop: its stop and target exits
+# exist only while the desk sees REAL-TIME quotes (lane C writes
+# ``quote_guarded`` / ``quote_blind`` into monitor.json). Two blind minutes
+# inside the regular session is an alarm that outranks a blind touch exit.
+
+
+def _quote_blind_book(since: float, plan: str = "desk-paper", **health: Any) -> BookObs:
+    blind = {"SPY": datetime.fromtimestamp(since, ET).isoformat()}
+    return BookObs(
+        plan,
+        NOON - 20,
+        {**_health(NOON, **health), "quote_guarded": ["SPY"], "quote_blind": blind},
+    )
+
+
+class TestQuoteBlind:
+    def test_two_blind_minutes_in_the_session_is_an_alarm(self) -> None:
+        status, since, detail = classify(_obs([_quote_blind_book(NOON - QUOTE_BLIND_S)]))
+        assert status == "quote_blind"
+        assert since == pytest.approx(NOON - QUOTE_BLIND_S)
+        assert "SPY" in detail and "real-time" in detail
+
+    def test_a_short_gap_is_not_an_alarm(self) -> None:
+        assert classify(_obs([_quote_blind_book(NOON - QUOTE_BLIND_S + 5)]))[0] == "ok"
+
+    def test_outside_the_session_window_it_is_not_an_alarm(self) -> None:
+        book = _quote_blind_book(NOON - 3600)
+        assert classify(_obs([book], market=False))[0] == "ok"
+        assert classify(_obs([book], quote_window=False))[0] == "ok"
+
+    def test_it_outranks_a_blind_touch_exit_but_not_a_down_monitor(self) -> None:
+        books = [_blind_book(NOON - 3600, "a"), _quote_blind_book(NOON - 3600, "b")]
+        assert classify(_obs(books))[0] == "quote_blind"
+        assert classify(_obs([*books, _dead("c")]))[0] == "monitor_down"
+
+    def test_garbage_entries_are_ignored(self) -> None:
+        health = {**_health(NOON), "quote_blind": {"SPY": 3, "QQQ": "never", "X": None}}
+        assert classify(_obs([BookObs("p", NOON - 20, health)]))[0] == "ok"
+        assert (
+            classify(_obs([BookObs("p", NOON - 20, {**_health(NOON), "quote_blind": []})]))[0]
+            == "ok"
+        )
+
+    def test_alarm_names_the_symbol_and_nothing_sensitive(self) -> None:
+        state, actions = decide(_obs([_quote_blind_book(NOON - 900)]), {}, urgency=LOUD)
+        assert state["status"] == "quote_blind"
+        assert state["books"][0]["blind"] == ["SPY"]
+        (note,) = actions
+        assert note.title == "trex: equity stop blind" and note.priority == "high"
+        assert "SPY" in note.message and "15m" in note.message
+        for banned in ("http", "$", ".ts.net", "DU", "desk-paper:"):
+            assert banned not in note.message
+
+    def test_recovery_says_the_quotes_are_back(self) -> None:
+        prior = {
+            "status": "quote_blind",
+            "since": NOON - 1800,
+            "last_notified_status": "quote_blind",
+            "last_notified_at": NOON - 900,
+        }
+        book = BookObs(
+            "desk-paper",
+            NOON - 20,
+            {**_health(NOON), "quote_guarded": ["SPY"], "quote_blind": {}},
+        )
+        state, actions = decide(_obs([book]), prior, urgency=DAY)
+        assert state["status"] == "ok"
+        (note,) = actions
+        assert note.title == "trex: equity quotes back"
+        assert "30m" in note.message
+
+    def test_a_session_end_while_blind_is_said_honestly(self) -> None:
+        prior = {
+            "status": "quote_blind",
+            "since": NOON - 1800,
+            "last_notified_status": "quote_blind",
+            "last_notified_at": NOON - 900,
+        }
+        book = _quote_blind_book(NOON - 3600)
+        state, actions = decide(_obs([book], quote_window=False), prior, urgency=DAY)
+        assert state["status"] == "ok"
+        (note,) = actions
+        assert note.title == "trex: equity quotes back"
+        assert "session ended" in note.message and "SPY" in note.message
+
+    def test_watch_once_bounds_the_window_by_the_calendar_close(self, tmp_path: Path) -> None:
+        """13:30 on the 13:00 early close: inside the 09:00-16:15 watch, but
+        no regular session to quote in."""
+        now = datetime(2026, 11, 27, 13, 30, tzinfo=ET).timestamp()
+        root = tmp_path / "state"
+        health = {
+            "at": now,
+            "connected": True,
+            "tick_failures": 0,
+            "last_tick_ok_at": now,
+            "quote_guarded": ["SPY"],
+            "quote_blind": {"SPY": datetime.fromtimestamp(now - 3600, ET).isoformat()},
+        }
+        _write_book(root, "desk-paper", ("open",), now - 20, health)
+        gw = tmp_path / "gateway.json"
+        gw.write_text(json.dumps({"status": "ok", "since": now - 9999, "checked_at": now}))
+        state = watch_once(
+            tmp_path / "exit_watch.json",
+            root=root,
+            gateway_state=gw,
+            notify=lambda *a: True,
+            now=now,
+            urgency=LOUD,
+            unit_state=None,
+        )
+        assert state["market"] is True and state["status"] == "ok"

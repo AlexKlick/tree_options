@@ -34,7 +34,14 @@ counts, since exposure can't be ruled out) and classifies:
   new one has not yet re-confirmed) without a price arriving: held
   silently, never a recovery. It clears only when a blind underlying gets
   an accepted spot (``spot_ok``) or stops being guarded (``touch_guarded``:
-  its exposure closed); only then does "touch exit back" go out.
+  its exposure closed); only then does "touch exit back" go out;
+* ``quote_blind`` (Wave 2 equities): the desk is healthy but a held
+  equity (``monitor.json`` ``quote_guarded``) has had no fresh REAL-TIME
+  quote (``quote_blind``) for QUOTE_BLIND_S inside the regular session
+  (calendar open to close, early closes included). An equity has no
+  resting broker stop, so its stop and target exits do not exist while
+  blind; it outranks a blind touch exit. The recovery push says whether
+  quotes came back or the session merely ended without them.
 
 Pushes follow trex.alert_policy; the verdict goes to
 ``~/.local/state/trex/exit_watch.json`` for the cockpit banner. Detection
@@ -67,7 +74,7 @@ from tree_options.trex.alert_policy import (
     urgency,
 )
 from tree_options.trex.clock import ET
-from tree_options.trex.spot import in_touch_window
+from tree_options.trex.spot import in_touch_window, session_bounds
 
 STATE_ROOT = Path.home() / ".local" / "state" / "trex"
 DEFAULT_STATE = STATE_ROOT / "exit_watch.json"
@@ -82,10 +89,13 @@ ATTRIBUTION_MAX_S = 900  # a non-alarming gateway can excuse an outage this long
 TICK_FAILURES_BAD = 3
 TICK_SILENT_S = 180
 TOUCH_BLIND_S = 600  # the Polygon fallback alone is 15 min delayed; 10 blind min is an outage
+# a real-time SPY quote ticks many times a second in the session: two
+# minutes without one is a dead stream, and an equity has no broker stop
+QUOTE_BLIND_S = 120
 MAX_EVENTS = 30
 
 EXPOSED = frozenset({"enter_working", "open", "exit_working"})
-BAD = frozenset({"monitor_down", "monitor_failing", "touch_blind"})
+BAD = frozenset({"monitor_down", "monitor_failing", "touch_blind", "quote_blind"})
 HEALTHY = frozenset({"ok", "idle"})
 TOUCH_INCIDENT = frozenset({"touch_blind", "touch_suspended"})  # neither bad nor healthy: held
 GATEWAY_ALARMS = gateway_watch.BAD  # states the gateway watchdog pushes for
@@ -94,6 +104,7 @@ _SEVERITY = (
     "ok",
     "waiting_for_gateway",
     "touch_blind",
+    "quote_blind",
     "monitor_failing",
     "monitor_down",
 )
@@ -117,6 +128,8 @@ class ExitObs:
     unit_state: str | None  # `systemctl --user is-active trex-monitor`
     # inside trex.spot.touch_window (calendar close); None: same as market
     touch_window: bool | None = None
+    # inside the regular session (calendar open to close); None: same as market
+    quote_window: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +250,17 @@ def _book_verdict(
             ok_at,
             (f"{b.plan}: {failures} checks failed in a row (last: {h.get('last_error')})"),
         )
+    quote = _long_quote_blind(h, obs)
+    if quote:
+        first = min(quote.values())
+        return (
+            "quote_blind",
+            first,
+            (
+                f"{b.plan}: no fresh real-time {', '.join(sorted(quote))} quote for "
+                f"{span_label(obs.now - first)}; the equity stop and target exits can't fire"
+            ),
+        )
     blind = _long_blind(h, obs)
     if blind:
         first = min(blind.values())
@@ -258,13 +282,39 @@ def _long_blind(health: dict[str, Any] | None, obs: ExitObs) -> dict[str, float]
     to, never replaces, the others."""
     raw = health.get("spot_blind") if health else None
     window = obs.market if obs.touch_window is None else obs.touch_window
+    return _aged(raw, window, obs.now, TOUCH_BLIND_S)
+
+
+def _long_quote_blind(health: dict[str, Any] | None, obs: ExitObs) -> dict[str, float]:
+    """Held equities without a fresh real-time quote for QUOTE_BLIND_S,
+    inside the regular session only. Unparseable entries are ignored."""
+    raw = health.get("quote_blind") if health else None
+    return _aged(raw, _quote_window(obs), obs.now, QUOTE_BLIND_S)
+
+
+def _quote_window(obs: ExitObs) -> bool:
+    return obs.market if obs.quote_window is None else obs.quote_window
+
+
+def _aged(raw: Any, window: bool, now: float, min_s: float) -> dict[str, float]:
+    """``{symbol: since}`` entries at least ``min_s`` old, inside the window."""
     if not window or not isinstance(raw, dict):
         return {}
     out: dict[str, float] = {}
     for sym, since in raw.items():
         at = _epoch(since)
-        if isinstance(sym, str) and at is not None and obs.now - at >= TOUCH_BLIND_S:
+        if isinstance(sym, str) and at is not None and now - at >= min_s:
             out[sym] = at
+    return out
+
+
+def _quote_symbols(obs: ExitObs) -> set[str]:
+    """Symbols any book still reports without a real-time quote (any age)."""
+    out: set[str] = set()
+    for b in obs.books:
+        raw = (b.health or {}).get("quote_blind")
+        if isinstance(raw, dict):
+            out.update(s for s in raw if isinstance(s, str))
     return out
 
 
@@ -290,6 +340,8 @@ def _assess(
         }
         if status == "touch_blind":
             row["blind"] = sorted(_long_blind(b.health, obs))
+        elif status == "quote_blind":
+            row["blind"] = sorted(_long_quote_blind(b.health, obs))
         if b.health and b.health.get("calendar_horizon_warn") is True:
             row["calendar_horizon_warn"] = True  # regenerate the trex calendar
         rows.append(row)
@@ -325,6 +377,13 @@ def _message(
         return "trex: touch exit blind", (
             f"No fresh price for {', '.join(blind or ['an underlying'])} {lasting}. "
             f"Open positions have no touch exit; time-stop and expiry exits still work."
+        )
+    if status == "quote_blind":
+        # ticker symbols only: no plan names, amounts, hosts or accounts
+        return "trex: equity stop blind", (
+            f"No real-time quote for {', '.join(blind or ['an equity'])} {lasting}. "
+            f"Equity positions have no broker stop: their stop and target exits can't fire, "
+            f"and the deadline exit waits for a quote to price it."
         )
     if status == "monitor_down":
         return "trex: exit machine down", (
@@ -366,20 +425,43 @@ def decide(
     else:
         since = since_hint if since_hint is not None else obs.now
 
+    quote_symbols: list[str] = []
+    if status == "quote_blind":
+        quote_symbols = sorted(
+            {s for r in rows if r["status"] == status for s in r.get("blind", [])}
+        )
+
     def recovery() -> tuple[str, str]:
         touch = prior.get("last_notified_status") == "touch_blind"
+        quote = prior.get("last_notified_status") == "quote_blind"
         title = "trex: touch exit back" if touch else "trex: exit machine back"
+        if quote:
+            title = "trex: equity quotes back"
         if status == "idle":
             return title, "No open positions left to guard."
         was = prior.get("since")
         outage = f" after {span_label(obs.now - was)}" if isinstance(was, (int, float)) else ""
+        if quote and not _quote_window(obs):
+            raw_prior = prior.get("quote_symbols")
+            named = (
+                {s for s in raw_prior if isinstance(s, str)}
+                if isinstance(raw_prior, list)
+                else set()
+            )
+            still = sorted(named | _quote_symbols(obs)) or ["an equity"]
+            return title, (
+                f"The session ended with no real-time quote for {', '.join(still)}{outage}; "
+                f"its stop and target exits resume once a quote arrives."
+            )
+        if quote:
+            return title, f"Real-time quotes again; the equity exits are guarding the book{outage}."
         if touch and prior_syms and not any(s in fresh for s in prior_syms):
             return title, f"The positions that had no price are closed{outage}."
         if touch:
             return title, f"Fresh prices again; the touch exit is guarding the book{outage}."
         return title, f"The monitor is guarding the book again{outage}."
 
-    blind = touch_symbols if status == "touch_blind" else []
+    blind = touch_symbols if status == "touch_blind" else quote_symbols
     push, notified = next_push(
         status=status,
         now=obs.now,
@@ -407,6 +489,7 @@ def decide(
         "books": rows,
         "health_missing_since": missing,
         "touch_symbols": touch_symbols,
+        "quote_symbols": quote_symbols,
         **notified,
         "events": events,
     }
@@ -471,6 +554,8 @@ def watch_once(
 ) -> dict[str, Any]:
     prior = _read_json(state_path) or {}
     gw_status, gw_since = _gateway(gateway_state, now)
+    local = datetime.fromtimestamp(now, ET)
+    bounds = session_bounds(local.date())
     obs = ExitObs(
         now,
         scan_books(root),
@@ -478,7 +563,8 @@ def watch_once(
         gw_since,
         market_hours(now),
         unit_state,
-        touch_window=in_touch_window(datetime.fromtimestamp(now, ET)),
+        touch_window=in_touch_window(local),
+        quote_window=bounds is not None and bounds[0] <= now < bounds[1],
     )
     state, actions = decide(obs, prior, urgency=urgency)
     for action in actions:
