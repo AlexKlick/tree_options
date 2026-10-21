@@ -1179,3 +1179,162 @@ def _lock_free(path: Path) -> bool:
             return False
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         return True
+
+
+# ------------------------------------- Wave 2b: the owner's loss facts and loop
+
+
+def _equity_book(rig: Rig, **state: Any) -> None:
+    """The fixture equity position registered, its book entry set to ``state``."""
+    from tests.unit.trex_fakes import equity_effect
+
+    rig.runtime.register(equity_effect())
+    book = BookState.load(rig.paths.book(), ["eq-spy-001"])
+    st = book.structures["eq-spy-001"]
+    for name, value in state.items():
+        setattr(st, name, value)
+    book.save(rig.paths.book())
+
+
+def test_loss_facts_count_a_working_equity_entry_at_its_full_max_loss(rig):
+    _equity_book(rig)  # PLANNED: registered, not sent yet
+    open_loss, day_loss = rig.desk.loss_facts(T0.date())
+    # 2 x 671.50 = 1343.00 notional: the 20% gap reserve (268.60) beats the stop loss (13.00)
+    assert (open_loss, day_loss) == (Decimal("268.60"), Decimal(0))
+    _equity_book(rig, status=Status.ENTER_WORKING, filled_qty=1)
+    assert rig.desk.loss_facts(T0.date())[0] == Decimal("268.60"), "the whole entry is reserved"
+
+
+def test_loss_facts_count_open_equity_shares_and_todays_realized_loss(rig):
+    _equity_book(
+        rig,
+        status=Status.EXIT_WORKING,
+        filled_qty=2,
+        entry_fill=Decimal("671.50"),
+        exit_filled_qty=1,
+        exit_fill=Decimal("665.00"),
+        updated_at=T0,
+    )
+    open_loss, day_loss = rig.desk.loss_facts(T0.date())
+    assert open_loss == Decimal("134.30"), "one open share: ceil(671.50 x 20%)"
+    assert day_loss == Decimal("6.50"), "one share sold 6.50 under its fill"
+    _equity_book(rig, exit_unpriced_qty=1)
+    assert rig.desk.loss_facts(T0.date())[1] is None, "an unpriced exit: unknown day loss"
+
+
+def test_start_retires_earlier_epoch_approvals_and_names_stale_proposals(rig):
+    from tests.unit.trex_fakes import entry_proposal, mandate_v2
+    from tree_options.trex.contracts import model_bytes, proposal_bytes
+
+    proposal = entry_proposal()  # composed under the fixture epoch, not EPOCH
+    folder = rig.paths.root / "proposals"
+    folder.mkdir(parents=True)
+    (folder / f"{proposal.proposal_id}.json").write_bytes(proposal_bytes(proposal))
+    pending = rig.sup.entry_mandate("eq-spy-001")
+    pending.parent.mkdir(parents=True)
+    pending.write_bytes(model_bytes(mandate_v2(proposal)))
+    started = rig.desk.start()
+    assert started["retired_mandates"] == ["eq-spy-001"]
+    assert started["stale_proposals"] == [proposal.proposal_id]
+    assert not pending.exists()
+    (event,) = _events(rig, "approvals_invalidated")
+    assert (event["owner_epoch"], event["retired_mandates"]) == (EPOCH, ["eq-spy-001"])
+
+
+def _queue(rig: Rig, kind: str, args: dict[str, Any]) -> str:
+    """One command through the web's own store (accepted, never applied)."""
+    import uuid
+
+    from tests.unit.trex_fakes import FakeCommandAuthority
+    from tree_options.trex.contracts import model_document, parse_command
+    from tree_options.trex_web.command_store import CommandStore
+
+    now = rig.clock.now
+    doc = {
+        "schema": "trex-command/1",
+        "idempotency_key": str(uuid.uuid4()),
+        "kind": kind,
+        "args": args,
+        "issued_at": now.isoformat(),
+        "expires_at": shift_instant(now, 120).isoformat(),
+    }
+    auth = FakeCommandAuthority(clock=rig.clock)
+    actor = auth.verify(auth.make_request(json.dumps(doc).encode()))
+    command = parse_command({**doc, "issued_by": model_document(actor)})
+    CommandStore(rig.paths.root).submit(command, now=now)
+    return command.idempotency_key
+
+
+def _answer(rig: Rig, key: str) -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads(
+        (rig.paths.root / "commands" / f"{key}.result.json").read_text()
+    )
+    return loaded
+
+
+def test_commands_are_applied_outside_the_session_but_entries_refuse_there(rig):
+    rig.clock.now = T0.replace(hour=18)
+    halt = _queue(rig, "halt", {"reason": "night"})
+    compose = _queue(
+        rig,
+        "compose_entry",
+        {"program_id": "desk-miner", "candidate_id": "dv1", "asset_kind": "option"},
+    )
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=1) == 0
+    assert _answer(rig, halt)["status"] == "applied" and rig.paths.halt().exists()
+    refused = _answer(rig, compose)
+    assert (refused["status"], refused["reason"]) == ("refused", "outside_regular_session")
+
+
+def test_the_loop_consumes_commands_after_the_tick_and_before_the_inbox(rig):
+    rig.ready()
+    rig.request()
+    pause = _queue(rig, "pause_entries", {"reason": "before the inbox"})
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=1) == 0
+    assert _answer(rig, pause)["status"] == "applied"
+    result = rig.result()
+    assert (result["status"], result["blockers"]) == ("blocked", ["entries_paused"])
+    assert rig.gw.trades == [], "the pause stopped the inbox entry in the same iteration"
+
+
+def test_a_books_failure_never_stops_the_exit_loop(rig, monkeypatch):
+    def broken(*_: Any, **__: Any) -> None:
+        raise ValueError("a books bug")
+
+    rig.ready()
+    monkeypatch.setattr(rig.desk.books, "step", broken)
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=2) == 0
+    (failed,) = _events(rig, "books_failed")
+    assert failed["error"] == "ValueError"
+
+    def lost(*_: Any, **__: Any) -> None:
+        raise ConnectionError(SECRET)
+
+    monkeypatch.setattr(rig.desk.books, "step", lost)
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=2) == EXIT_DISCONNECTED
+    (gone,) = _events(rig, "gateway_lost")
+    assert gone["stage"] == "books"
+
+
+def test_connect_hooks_run_once_per_connection(rig):
+    seen: list[int] = []
+    rig.runtime.connect_hooks.append(lambda: seen.append(1))
+    rig.runtime.tick()
+    rig.runtime.tick()
+    rig.runtime.beat()
+    assert seen == [1], "the first connected observation only"
+    rig.gw.is_connected = False
+    assert rig.runtime.observe_connection() is False
+    rig.gw.is_connected = True
+    rig.runtime.beat()
+    assert seen == [1, 1], "and each reconnect"
+    edges = [e["first"] for e in _events(rig, "gateway_connected")]
+    assert edges == [True, False]
+
+
+def test_the_desk_refreshes_its_status_files_after_a_reconnect(rig):
+    calls: list[str] = []
+    rig.desk.books.request_refresh = lambda: calls.append("refresh")  # type: ignore[method-assign]
+    rig.runtime.connect_hooks[:] = [rig.desk.books.request_refresh]
+    rig.runtime.tick()
+    assert calls == ["refresh"]

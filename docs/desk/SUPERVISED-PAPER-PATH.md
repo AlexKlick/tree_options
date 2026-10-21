@@ -1,8 +1,12 @@
 # Supervised paper path
 
-Status: authority layer LANDED as library + CLI; no broker wiring yet.
-`execution_authorized` remains a property of an operator-granted mandate,
-never of this code. Nothing here can arm itself.
+Status: authority layer LANDED as library + CLI; the supervised desk
+process owns the broker session (clientId 83). Wave 2b (below, "The
+owner-driven paper desk") makes it the single owner of the command-driven
+paper desk: per-trade owner approval, equities beside options, books and
+reconciliation. `execution_authorized` remains a property of an
+owner-granted mandate, never of this code. Nothing here can arm itself.
+PAPER ONLY.
 
 ## What this is
 
@@ -314,6 +318,118 @@ Sunday-12:00-ET cold restart and the Monday-morning checklist are
    file is gone. To flatten out of a halt: `desk_cli resume` (removes
    both) then `desk_cli flatten` again. The CLI prints this warning
    whenever `flatten` sees a HALT kill file.
+
+## The owner-driven paper desk (Wave 2b, lane F)
+
+The supervised desk process (`trex-desk.service`) is the ONE owner of the
+paper desk. Every owner action is a `trex-command/1` the web backend
+authenticates and QUEUES in `desk-paper/commands/` (its write access is
+narrowed to that directory); this process alone applies it (coordinator
+ruling 2026-10-21, kill switches included). Contracts:
+`docs/product/WAVE2-CONTRACTS.md`. Code: `trex/supervised_desk.py` (wiring
+and loop), `trex/desk_commands.py` (consumer), `trex/desk_entries.py`
+(compose / approve / reject), `trex/desk_books.py` (ledger and status
+files), `trex/desk_runtime.py` (exits, unchanged, plus the reconnect hook).
+
+### One loop iteration
+
+1. The runtime's `tick` (in session) or `beat` (outside it): exits, fills
+   into the book, health, heartbeat. The first connected observation of a
+   process, and every reconnect edge, is `gateway_connected` and asks the
+   books for an immediate status refresh.
+2. Books: today's executions (all clients, `IbkrTrex.executions`) and late
+   commission reports are recorded once in `ledger/executions.jsonl` and
+   folded into the append-only `ledger/events.jsonl` (idempotent: a replay
+   books nothing; a correction books its adjustment once); attribution comes
+   from the proposal each SENT intent's consumed mandate names, exits through
+   the desk specs. `ledger/holdings.json` (`trex-holdings/1`) is the one
+   holdings projection every reader uses. `ledger/reconciliation.json` and
+   `ledger/risk-snapshot.json` are rewritten every 60 s, at once after a
+   (re)connect, and before every compose and approve, from ONE broker read.
+   Anything unreadable or unrepresentable makes them `unavailable` (entries
+   blocked, never exits); a status change is a `reconciliation_clean` /
+   `reconciliation_required` event (urgent push) and a ledger marker.
+3. Commands, in `issued_at` order, in or out of the session (a kill switch
+   never waits for the open): claim by a no-replace rename to
+   `<key>.claimed.json` (exactly once), validate (the contract shape, the
+   key, the web's intake result with the same kind and body hash, which
+   binds the actor; `command_expired`; `command_not_yet_valid`), apply,
+   answer in `<key>.result.json` (`applied` / `refused` / `failed`,
+   `result.answered_by = "trex-desk"`) plus a `command_applied` /
+   `command_refused` event. A bug while connected is a `failed` answer
+   (`apply_error`); a lost gateway is exit 6 and the unanswered claim is
+   answered `failed` (`owner_stopped_before_result`, never re-applied) at
+   the next start.
+4. The v1 entry inbox (`requests/`, the canary path, unchanged), in session.
+
+### The commands
+
+| Kind | Applied as |
+| --- | --- |
+| `compose_entry` | regular session; no `PAUSE_ENTRIES` / `HALT`; the candidate is `proposal-drafts/<candidate_id>.json` (`trex-entry-proposal-draft/1`: lane A's option drafts, or `desk_entries.equity_draft`) of the command's program and asset kind, rebound to the desk's account, inside its horizon; fresh books; owner facts (`admission.owner_fact_blockers`); the wire preflight (allowlist, conId, real-time quote, cash); the kind-aware screening with this session's entry count and the pending-entry reservation; then `proposals/<proposal_id>.json` (canonical bytes, send deadline min(+600 s, horizon, close)) and `proposal_composed` |
+| `approve_entry` | the stored proposal (`proposal_unknown`), not rejected; an already SENT proposal answers the stored result of the approval that sent it (`duplicate_of`, nothing re-sent); `approval_blockers` against the LIVE owner epoch and profile digest; kill files; fresh books and owner facts; preflight and screening again; `grant_entry_mandate` (or the live, unconsumed mandate an earlier approval of the same proposal left when a kill file stopped it); kill files; intent; permit (consumes the mandate); `register`; kill files; exactly one `send`; `entry_approved` |
+| `reject_entry` | `proposals/<id>.rejected.json` tombstone and any unconsumed mandate of that proposal retired; a sent proposal refuses `mandate_already_consumed` |
+| `pause_entries` / `resume_entries` | `trex.pause` with the actor `<ingress>:<sub>` and the command key in its audit; `entries_paused` / `entries_resumed` |
+| `halt` / `flatten` | the existing kill files (a record of who and why inside); FLATTEN beside a HALT reports that exits wait |
+| `resume_all` | removes HALT and FLATTEN and lifts the pause (audited); approvals are not revived |
+| `backup_state` | `BACKUP-REQUEST` (label inside), taken by the owner's next beat outside 09:30-16:15 ET |
+
+### Facts the screens read
+
+- **Entries per session** (both kinds, cap 3): intents the supervised
+  outbox shows sent on the session's ET date, except broker rejections and
+  reconciled `confirmed_not_submitted`; an unreadable outbox is unknown and
+  blocks.
+- **Pending-entry reservation**: an entry sent but not filled is not in the
+  broker-priced snapshot yet. Its unfilled part (spec quantity minus what
+  the ledger booked for the intent) is added at its max loss to the
+  snapshot's open loss and its cash taken out of settled cash, so two
+  approvals back to back cannot both pass when only one fits.
+- **Loss facts** (the option canary screen, `SupervisedDesk.loss_facts`)
+  count the desk's EQUITY positions too: an entry at its full quantity, open
+  shares at the contract's max-loss arithmetic at their entry limit, and
+  today's realized equity losses (an unpriced exit makes it unknown).
+
+### Restart and reconnect
+
+At start the owner retires every unconsumed per-trade mandate of an earlier
+owner epoch (`invalidate_entry_mandates`) and records
+`approvals_invalidated` with them and the pending proposals composed under
+another epoch (no approval can match those: `approval_epoch_mismatch`; the
+owner composes again). A reconnect (a restarted process after exit 6)
+republishes the reconciliation and risk snapshot at once.
+
+### PAUSE versus HALT
+
+`PAUSE_ENTRIES` refuses compose and approve (`entries_paused`) and cancels
+the unfilled remainder of a working entry; exits, fills, books and
+reconciliation continue. `HALT` refuses entries (`halt`) AND gates exit
+orders, unchanged. `reconciliation_required` blocks entries only.
+
+### Operator notes
+
+- Equity candidates: no producer writes equity drafts yet (contracts open
+  question 17); `desk_entries.equity_draft(effect, program_id=...,
+  strategy_version=..., valid_until=...)` builds one for
+  `proposal-drafts/`.
+- Fills of the v1 canary inbox have no proposal: the ledger books them
+  under the outside attribution with `unattributed:<order_ref>`.
+- Settled cash at IBKR may not drop on the trade date of a purchase; the
+  reservation covers sent-but-unfilled entries only (open item for the
+  books lane: publish cash net of unsettled buys).
+
+### Verification (2026-10-21)
+
+New: `tests/soak/test_wave2_end_to_end.py` (the lifecycle compose ->
+approve -> partial fill -> remainder cancel -> stop exit -> flat ->
+reconciled clean with both commissions; duplicate approval sends once;
+back-to-back approvals; pause between grant and send; restart invalidation;
+reject; reconnect; reconciliation required; session cap; option debit
+spread; HALT; PAUSE), `tests/unit/test_desk_commands.py`,
+`tests/unit/test_desk_books.py`, `tests/unit/test_desk_entries.py`, and the
+Wave 2b additions to `tests/unit/test_supervised_desk.py`. Spot mutants
+(scratch copies): no reservation, no intake binding, no kill-file re-check
+after the grant, untrusted books reconciled: all killed.
 
 ## What is deliberately NOT here yet
 

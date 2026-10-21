@@ -54,6 +54,8 @@ from tree_options.execution import OrderIntent, SubmitAttempt
 from tree_options.time.sessions import shift_instant
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.clock import ET
+from tree_options.trex.contracts.vocabulary import DeskEvent
+from tree_options.trex.desk_books import BOOKS_PROBLEM_EVENT
 from tree_options.trex.desk_runtime import DeskPaths, DeskRuntime, desk_order_ref
 from tree_options.trex.ibkr import IbkrTrex
 from tree_options.trex.plan import LegStructure
@@ -617,6 +619,9 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
         "exit_flat_unexplained",
         "exit_authority",
     }
+    # Wave 2b: the owner's own records (the frozen C2.7 desk events, the
+    # books' problem codes and the connection edge); none is an exit event
+    allowed |= {e.value for e in DeskEvent} | {BOOKS_PROBLEM_EVENT, "gateway_connected"}
     names = [str(r["event"]) for r in records]
     assert set(names) <= allowed, sorted(set(names) - allowed)
     assert "unknown_exposure" not in names

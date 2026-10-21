@@ -95,6 +95,19 @@ desk-owned long EQUITY positions.
   ``quote_guarded`` (symbols) and ``quote_blind`` (symbol: first instant
   without a fresh real-time quote in the regular session) for
   ``trex.exit_watch``; an option-only book keeps the nine-key schema.
+
+Wave 2b (lane F, owner orchestration) adds two seams and nothing to the
+exit logic:
+
+- ``owned_specs()``: both spec views (options, equities) from ONE read of
+  ``specs/``, for the owner's loss facts and books (``specs()`` stays the
+  option view).
+- **Connection hooks.** ``connect_hooks`` run on the first connected
+  observation of this process (a restart after exit 6 is a reconnect) and
+  on every later disconnected-to-connected edge, observed at the top of
+  every ``tick`` and ``beat``: the owner refreshes its status files there
+  (``trex.desk_books``). Each hook is failure-isolated; the edge is the
+  ``gateway_connected`` event.
 """
 
 from __future__ import annotations
@@ -401,6 +414,9 @@ class DeskRuntime:
         self._quote_blind: dict[str, str] = {}  # symbol -> first blind instant
         # the first contained failure's class in the last tick, else None
         self._degraded: str | None = None
+        # Wave 2b: run after a (re)connect is observed (observe_connection)
+        self.connect_hooks: list[Callable[[], None]] = []
+        self._seen_connected: bool | None = None  # None: not observed yet
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -491,6 +507,11 @@ class DeskRuntime:
     def equity_specs(self) -> dict[str, EquityDeskSpecV2]:
         """The ``trex-desk-spec/2`` equity specs, by intent id."""
         return self._all_specs()[1]
+
+    def owned_specs(self) -> tuple[dict[str, DeskSpec], dict[str, EquityDeskSpecV2]]:
+        """(option specs, equity specs) from one read of ``specs/``: what
+        the owner's loss facts and books count. Raises like ``specs``."""
+        return self._all_specs()
 
     def _all_specs(self) -> tuple[dict[str, DeskSpec], dict[str, EquityDeskSpecV2]]:
         options: dict[str, DeskSpec] = {}
@@ -609,9 +630,35 @@ class DeskRuntime:
 
     # -- one tick ------------------------------------------------------------
 
+    def observe_connection(self) -> bool:
+        """Whether the session is up; on the first connected observation of
+        this process, and on each disconnected-to-connected edge after it,
+        record ``gateway_connected`` and run ``connect_hooks`` (each one
+        failure-isolated: a hook can never break the trading loop)."""
+        try:
+            up = bool(self.ib.connected)
+        except Exception:  # an unreadable session state is not a live session
+            up = False
+        if up and self._seen_connected is not True:
+            first = self._seen_connected is None
+            self._seen_connected = True
+            try:
+                self._event("gateway_connected", first=first)
+            except Exception:
+                log.exception("gateway_connected event not recorded")
+            for hook in list(self.connect_hooks):
+                try:
+                    hook()
+                except Exception:
+                    log.exception("connect hook failed (the owner loop is unaffected)")
+        elif not up and self._seen_connected:
+            self._seen_connected = False
+        return up
+
     def tick(self) -> None:
         if self._lock_handle is None:
             raise RuntimeLocked("tick requires the runtime lock")
+        self.observe_connection()
         try:
             self._tick()
         except Exception as error:
@@ -744,6 +791,7 @@ class DeskRuntime:
         Also refreshes ``monitor.json`` without claiming a good tick."""
         if self._lock_handle is None:
             raise RuntimeLocked("beat requires the runtime lock")
+        self.observe_connection()
         book = self._book(*self._all_specs())
         book.heartbeat = self._now()
         self._save(book)

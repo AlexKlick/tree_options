@@ -1,9 +1,12 @@
 [Unit]
-Description=trex supervised desk (E5: supervised entries + their exits, IBKR clientId 83)
+Description=trex supervised paper desk (owner: commands, per-trade entries, their exits, books; IBKR clientId 83)
 Documentation=file:///home/alexk/documents/tree_options/docs/desk/SUPERVISED-PAPER-PATH.md
 # NOT INSTALLED BY DEFAULT. Installing and starting this unit is the operator's
-# arming step. Nothing trades without a mandate the operator grants for the
-# owner epoch this process writes to ~/.local/state/trex/desk-paper/owner.json.
+# arming step. PAPER ONLY. Nothing trades without the owner's approval: a v1
+# mandate granted for the owner epoch this process writes to
+# ~/.local/state/trex/desk-paper/owner.json (the canary inbox), or a per-trade
+# approve_entry command for a proposal composed under that same epoch (a
+# restart invalidates every pending approval).
 After=network-online.target
 Wants=network-online.target
 
@@ -15,16 +18,23 @@ WorkingDirectory=/home/alexk/documents/tree_options
 # the other groups: 2026-09-28 it removed ib_async for ~9h).
 Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
 Environment=UV_NO_SYNC=1
+# The command queue the web backend (trex-web, write access narrowed to this
+# directory) fills and THIS process alone applies: every kind, the kill
+# switches included (coordinator ruling 2026-10-21). It must exist before the
+# web unit starts; creating it here is idempotent.
+ExecStartPre=/usr/bin/mkdir -p %h/.local/state/trex/desk-paper/commands
 # Start the moment the gateway API answers (real IB handshake) instead of
 # crash-looping against a logged-out gateway.
 ExecStartPre=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.gateway_watch --wait-api 300
 TimeoutStartSec=360
 # The legacy put-spread book counts toward the open/day-loss caps (ruling 3b).
 ExecStart=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.supervised_desk run --legacy-plan plans/2026-09-22.toml
-# Exit 6 = lost gateway connection: restart and re-adopt from the book + broker.
+# Exit 6 = lost gateway connection: restart, re-adopt from the book + broker,
+# republish the reconciliation and risk snapshot at once, answer any command
+# the dead process claimed (failed, never re-applied).
 Restart=on-failure
 RestartSec=15
-# SIGTERM: finish the tick, release the run-dir lock, disconnect.
+# SIGTERM: finish the iteration, release the run-dir lock, disconnect.
 KillSignal=SIGTERM
 TimeoutStopSec=30
 
