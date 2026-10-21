@@ -38,8 +38,11 @@ from tests.unit.trex_fakes import (
 from tree_options.trex.fills import CommissionReport, fold_executions
 from tree_options.trex.ledger import (
     HOLDINGS_SCHEMA,
+    MAX_HOLDINGS_BYTES,
     OUTSIDE,
     AttributionIndex,
+    HoldingsDocument,
+    HoldingsUnavailable,
     LedgerConflict,
     append_events,
     append_executions,
@@ -48,6 +51,8 @@ from tree_options.trex.ledger import (
     cash_adjustment_event,
     fill_events,
     fold_ledger,
+    holdings_document,
+    load_holdings,
     read_executions,
     read_ledger,
     symbols_from_executions,
@@ -609,3 +614,122 @@ def test_holdings_projection_is_written_atomically(tmp_path: Path) -> None:
         fold.holdings(ACCOUNT, {SPY: "SPY"})
     )
     assert sorted(p.name for p in path.parent.iterdir()) == ["holdings.json"]
+
+
+# ----------------------------------------- trex-holdings/1: the canonical read
+
+
+def test_holdings_round_trip_through_load_holdings(tmp_path: Path) -> None:
+    run_dir = c.Wave2RunDir(tmp_path)
+    fold = fold_ledger(book([execution()]))
+    path = write_holdings(run_dir, fold, account_id=ACCOUNT, symbols={SPY: "SPY"}, as_of=RECORDED)
+    loaded = load_holdings(path)
+    assert isinstance(loaded, HoldingsDocument)
+    # oracles: the frozen holding fixture and hand arithmetic (fill + its fee)
+    assert loaded.schema_version == HOLDINGS_SCHEMA == "trex-holdings/1"
+    assert (loaded.account_id, loaded.as_of) == (ACCOUNT, RECORDED)
+    assert loaded.cash_micros == -2 * 671_480_000 - 1_000_000
+    assert loaded.holdings == (c.Holding.model_validate(contract_fixture("holding.json")),)
+    # what the writer wrote is exactly the canonical bytes of what reads back
+    assert path.read_bytes() == c.model_bytes(loaded)
+    assert loaded == holdings_document(
+        fold, account_id=ACCOUNT, symbols={SPY: "SPY"}, as_of=RECORDED
+    )
+
+
+def test_holdings_document_keeps_every_attribution_lot(tmp_path: Path) -> None:
+    outside = execution(exec_id="0000e0d5.6576d6a7.01.01", order_ref="", perm_id=55, quantity=1)
+    fold = fold_ledger(book([execution(), outside]))
+    path = write_holdings(
+        c.Wave2RunDir(tmp_path), fold, account_id=ACCOUNT, symbols={SPY: "SPY"}, as_of=RECORDED
+    )
+    [holding] = load_holdings(path).holdings
+    assert holding.quantity == 3
+    assert {lot.attribution: lot.quantity for lot in holding.lots} == {SPY_ATTR: 2, OUTSIDE: 1}
+
+
+def _holdings_doc(**changes: Any) -> dict[str, Any]:
+    holding = contract_fixture("holding.json")
+    doc: dict[str, Any] = {
+        "schema": "trex-holdings/1",
+        "account_id": ACCOUNT,
+        "as_of": "2026-10-22T14:03:06Z",
+        "cash_micros": -1_343_960_000,
+        "holdings": [holding],
+    }
+    doc.update(changes)
+    return doc
+
+
+def _foreign_holding() -> dict[str, Any]:
+    return {**contract_fixture("holding.json"), "account_id": "DU0000002"}
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        pytest.param(b'{"schema": "trex-hold', "unreadable", id="torn-json"),
+        pytest.param(b"\xff\xfe", "unreadable", id="not-utf8"),
+        pytest.param(json.dumps(_holdings_doc()["holdings"]).encode(), "invalid", id="bare-list"),
+        pytest.param(
+            json.dumps(_holdings_doc(schema="trex-holdings/2")).encode(),
+            "invalid",
+            id="other-schema",
+        ),
+        pytest.param(
+            json.dumps(_holdings_doc(holdings=[_foreign_holding()])).encode(),
+            "invalid",
+            id="another-accounts-holding",
+        ),
+        pytest.param(
+            json.dumps(_holdings_doc(holdings=[_holdings_doc()["holdings"][0]] * 2)).encode(),
+            "invalid",
+            id="two-rows-one-contract",
+        ),
+        pytest.param(
+            json.dumps(_holdings_doc(cash_micros=1.5)).encode(), "invalid", id="fractional-cash"
+        ),
+        pytest.param(json.dumps(_holdings_doc(extra="x")).encode(), "invalid", id="unknown-field"),
+    ],
+)
+def test_load_holdings_refuses_what_is_not_a_holdings_document(
+    tmp_path: Path, content: bytes, reason: str
+) -> None:
+    path = tmp_path / "holdings.json"
+    path.write_bytes(content)
+    with pytest.raises(HoldingsUnavailable) as caught:
+        load_holdings(path)
+    assert caught.value.reason == reason
+
+
+def test_the_valid_hand_written_document_loads(tmp_path: Path) -> None:
+    path = tmp_path / "holdings.json"
+    path.write_text(json.dumps(_holdings_doc()))
+    assert load_holdings(path).holdings[0].quantity == 2
+
+
+def test_load_holdings_fails_closed_on_the_file_itself(tmp_path: Path) -> None:
+    with pytest.raises(HoldingsUnavailable) as caught:
+        load_holdings(tmp_path / "absent.json")
+    assert caught.value.reason == "missing"
+
+    real = tmp_path / "real.json"
+    real.write_text(json.dumps(_holdings_doc()))
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    with pytest.raises(HoldingsUnavailable) as caught:
+        load_holdings(link)  # a symlink is never followed
+    assert caught.value.reason == "unreadable"
+
+    with pytest.raises(HoldingsUnavailable) as caught:
+        load_holdings(tmp_path)  # a directory
+    assert caught.value.reason == "unreadable"
+
+    big = tmp_path / "big.json"
+    body = json.dumps(_holdings_doc()).encode()
+    big.write_bytes(body + b" " * (MAX_HOLDINGS_BYTES + 1 - len(body)))
+    with pytest.raises(HoldingsUnavailable) as caught:
+        load_holdings(big)
+    assert caught.value.reason == "unreadable"
+    big.write_bytes(body + b" " * (MAX_HOLDINGS_BYTES - len(body)))
+    assert load_holdings(big).account_id == ACCOUNT  # exactly the cap still loads

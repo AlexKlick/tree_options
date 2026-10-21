@@ -31,12 +31,39 @@ quantity; commissions stay their own rows but are realized with the lot
 pro rata when it closes, an exit fee is realized at the close, and a fee
 with no booked fill is an expense when reported. Cash adjustments move
 cash only, never realized trading P&L.
+
+Canonical holdings projection: ``trex-holdings/1``
+--------------------------------------------------
+
+``ledger/holdings.json`` (``Wave2RunDir.holdings()``) is THE holdings
+projection of the books (coordinator decision 2, 2026-10-21). The desk
+owner writes it (``write_holdings``: canonical bytes, atomic replace); every
+other reader (admission, the web portfolio, owner orchestration) loads it
+with ``load_holdings`` and neither re-folds the ledger nor parses the file
+by hand. Shape (``HoldingsDocument``, a strict model: unknown keys and
+non-integer money refuse):
+
+| Key | Type | Invariant |
+| --- | --- | --- |
+| ``schema`` | ``"trex-holdings/1"`` | a new shape is ``/2``, never an edit |
+| ``account_id`` | id | the one account projected; every holding's |
+| ``as_of`` | UTC instant (``...Z``) | when the ledger fold was projected |
+| ``cash_micros`` | signed int, micros | sum of every ledger cash delta of the account (fills, corrections, commissions, cash adjustments). Ledger cash, NOT broker settled cash: that is the risk snapshot's ``cash_cents`` |
+| ``holdings`` | list of C2.4 ``Holding`` | non-flat contracts, ascending con_id, one row per con_id; ``lots`` one per attribution, summing to ``quantity`` (outside lots carry the all-null attribution) |
+
+``load_holdings(path)`` never follows a symlink, reads at most
+``MAX_HOLDINGS_BYTES`` and raises ``HoldingsUnavailable`` whose ``reason``
+is ``missing`` (absent), ``unreadable`` (symlink, not a regular file, too
+big, not JSON) or ``invalid`` (not a ``trex-holdings/1`` document). A
+reader shows an unavailable projection as unavailable, never as empty.
 """
 
 from __future__ import annotations
 
 import fcntl
+import json
 import os
+import stat
 import tempfile
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -45,7 +72,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.time.sessions import SESSION_TIMEZONE
@@ -67,6 +94,7 @@ from tree_options.trex.fills import Fill, FillBook, cash_micros, signed_quantity
 
 __all__ = [
     "HOLDINGS_SCHEMA",
+    "MAX_HOLDINGS_BYTES",
     "OUTSIDE",
     "UNATTRIBUTED_PREFIX",
     "AnyDeskSpec",
@@ -74,6 +102,7 @@ __all__ = [
     "AttributionIndex",
     "AttributionTotals",
     "HoldingsDocument",
+    "HoldingsUnavailable",
     "LedgerConflict",
     "LedgerFold",
     "Lot",
@@ -85,6 +114,8 @@ __all__ = [
     "cash_adjustment_event",
     "fill_events",
     "fold_ledger",
+    "holdings_document",
+    "load_holdings",
     "read_executions",
     "read_ledger",
     "spec_structure_id",
@@ -97,8 +128,12 @@ __all__ = [
 OUTSIDE = Attribution(intent_id=None, strategy_version=None, program_id=None)
 UNATTRIBUTED_PREFIX = "unattributed:"
 #: ``ledger/holdings.json`` (the layout names the file; C2.4 has no schema
-#: for the projection document, so the books lane versions it here).
+#: for the projection document, so the books lane versions it here and the
+#: module doc is its schema note).
 HOLDINGS_SCHEMA = "trex-holdings/1"
+#: a holdings file bigger than this is not the books lane's (= the web
+#: portfolio's ``MAX_BOOK_BYTES``)
+MAX_HOLDINGS_BYTES = 4 * 1024 * 1024
 
 AnyDeskSpec = DeskSpec | OptionDeskSpecV2 | EquityDeskSpecV2
 PositionSecType = Literal["OPT", "STK"]
@@ -855,13 +890,44 @@ def append_executions(path: Path, executions: Iterable[BrokerExecution]) -> int:
 
 
 class HoldingsDocument(StrictModel):
-    """``ledger/holdings.json``: the latest projection of the ledger."""
+    """``trex-holdings/1``: the canonical holdings projection of the ledger
+    (``ledger/holdings.json``; schema note in the module doc)."""
 
     schema_version: Literal["trex-holdings/1"] = Field(default="trex-holdings/1", alias="schema")
     account_id: IdStr
     as_of: UTCInstant
     cash_micros: int = Field(strict=True)
     holdings: tuple[Holding, ...]
+
+    @model_validator(mode="after")
+    def _one_account_one_row_per_contract(self) -> HoldingsDocument:
+        if any(h.account_id != self.account_id for h in self.holdings):
+            raise ValueError("every holding is of the document's account")
+        con_ids = [h.con_id for h in self.holdings]
+        if len(con_ids) != len(set(con_ids)):
+            raise ValueError("one holding row per con_id")
+        return self
+
+
+class HoldingsUnavailable(Exception):
+    """``ledger/holdings.json`` cannot be read as a ``trex-holdings/1``."""
+
+    def __init__(self, reason: Literal["missing", "unreadable", "invalid"], detail: str) -> None:
+        super().__init__(f"holdings {reason}: {detail}")
+        self.reason: Literal["missing", "unreadable", "invalid"] = reason
+
+
+def holdings_document(
+    fold: LedgerFold, *, account_id: str, symbols: Mapping[int, str], as_of: datetime
+) -> HoldingsDocument:
+    """The account's projection of ``fold`` (raises ``LedgerConflict`` for a
+    holding the contract cannot represent: short stock, no symbol)."""
+    return HoldingsDocument(
+        account_id=account_id,
+        as_of=as_of,
+        cash_micros=fold.cash(account_id),
+        holdings=fold.holdings(account_id, symbols),
+    )
 
 
 def write_holdings(
@@ -872,12 +938,43 @@ def write_holdings(
     symbols: Mapping[int, str],
     as_of: datetime,
 ) -> Path:
-    document = HoldingsDocument(
-        account_id=account_id,
-        as_of=as_of,
-        cash_micros=fold.cash(account_id),
-        holdings=fold.holdings(account_id, symbols),
-    )
+    """Atomically replace ``ledger/holdings.json`` (canonical bytes)."""
+    document = holdings_document(fold, account_id=account_id, symbols=symbols, as_of=as_of)
     path = run_dir.holdings()
     write_atomic(path, model_bytes(document))
     return path
+
+
+def _read_regular_file(path: Path, limit: int) -> bytes:
+    """At most ``limit`` + 1 bytes of a regular file, never via a symlink."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError as exc:
+        raise HoldingsUnavailable("missing", str(path)) from exc
+    except OSError as exc:  # ELOOP: a symlink
+        raise HoldingsUnavailable("unreadable", f"{path}: {exc.strerror}") from exc
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise HoldingsUnavailable("unreadable", f"{path}: not a regular file")
+    with os.fdopen(fd, "rb") as fh:
+        try:
+            return fh.read(limit + 1)
+        except OSError as exc:
+            raise HoldingsUnavailable("unreadable", f"{path}: {exc.strerror}") from exc
+
+
+def load_holdings(path: Path) -> HoldingsDocument:
+    """The ``trex-holdings/1`` document at ``path`` (normally
+    ``Wave2RunDir.holdings()``); raises ``HoldingsUnavailable`` with reason
+    ``missing``, ``unreadable`` or ``invalid`` (see the module doc)."""
+    raw = _read_regular_file(Path(path), MAX_HOLDINGS_BYTES)
+    if len(raw) > MAX_HOLDINGS_BYTES:
+        raise HoldingsUnavailable("unreadable", f"{path}: over {MAX_HOLDINGS_BYTES} bytes")
+    try:
+        document = json.loads(raw)
+    except ValueError as exc:
+        raise HoldingsUnavailable("unreadable", f"{path}: not JSON") from exc
+    try:
+        return HoldingsDocument.model_validate(document)
+    except ValidationError as exc:
+        raise HoldingsUnavailable("invalid", f"{path}: not a {HOLDINGS_SCHEMA}") from exc
