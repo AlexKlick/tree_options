@@ -334,11 +334,69 @@ Module `contracts.vocabulary`. `Blocker` (wire strings, frozen by a test):
   `command_unauthorized`, `proposal_unknown`,
   `session_entry_limit_reached`.
 
+- added by the 2026-10-21 amendment (lane K; see the amendment log), each
+  value exactly as its producer spells it:
+  - kill files and owner facts (`trex.pause`, `trex.admission`,
+    `desk.enter`): `halt`, `auto_off`, `exit_owner_not_ready`,
+    `shadow_only_build`, `selection_rule_not_activated`;
+  - entry screening (`trex.supervised_canary`, `action_graph.canary`):
+    `credit_open_not_supported_v1`, `risk_snapshot_account_mismatch`,
+    `profile_limits_missing`, `effect_account_not_mandate_account`,
+    `equity_not_whole_share_long`, `quote_stale_or_future`,
+    `broker_owner_unhealthy`, `protective_exit_unavailable`,
+    `equity_notional_exceeds_intended_capital`,
+    `trade_exceeds_intended_capital`, `trade_loss_cap_exceeded`,
+    `open_exposure_unknown`, `open_loss_cap_exceeded`,
+    `daily_loss_unknown`, `daily_loss_cap_exceeded`;
+  - equity preflight (`trex.supervised_ibkr`): the session guards it shares
+    with the option preflight (`gateway_disconnected`,
+    `not_paper_gateway_port`, `wrong_client_id`,
+    `account_not_managed_by_session`, `account_not_paper`) and its own five
+    (`equity_con_id_mismatch`, `equity_quote_incomplete`,
+    `broker_view_unreadable:account_values`,
+    `broker_view_unreadable:open_orders`, `cash_commitment_unbounded`);
+  - per-trade authority refusals (`trex.supervised`, `trex.grant_policy`):
+    `effect_invalid`, `effects_halted`, `entry_mandate_already_granted`,
+    `intent_id_not_path_safe`, `mandate_absent`, `mandate_account_mismatch`,
+    `mandate_binding_mismatch`, `mandate_scope_mismatch`,
+    `permit_already_issued`, `product_strategy_requires_approval`;
+  - holdings checks before a desk equity sell (the `why` of the runtime's
+    `reconciliation_required` event): `holdings_mismatch`,
+    `holdings_excess`, `not_a_stock_row`, `fractional_position`,
+    `order_fill_not_whole_shares`;
+  - web command ingress and store (`trex_web.commands_view`,
+    `trex_web.command_store`): `body_too_large`, `invalid_json`,
+    `issued_by_is_stamped_by_the_backend`, `invalid_command`,
+    `command_not_yet_valid`, `unknown_command`, `command_store_unavailable`,
+    `commands_dir_unwritable`, `command_store_unreadable`,
+    `command_store_foreign_file`, `command_result_invalid`,
+    `staged_command_invalid`, `staged_command_mismatch`;
+  - web views (proposal list problems, `GET /api/portfolio`):
+    `proposal_unreadable`, `proposal_invalid`, `proposal_not_canonical`,
+    `proposal_id_mismatch`, `mandate_unreadable`,
+    `<label>_missing` / `<label>_unreadable` / `<label>_invalid` for the
+    labels `holdings`, `risk_snapshot`, `reconciliation`,
+    `risk_snapshot_unavailable`, `reconciliation_stale`,
+    `reconciliation_unavailable`, `account_mismatch`, `non_paper_account`;
+  - reserved for the Wave 2b lanes (coordinator, not yet emitted):
+    `entry_window_closed`, `outside_undefined_risk`, `exit_quote_blind`.
+
 `DeskEvent` (names for `events.jsonl`): `proposal_composed`,
 `entry_approved`, `entry_rejected`, `entries_paused`, `entries_resumed`,
 `approvals_invalidated`, `command_applied`, `command_refused`,
 `equity_exit_stop`, `equity_exit_target`, `equity_exit_deadline`,
-`equity_exit_forced`, `reconciliation_clean`, `reconciliation_required`.
+`equity_exit_forced`, `reconciliation_clean`, `reconciliation_required`;
+added by the 2026-10-21 amendment (the desk runtime's equity path):
+`equity_contract_mismatch`, `equity_unqualified`,
+`exit_evidence_inconclusive`, `holdings_unverifiable`,
+`structure_tick_failed`.
+
+Both enums are `@unique` (no two members share a value) and every member
+name is its value spelled as an identifier (`:` becomes `_`, so
+`Blocker.BROKER_VIEW_UNREADABLE_ACCOUNT_VALUES`). A value may sit in both
+enums (`entries_paused`, `reconciliation_required`): a blocker and the
+event that records it. Producers may keep passing the plain strings: a
+`StrEnum` member compares and serializes equal to its value.
 
 ## C2.8 Test fakes (deferred until Wave 1 merges)
 
@@ -406,7 +464,8 @@ The 2026-10-14 plan is silent on these; each default is in
   command adds `issued_at`; the command result adds `kind`,
   `command_body_sha256`, `detail`; the risk snapshot adds
   `day_realized_loss_cents` (today's screening needs the day loss).
-- **Added blockers** listed under C2.7.
+- **Added blockers** listed under C2.7 (and the 2026-10-21 vocabulary
+  amendment, see the amendment log).
 
 ## Verification (2026-10-21)
 
@@ -448,3 +507,47 @@ Choices lanes should know:
 - Verification: the required Wave 1 suites, `tests/soak/`,
   `tests/contracts/` and the new file: 453 passed (host-work test profile).
   `ruff` and `mypy` (repo config, plus the two test files) are clean.
+
+## Amendment log
+
+### 2026-10-21: C2.7 vocabulary, additive (lane K, coordinator-approved)
+
+Coordinator decision 3 (2026-10-21): the codes the merged Wave 2 lanes
+introduced become additive members of `contracts.vocabulary`. Nothing was
+renamed or removed; every new value equals the string its producer already
+emits, so no producer changed.
+
+- Added 80 `Blocker` members (77 emitted today, 3 reserved; 98 in all)
+  and 5 `DeskEvent` members (19 in all), listed under C2.7.
+  Scope: every code a Wave 2 surface emits as an entry, approval, command or
+  sell blocker, a refusal reason, a view reason or a desk event name. That
+  includes Wave 1 strings a Wave 2 surface now returns beside `Blocker`
+  members (`halt`, `auto_off`, the shared profile caps of
+  `review_equity_entry`, the preflight session guards, the existing
+  `SupervisedRefused` reasons the per-trade path raises).
+- Reserved for the Wave 2b lanes, not yet emitted: `entry_window_closed`,
+  `outside_undefined_risk`, `exit_quote_blind` (as `Blocker` members:
+  they refuse entries; a lane that also records one as an event adds the
+  `DeskEvent` member, as `reconciliation_required` has both).
+  `approvals_invalidated` was already a `DeskEvent` member.
+- `Blocker` and `DeskEvent` are now `@unique`; the `Blocker` docstring
+  now also covers refused sells and unavailable view facts.
+- Left out on purpose (still plain strings): free-text `detail` values
+  (the command authority's refusal modes such as `wrong_peer` or
+  `forwarded`, error class names); codes with a dynamic suffix
+  (`effect_invalid:<ErrorClass>`, `order_unbuildable:<ErrorClass>`);
+  document statuses (`accepted`, `applied`, `pending`, ...); the equity
+  exit rule reasons (`trex.equity_exits.EquityExitReason`); the exit
+  watcher's own statuses (`monitor_down`, `touch_blind`, `quote_blind`);
+  audit-file reasons (mandate retirements: `expired`,
+  `owner_epoch_changed`, `profile_changed`); and the Wave 1 desk
+  lifecycle events the equity path reuses unchanged (`registered`,
+  `exit_begin`, `exit_order`, `exit_fill`, `closed`, `cancel`,
+  `unknown_exposure`, ...).
+- Tests (`tests/contracts/test_wave2_contracts.py`): both enums pinned as
+  literal sets (plan plus amendment, disjoint); values unique and names
+  derived from values; the coordinator's named strings round-trip
+  (value, `str`, JSON, lookup by name); every amended value is a string
+  literal of its producer module (AST scan, independent of the enum); the
+  producers' constants equal the members; and the admission, equity review
+  and portfolio view outputs of fixed scenarios are all members.
