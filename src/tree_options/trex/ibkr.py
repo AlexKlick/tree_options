@@ -27,21 +27,44 @@ keep their behavior and wire content byte for byte
 (tests/unit/test_trex_legacy_characterization.py).
 
 Connection defaults target IB Gateway in paper mode (docker, port 4002).
+
+Wave 2 stocks (docs/product/WAVE2-CONTRACTS.md, lane B) add whole-share
+primitives beside the option packages, still pure I/O:
+
+- ``prepare_stock`` qualifies ``Stock(symbol, SMART, USD)`` and PINS its
+  conId (a different conId than the caller's refuses), then subscribes
+  one quote stream per conId, shared with an option underlying's spot;
+- ``equity_quote`` is the NBBO in integer cents with the market-data type
+  IBKR reports on the ticker and the instant of its latest tick; no tick
+  yet means no quote (ib_async defaults a fresh ticker to type 1);
+- ``executions`` / ``portfolio`` / ``position_items`` map broker rows onto
+  ``contracts.books`` (micros for broker prices). A row the contracts
+  cannot represent is listed in ``unrepresentable``, never dropped; an
+  unreadable view carries its error CLASS only;
+- ``settled_cash_cents`` / ``working_stock_buy_cents`` are the cash-only
+  facts the supervised equity preflight checks.
+
+The contracts package imports this module (``contracts.books``), so it is
+imported lazily here, never at module level.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal, InvalidOperation
-from typing import Any
+from datetime import UTC, datetime
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal, InvalidOperation
+from typing import TYPE_CHECKING, Any, Literal
 
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.engine import ComboQuote, Snapshot
 from tree_options.trex.plan import Leg, LegStructure, PutSpread, validate_package_order
+
+if TYPE_CHECKING:
+    from tree_options.trex.contracts.books import BrokerExecution, BrokerPortfolioItem
+    from tree_options.trex.contracts.proposals import Quote
 
 log = logging.getLogger("trex.ibkr")
 
@@ -190,6 +213,266 @@ def _margin(raw: Any) -> Decimal | None:
     return value
 
 
+# -- Wave 2 stocks: quotes, broker facts ------------------------------------
+
+MarketDataTypeName = Literal["realtime", "delayed", "frozen", "unknown"]
+#: IBKR ``reqMarketDataType`` codes as a ticker reports them; anything else
+#: (4 delayed-frozen, an absent or junk code) is "unknown"
+MARKET_DATA_TYPE_NAMES: dict[int, MarketDataTypeName] = {1: "realtime", 2: "frozen", 3: "delayed"}
+#: seconds a NEW stock stream may take to deliver its first tick
+STOCK_SETTLE_S = 2.0
+#: security types ``contracts.books`` can represent
+_EXEC_SEC_TYPES = frozenset({"OPT", "STK", "BAG"})
+_POSITION_SEC_TYPES = frozenset({"OPT", "STK"})
+_CENT = Decimal(100)
+_MICRO = Decimal(1_000_000)
+ViewStatus = Literal["complete", "unrepresentable", "unavailable"]
+
+
+class StockNotQualified(RuntimeError):
+    """IBKR resolved no unique STK contract for the symbol."""
+
+
+class StockConIdMismatch(ValueError):
+    """The stock qualified to a conId other than the pinned one."""
+
+
+def market_data_type_name(code: object) -> MarketDataTypeName:
+    """The contract name of an IBKR market-data type code (ints only)."""
+    if isinstance(code, bool) or not isinstance(code, int):
+        return "unknown"
+    return MARKET_DATA_TYPE_NAMES.get(code, "unknown")
+
+
+def _number(raw: object) -> Decimal | None:
+    """A finite broker number as a Decimal; None for None, NaN, infinities,
+    junk, booleans and ib_async's UNSET sentinel."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = Decimal(str(raw).strip())
+    except InvalidOperation:
+        return None
+    if not value.is_finite() or abs(value) >= _UNSET_MARGIN:
+        return None
+    return value
+
+
+def _scaled(value: Decimal, unit: Decimal, rounding: str = ROUND_HALF_EVEN) -> int:
+    return int((value * unit).to_integral_value(rounding=rounding))
+
+
+def _whole(raw: object) -> int | None:
+    """A whole (signed) quantity as an int; None when fractional or junk."""
+    value = _number(raw)
+    if value is None or value != value.to_integral_value():
+        return None
+    return int(value)
+
+
+def _utc_instant(raw: object) -> datetime | None:
+    if isinstance(raw, datetime) and raw.utcoffset() is not None:
+        return raw.astimezone(UTC)
+    return None
+
+
+@dataclass(frozen=True)
+class EquityQuote:
+    """A stock NBBO as IBKR delivered it: integer cents on the penny grid
+    (a sub-penny bid floors, a sub-penny ask ceils: the quote only widens),
+    the market-data type the ticker reports, and its latest tick (UTC)."""
+
+    symbol: str
+    con_id: int
+    bid_cents: int
+    ask_cents: int
+    market_data_type: MarketDataTypeName
+    as_of: datetime
+
+    @property
+    def realtime(self) -> bool:
+        return self.market_data_type == "realtime"
+
+    def to_contract(self) -> Quote:
+        """The ``contracts.proposals.Quote`` the owner reviews."""
+        from tree_options.trex.contracts.proposals import Quote
+
+        return Quote(
+            bid_cents=self.bid_cents,
+            ask_cents=self.ask_cents,
+            market_data_type=self.market_data_type,
+            as_of=self.as_of,
+        )
+
+
+def equity_quote_from_ticker(symbol: str, con_id: int, ticker: Any) -> EquityQuote | None:
+    """The two-sided quote a stock ticker carries; None without one: a
+    missing, non-positive, UNSET or crossed side, or no tick time yet (a
+    fresh ib_async ticker claims type 1 before any data arrives)."""
+    bid = _number(getattr(ticker, "bid", None))
+    ask = _number(getattr(ticker, "ask", None))
+    as_of = _utc_instant(getattr(ticker, "time", None))
+    if bid is None or ask is None or as_of is None or bid <= 0 or ask <= 0:
+        return None
+    bid_cents = _scaled(bid, _CENT, ROUND_FLOOR)
+    ask_cents = _scaled(ask, _CENT, ROUND_CEILING)
+    if bid_cents <= 0 or bid_cents > ask_cents:
+        return None
+    return EquityQuote(
+        symbol=symbol,
+        con_id=con_id,
+        bid_cents=bid_cents,
+        ask_cents=ask_cents,
+        market_data_type=market_data_type_name(getattr(ticker, "marketDataType", None)),
+        as_of=as_of,
+    )
+
+
+@dataclass(frozen=True)
+class BrokerView[T]:
+    """One broker view mapped onto ``contracts.books`` rows.
+
+    ``unrepresentable`` holds one code per broker row the contracts cannot
+    carry (``sec_type_unsupported`` / ``quantity_not_whole`` /
+    ``row_invalid``, then ``:<conId>``): such a row is reported, never
+    dropped, and the books lane treats the view as unavailable or
+    reconciliation-required. ``error`` is the error CLASS of a view that
+    could not be read at all (provider text never rides along)."""
+
+    rows: tuple[T, ...] = ()
+    unrepresentable: tuple[str, ...] = ()
+    error: str | None = None
+
+    @property
+    def status(self) -> ViewStatus:
+        if self.error is not None:
+            return "unavailable"
+        return "unrepresentable" if self.unrepresentable else "complete"
+
+    @property
+    def complete(self) -> bool:
+        return self.status == "complete"
+
+
+class _Unrepresentable(Exception):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _con_id_of(contract: Any) -> int:
+    con = _whole(getattr(contract, "conId", 0))
+    return con if con is not None else 0
+
+
+def _map_rows[T](raw_rows: Iterable[Any], mapper: Callable[[Any], T]) -> BrokerView[T]:
+    rows: list[T] = []
+    unrepresentable: list[str] = []
+    for raw in raw_rows:
+        try:
+            rows.append(mapper(raw))
+        except _Unrepresentable as bad:
+            unrepresentable.append(bad.code)
+        except (ValueError, TypeError, AttributeError):  # a field the contract refuses
+            unrepresentable.append(f"row_invalid:{_con_id_of(getattr(raw, 'contract', None))}")
+    return BrokerView(rows=tuple(rows), unrepresentable=tuple(unrepresentable))
+
+
+def _has_commission(fill: Any) -> bool:
+    """True once the fill's OWN commission report has arrived (ib_async
+    keeps a blank report, execId "", until then)."""
+    report = getattr(fill, "commissionReport", None)
+    exec_id = str(getattr(getattr(fill, "execution", None), "execId", "") or "")
+    return bool(exec_id) and str(getattr(report, "execId", "") or "") == exec_id
+
+
+def broker_execution(fill: Any) -> BrokerExecution:
+    """An ib_async ``Fill`` as a ``contracts.books.BrokerExecution``;
+    ``commission_micros`` stays None until the fill's own commission report
+    has arrived. Raises for a row the contract cannot represent."""
+    from tree_options.trex.contracts.books import BrokerExecution, base_exec_id_of
+
+    contract, ex = fill.contract, fill.execution
+    con_id = _con_id_of(contract)
+    sec_type = str(getattr(contract, "secType", "") or "")
+    if sec_type not in _EXEC_SEC_TYPES:
+        raise _Unrepresentable(f"sec_type_unsupported:{con_id}")
+    quantity = _whole(getattr(ex, "shares", None))
+    if quantity is None:
+        raise _Unrepresentable(f"quantity_not_whole:{con_id}")
+    price = _number(getattr(ex, "price", None))
+    multiplier = _whole(getattr(contract, "multiplier", "") or 1)
+    at = _utc_instant(getattr(ex, "time", None)) or _utc_instant(getattr(fill, "time", None))
+    if price is None or multiplier is None or at is None:
+        raise _Unrepresentable(f"row_invalid:{con_id}")
+    commission = None
+    if _has_commission(fill):
+        reported = _number(getattr(fill.commissionReport, "commission", None))
+        commission = None if reported is None else _scaled(reported, _MICRO)
+    exec_id = str(getattr(ex, "execId", "") or "")
+    return BrokerExecution.model_validate(
+        {
+            "exec_id": exec_id,
+            "base_exec_id": base_exec_id_of(exec_id),
+            "perm_id": _whole(getattr(ex, "permId", 0)) or 0,
+            "order_ref": str(getattr(ex, "orderRef", "") or ""),
+            "account_id": str(getattr(ex, "acctNumber", "") or ""),
+            "con_id": con_id,
+            "sec_type": sec_type,
+            "symbol": str(getattr(contract, "symbol", "") or ""),
+            "side": str(getattr(ex, "side", "") or ""),
+            "quantity": quantity,
+            "price_micros": _scaled(price, _MICRO),
+            "multiplier": multiplier,
+            "time": at,
+            "commission_micros": commission,
+        }
+    )
+
+
+def broker_portfolio_item(row: Any, as_of: datetime) -> BrokerPortfolioItem:
+    """An ib_async ``PortfolioItem`` (or ``Position``: no market fields) as
+    a ``contracts.books.BrokerPortfolioItem`` read at ``as_of``. Raises for
+    a row the contract cannot represent."""
+    from tree_options.trex.contracts.books import BrokerPortfolioItem
+
+    contract = row.contract
+    con_id = _con_id_of(contract)
+    sec_type = str(getattr(contract, "secType", "") or "")
+    if sec_type not in _POSITION_SEC_TYPES:
+        raise _Unrepresentable(f"sec_type_unsupported:{con_id}")
+    position = _whole(getattr(row, "position", None))
+    if position is None:
+        raise _Unrepresentable(f"quantity_not_whole:{con_id}")
+    is_item = hasattr(row, "averageCost")
+    avg_cost = _number(getattr(row, "averageCost" if is_item else "avgCost", None))
+    if avg_cost is None:
+        raise _Unrepresentable(f"row_invalid:{con_id}")
+    market_price = _number(getattr(row, "marketPrice", None)) if is_item else None
+    market_value = _number(getattr(row, "marketValue", None)) if is_item else None
+    if market_price is not None and market_price < 0:
+        market_price = None
+    return BrokerPortfolioItem.model_validate(
+        {
+            "account_id": str(getattr(row, "account", "") or ""),
+            "con_id": con_id,
+            "sec_type": sec_type,
+            "symbol": str(getattr(contract, "symbol", "") or ""),
+            "position": position,
+            "avg_cost_micros": _scaled(avg_cost, _MICRO),
+            "market_price_micros": None if market_price is None else _scaled(market_price, _MICRO),
+            "market_value_cents": None if market_value is None else _scaled(market_value, _CENT),
+            "as_of": as_of,
+        }
+    )
+
+
+def _aware(as_of: datetime) -> datetime:
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise ValueError("as_of must be timezone-aware")
+    return as_of.astimezone(UTC)
+
+
 class IbkrTrex:
     """One connected session; call :meth:`connect` before anything else."""
 
@@ -209,6 +492,7 @@ class IbkrTrex:
         self._packages: dict[str, _Package] = {}  # structure_id -> debit-oriented legs
         self._bags: dict[str, Any] = {}  # structure_id -> BAG contract (multi-leg only)
         self._spots: dict[str, Any] = {}  # underlying -> Stock contract
+        self._stocks: dict[str, Any] = {}  # equity symbol -> pinned Stock contract
         self._md: dict[int, _Subscription] = {}  # conId -> the one market-data stream
         # IB.run bound for what-if (seconds): an unanswered request is a refusal
         self.whatif_timeout = WHATIF_TIMEOUT_S
@@ -680,3 +964,177 @@ class IbkrTrex:
             currency="USD",
             ts=datetime.now(ET),
         )
+
+    # -- stocks (Wave 2) -----------------------------------------------------
+
+    def prepare_stock(
+        self, symbol: str, con_id: int | None = None, *, settle_s: float = STOCK_SETTLE_S
+    ) -> int:
+        """Qualify ``Stock(symbol, "SMART", "USD")`` and subscribe its
+        quotes; the qualified conId.
+
+        ``con_id`` PINS the stock: one that qualifies (or was prepared)
+        under any other conId refuses (StockConIdMismatch) and nothing new
+        is held or subscribed. A symbol IBKR cannot resolve to one STK
+        contract refuses (StockNotQualified). Idempotent: a prepared symbol
+        is never re-qualified nor subscribed twice. A NEW stream (one no
+        option underlying already holds) waits ``settle_s`` for a tick."""
+        from ib_async import Stock
+
+        assert self._ib is not None
+        held = self._stocks.get(symbol)
+        contract = held
+        if contract is None:
+            contract = Stock(symbol, "SMART", "USD")
+            self._ib.qualifyContracts(contract)
+            if getattr(contract, "secType", "") != "STK" or _con_id_of(contract) <= 0:
+                raise StockNotQualified(symbol)
+        qualified = _con_id_of(contract)
+        if con_id is not None and qualified != con_id:
+            raise StockConIdMismatch(f"{symbol}: the qualified conId is not the pinned one")
+        if held is None:
+            fresh = qualified not in self._md
+            self._stocks[symbol] = contract
+            self._subscribe(contract)
+            if fresh and settle_s > 0:
+                self._ib.sleep(settle_s)
+        return qualified
+
+    def release_stock(self, symbol: str) -> None:
+        """Forget a prepared stock: drop its claim on the quote stream, which
+        is cancelled once no option underlying owns it. Unknown: a no-op."""
+        contract = self._stocks.pop(symbol, None)
+        if contract is None:
+            return
+        assert self._ib is not None
+        self._unsubscribe(contract.conId)
+
+    def _stock_ticker(self, symbol: str) -> tuple[int, Any] | None:
+        contract = self._stocks.get(symbol)
+        sub = None if contract is None else self._md.get(contract.conId)
+        if contract is None or sub is None:
+            return None
+        return _con_id_of(contract), sub.ticker
+
+    def equity_quote(self, symbol: str) -> EquityQuote | None:
+        """A prepared stock's two-sided quote (``equity_quote_from_ticker``);
+        None when the stock is not prepared or has no such quote."""
+        held = self._stock_ticker(symbol)
+        return None if held is None else equity_quote_from_ticker(symbol, *held)
+
+    def equity_market_data_type(self, symbol: str) -> MarketDataTypeName | None:
+        """The market-data type of a prepared stock's stream once a tick has
+        arrived (two-sided or not); None before any tick."""
+        held = self._stock_ticker(symbol)
+        if held is None or _utc_instant(getattr(held[1], "time", None)) is None:
+            return None
+        return market_data_type_name(getattr(held[1], "marketDataType", None))
+
+    def executions(self, account: str | None = None) -> BrokerView[BrokerExecution]:
+        """Today's executions as ``BrokerExecution`` rows (``account``'s only,
+        when given): the ``reqExecutions`` answer (all clients) merged with
+        the session's ``fills()`` by exec id. ib_async answers
+        ``reqExecutions`` with NEW fills whose commission report is blank
+        for executions the session already knew; the reports land on the
+        cached fills, so the copy whose report arrived wins. A correction
+        (same base exec id, next version) is its own row."""
+        assert self._ib is not None
+        try:
+            answered = [*self._ib.reqExecutions(), *self._ib.fills()]
+        except Exception as exc:  # an unreadable view proves nothing
+            return BrokerView(error=type(exc).__name__)
+        by_id: dict[str, Any] = {}
+        for i, fill in enumerate(answered):
+            execution = getattr(fill, "execution", None)
+            key = str(getattr(execution, "execId", "") or "") or f"#{i}"
+            seen = by_id.get(key)
+            if seen is None or (_has_commission(fill) and not _has_commission(seen)):
+                by_id[key] = fill
+        fills = [
+            f
+            for f in by_id.values()
+            if account is None
+            or str(getattr(getattr(f, "execution", None), "acctNumber", "")) == account
+        ]
+        return _map_rows(fills, broker_execution)
+
+    def portfolio(
+        self, *, as_of: datetime, account: str | None = None
+    ) -> BrokerView[BrokerPortfolioItem]:
+        """The session's portfolio (positions with marks) as
+        ``BrokerPortfolioItem`` rows read at ``as_of``; a 0 row after a
+        close is kept."""
+        at = _aware(as_of)
+        assert self._ib is not None
+        try:
+            rows = list(self._ib.portfolio())
+        except Exception as exc:  # an unreadable view proves nothing
+            return BrokerView(error=type(exc).__name__)
+        return _map_rows(_of_account(rows, account), lambda row: broker_portfolio_item(row, at))
+
+    def position_items(
+        self, *, as_of: datetime, account: str | None = None
+    ) -> BrokerView[BrokerPortfolioItem]:
+        """The account positions (no marks: the market fields are None) as
+        ``BrokerPortfolioItem`` rows read at ``as_of``; option shorts stay
+        negative."""
+        at = _aware(as_of)
+        assert self._ib is not None
+        try:
+            rows = list(self._ib.positions())
+        except Exception as exc:  # an unreadable view proves nothing
+            return BrokerView(error=type(exc).__name__)
+        return _map_rows(_of_account(rows, account), lambda row: broker_portfolio_item(row, at))
+
+    def settled_cash_cents(self, account: str) -> int | None:
+        """``account``'s settled cash in whole cents, floored: its
+        ``SettledCash`` account value in USD (else BASE). None when absent,
+        junk or ambiguous (two different values). Read errors propagate."""
+        assert self._ib is not None
+        rows = [
+            r
+            for r in self._ib.accountValues()
+            if getattr(r, "tag", "") == "SettledCash" and str(getattr(r, "account", "")) == account
+        ]
+        for currency in ("USD", "BASE"):
+            values = [_number(r.value) for r in rows if getattr(r, "currency", "") == currency]
+            if not values:
+                continue
+            value = values[0]
+            if value is None or any(v != value for v in values):
+                return None
+            return _scaled(value, _CENT, ROUND_FLOOR)
+        return None
+
+    def working_stock_buy_cents(self, account: str) -> int | None:
+        """Cash ``account``'s working STK BUY orders commit: unfilled shares
+        x limit, in cents (ceil). An order without the account set counts
+        (it may be this one's). None when a working buy has no positive
+        limit (the commitment is unbounded). Read errors propagate."""
+        assert self._ib is not None
+        committed = 0
+        for trade in self._ib.openTrades():
+            order, status = trade.order, trade.orderStatus
+            if getattr(trade.contract, "secType", "") != "STK":
+                continue
+            if getattr(order, "action", "") != "BUY":
+                continue
+            if str(getattr(order, "account", "") or "") not in ("", account):
+                continue
+            if str(getattr(status, "status", "") or "") in DONE_STATES:
+                continue
+            total = _number(getattr(order, "totalQuantity", None)) or Decimal(0)
+            remaining = total - (_number(getattr(status, "filled", None)) or Decimal(0))
+            if remaining <= 0:
+                continue
+            limit = _number(getattr(order, "lmtPrice", None))
+            if limit is None or limit <= 0:
+                return None
+            committed += _scaled(remaining * limit, _CENT, ROUND_CEILING)
+        return committed
+
+
+def _of_account(rows: list[Any], account: str | None) -> list[Any]:
+    if account is None:
+        return rows
+    return [r for r in rows if str(getattr(r, "account", "") or "") == account]
