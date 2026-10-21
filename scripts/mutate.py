@@ -7888,11 +7888,18 @@ MUTANTS.extend(
 
 
 # Parked with the derived-cost custody/governance suites (docs/desk/PARKED-DERIVED-COST.md).
-# Their guarded source and owning tests never landed on main, so these anchors occur 0x
-# and cannot be re-pinned; running them only reports MUTATION_DRIFT. They return to
-# MUTANTS with the follow-up campaign that re-derives those suites onto the landed engine.
+# Their guarded source or their owning test files never landed on main: the first group's
+# anchors occur 0x (MUTATION_DRIFT), the second group's selector files do not exist
+# (HARNESS_ERROR). They return to MUTANTS with the follow-up campaign that re-derives
+# those suites onto the landed engine.
 PARKED_MUTANT_IDS = frozenset(
     {
+        "MG03-review-floor-inclusive",
+        "MG04-review-floor-required",
+        "MG05-review-own-net-positive",
+        "MG09-cost-half-spread-convention",
+        "MG15-cost-source-custody",
+        "MG18-cost-calendar-source-custody",
         "QC07-policy-resume-custody",
         "QC08-source-resume-custody",
         "QC10-engine-resume-custody",
