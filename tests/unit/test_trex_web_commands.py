@@ -924,20 +924,87 @@ def test_default_app_authority_is_loopback_and_refuses_the_portal_shape(tmp_path
 # -- the repo unit: the web may write only the desk's command queue -------------------
 
 
+WEB_UNIT = REPO_ROOT / "deploy" / "trex" / "trex-web.service"
+UNIT_HOME = "/home/alexk"
+UNIT_RUN_DIR = f"{UNIT_HOME}/.local/state/trex/desk-paper"
+#: the whole write surface of the web: the discovery spool, the research
+#: lane's workspace and the desk's command queue (nothing else)
+WEB_WRITABLE = {
+    f"{UNIT_HOME}/.local/state/trex-discovery/spool",
+    f"{UNIT_HOME}/.local/state/trex-research",
+    f"{UNIT_RUN_DIR}/commands",
+}
+#: what trex-desk runs or imports. uv HARDLINKS a venv's packages from its
+#: cache (one inode), so a writable cache is a writable desk venv; the data
+#: dir holds the interpreters uv installs.
+DESK_CODE = (
+    f"{UNIT_HOME}/documents/tree_options/.venv/lib/python3.12/site-packages",
+    f"{UNIT_HOME}/documents/tree_options/src",
+    f"{UNIT_HOME}/.cache/uv",
+    f"{UNIT_HOME}/.local/share/uv",
+    f"{UNIT_HOME}/.local/bin",
+    f"{UNIT_HOME}/.local/state/trex-premarket/releases",
+    "/usr/bin/python3.12",
+    "/usr/lib/python3.12",
+)
+
+
+def _unit_list(text: str, key: str) -> list[str]:
+    """A list-valued directive as systemd folds it: lines append, an empty
+    assignment resets, and the '-'/'+' path prefixes are not part of the path."""
+    values: list[str] = []
+    for value in re.findall(rf"^{key}=(.*)$", text, re.MULTILINE):
+        if not value.strip():
+            values = []
+            continue
+        values.extend(word.lstrip("-+") for word in value.split())
+    return values
+
+
+def _reaches(grant: str, target: str) -> bool:
+    grant, target = grant.rstrip("/"), target.rstrip("/")
+    return grant == target or target.startswith(grant + "/") or grant.startswith(target + "/")
+
+
 def test_the_repo_web_unit_may_write_only_the_desk_command_queue():
-    text = (REPO_ROOT / "deploy" / "trex" / "trex-web.service").read_text()
-    [line] = re.findall(r"^ReadWritePaths=(.*)$", text, re.MULTILINE)
-    paths = line.split()
-    run_dir = "/home/alexk/.local/state/trex/desk-paper"
+    text = WEB_UNIT.read_text()
+    paths = _unit_list(text, "ReadWritePaths")
+    # the write surface is exactly the allowlist: no cache, no data dir
+    assert set(paths) == WEB_WRITABLE and len(paths) == len(WEB_WRITABLE)
     # no grant covers the run dir itself (kill files, specs, ledger) ...
-    covering = [p for p in paths if (run_dir + "/").startswith(p.rstrip("/") + "/")]
-    assert covering == []
+    assert [p for p in paths if _reaches(p, UNIT_RUN_DIR) and p != f"{UNIT_RUN_DIR}/commands"] == []
     # ... only its commands/ subdirectory, and nothing of the supervised dir
-    assert [p for p in paths if p.startswith(run_dir)] == [f"{run_dir}/commands"]
+    assert [p for p in paths if p.startswith(UNIT_RUN_DIR)] == [f"{UNIT_RUN_DIR}/commands"]
     assert not any("trex/supervised" in p for p in paths)
     assert "ProtectSystem=strict" in text and "ProtectHome=read-only" in text
-    # the installed drop-in that still grants the whole run dir is called out
+    # the installed drop-in that still grants the whole run dir and the user
+    # bus is called out, with both lines to remove
     assert "automation.conf" in text and "narrow that drop-in" in text
+    assert "remove its RestrictAddressFamilies line" in text
+
+
+@pytest.mark.parametrize("target", DESK_CODE)
+def test_the_repo_web_unit_cannot_write_what_the_desk_runs(target):
+    paths = _unit_list(WEB_UNIT.read_text(), "ReadWritePaths")
+    assert [p for p in paths if _reaches(p, target)] == []
+
+
+def test_the_repo_web_unit_runs_a_prebuilt_venv_and_has_no_bus():
+    text = WEB_UNIT.read_text()
+    # uv run needs a writable uv cache; the web runs the venv's python as
+    # the release drop-in already does
+    [exec_start] = [v for v in re.findall(r"^ExecStart=(.*)$", text, re.MULTILINE) if v.strip()]
+    program = exec_start.split()[0]
+    assert program.startswith("/") and program.endswith("/.venv/bin/python")
+    assert "uv" not in re.findall(r"[\w.-]+", exec_start)
+    assert not re.search(r"^Environment=UV_", text, re.MULTILINE)
+    # no AF_UNIX: the user bus would let the web start unsandboxed units
+    families = _unit_list(text, "RestrictAddressFamilies")
+    assert families and "AF_UNIX" not in families and not families[0].startswith("~")
+    # nothing re-grants writes behind the strict protections
+    assert not re.search(
+        r"^(BindPaths|ProtectHome=(no|false)|ProtectSystem=(no|false))", text, re.M
+    )
 
 
 # -- broker-free: importing and serving trex_web never loads ib_async -----------------
