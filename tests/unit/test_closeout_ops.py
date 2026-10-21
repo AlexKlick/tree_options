@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -193,13 +196,34 @@ def test_template_readme_gates_on_owner_authorization() -> None:
     assert "Restart=no" in text
 
 
+def _host_user_units_root() -> Path:
+    """The invoking user's systemd user-unit dir, from the passwd database:
+    tests/conftest.py points HOME at a per-test tmp dir, and this check is
+    about the real host."""
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "systemd" / "user"
+
+
+@pytest.mark.host_state
 def test_no_tree_options_unit_installed_on_this_host() -> None:
     """The template must stay a template: no installed unit on this host."""
-    units_root = Path.home() / ".config" / "systemd" / "user"
+    units_root = _host_user_units_root()
     if not units_root.is_dir():
         return  # nothing installed anywhere — the intended state
     installed = [p.name for p in units_root.rglob("tree-options-era.service")]
     assert installed == [], f"template unit is installed: {installed}"
+
+
+@pytest.mark.host_state
+def test_host_unit_check_is_not_fooled_by_a_redirected_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decoy unit under $HOME is not the host: the check above must look at
+    the passwd home, so the decoy neither trips it nor stands in for it."""
+    decoy = tmp_path / "home" / ".config" / "systemd" / "user"
+    decoy.mkdir(parents=True)
+    (decoy / "tree-options-era.service").write_text("[Unit]\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    test_no_tree_options_unit_installed_on_this_host()
 
 
 if __name__ == "__main__":  # pragma: no cover

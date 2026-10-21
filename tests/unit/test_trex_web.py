@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import unittest.mock
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -20,7 +20,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from tree_options.trex.clock import ET
+from tree_options.time.expiries import minus_calendar_days
+from tree_options.time.monthlies import is_traded_monthly_expiry
+from tree_options.trex.clock import ET, now_et, session_calendar
 from tree_options.trex.discovery.artifact import DiscoveryStamp, write_scan
 from tree_options.trex.state import BookState, Status
 from tree_options.trex_web.app import create_app
@@ -37,7 +39,27 @@ from tree_options.trex_web.positions import merge_net_positions, net_positions
 # ---------------------------------------------------------------------------
 
 
-PLAN_TOML = """\
+def _next_traded_monthly(today: date, min_days: int) -> date:
+    """The first traded monthly expiry at least ``min_days`` calendar days
+    after ``today``, from the repo's NYSE session calendar."""
+    cal = session_calendar()
+    for session in cal.sessions():
+        if (session - today).days >= min_days and is_traded_monthly_expiry(session, cal.is_session):
+            return session
+    raise RuntimeError(
+        f"the trex NYSE calendar ends before a monthly expiry {min_days} days after "
+        f"{today}: regenerate it with scripts/gen_trex_calendar.py"
+    )
+
+
+def _plan_toml(today: date) -> str:
+    """The putspread-test plan, dated from ``today`` so it never goes stale
+    (e602dee rolled hand-written dates forward a year). The structure ids are
+    labels only: the expiries are the next traded monthlies at least 45 and
+    75 days out, with exit deadlines 7 and 14 days before them."""
+    nvda_expiry = _next_traded_monthly(today, 45)
+    qqq_expiry = _next_traded_monthly(today, 75)
+    return f"""\
 id = "putspread-test"
 account_mode = "paper"
 total_debit_cap = 1840.00
@@ -48,24 +70,27 @@ entry_window_end = "12:00"
 id = "nvda-oct"
 underlying = "NVDA"
 entry_date = 2026-09-18
-expiry = 2027-10-16
+expiry = {nvda_expiry.isoformat()}
 long_strike = 185.0
 short_strike = 150.0
 quantity = 5
 limit_cap = 0.50
-exit_deadline = 2027-10-09
+exit_deadline = {minus_calendar_days(nvda_expiry, 7).isoformat()}
 
 [[structures]]
 id = "qqq-nov"
 underlying = "QQQ"
 entry_date = 2026-09-18
-expiry = 2027-11-20
+expiry = {qqq_expiry.isoformat()}
 long_strike = 600.0
 short_strike = 475.0
 quantity = 4
 limit_cap = 2.40
-exit_deadline = 2027-11-06
+exit_deadline = {minus_calendar_days(qqq_expiry, 14).isoformat()}
 """
+
+
+PLAN_TOML = _plan_toml(now_et().date())
 
 
 def _write_plan(
@@ -278,6 +303,36 @@ class TestDerivedFields:
         assert st["exit_filled_qty"] == 2
         assert st["open_qty"] == 3
 
+    def test_plan_fixture_dates_track_today(self, tmp_path: Path) -> None:
+        """The fixture is derived from the wall clock, so it cannot rot the way
+        the hand-rolled 2026 and 2027 dates did (e602dee): each expiry is the
+        next traded monthly at least 45 / 75 days out, each deadline 7 / 14
+        days before it."""
+        from tree_options.trex.plan import load_plan
+
+        plan = load_plan(_write_plan(tmp_path / "plans"))
+        cal = session_calendar()
+        today = now_et().date()
+        by_id = {s.id: s for s in plan.structures}
+        assert set(by_id) == {"nvda-oct", "qqq-nov"}
+        for sid, floor, gap in (("nvda-oct", 45, 7), ("qqq-nov", 75, 14)):
+            s = by_id[sid]
+            # monthlies sit at most 36 days apart, so the first one on or
+            # past the floor is at most 35 days beyond it
+            assert floor <= (s.expiry - today).days <= floor + 35, sid
+            assert cal.is_session(s.expiry), sid
+            # the third Friday, or the Thursday before it when the exchange
+            # is closed that Friday
+            weekday, day = s.expiry.isoweekday(), s.expiry.day
+            third_friday = weekday == 5 and 15 <= day <= 21
+            holiday_thursday = (
+                weekday == 4
+                and 14 <= day <= 20
+                and not cal.is_session(s.expiry.replace(day=day + 1))
+            )
+            assert third_friday or holiday_thursday, (sid, s.expiry)
+            assert (s.expiry - s.exit_deadline).days == gap, sid
+
     def test_days_fields_are_integers(self, tmp_path: Path) -> None:
         plans = tmp_path / "plans"
         _write_plan(plans)
@@ -333,8 +388,8 @@ class TestRunbookStatus:
         _write_plan(plans)
         plan = self._plan(plans)
         rb = compute_runbook_status(plan, heartbeat=None, armed=False)
-        # nvda-oct deadline is 2027-10-09, qqq-nov is 2027-11-06 (the fixture
-        # dates roll forward ~yearly: past deadlines break days_to_deadline >= 0).
+        # The fixture deadlines are derived from today (see _plan_toml), so
+        # both stay in the future.
         assert set(rb.days_to_exit_deadline) == {"nvda-oct", "qqq-nov"}
         assert all(isinstance(v, int) for v in rb.days_to_exit_deadline.values())
 
