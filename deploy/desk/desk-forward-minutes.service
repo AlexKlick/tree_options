@@ -12,10 +12,13 @@ Environment=HOME=/home/alexk
 WorkingDirectory=/home/alexk/documents/tree_options
 Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
 ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk forward-minutes
+# The exit code reports the CAPTURE only: 0 = at least one contract banked
+# bars (the strict three-clock verify and the eight-clock coverage facts are
+# written beside it as information and never fail the unit).
 # exit 3 = retryable vendor failure (the next slot retries; a captured
 # session is never refetched). 4 = selection stale/missing: run
 # desk-forward-select. 5 = the daily wire budget stopped the capture.
-# 6 = captured, but a decision clock (10:00/10:15/15:15 ET) has no bar.
+# 6 = captured, but no contract banked a single bar.
 # Only 3 is benign; the rest stay red so the operator sees them.
 SuccessExitStatus=3
 # ~14-40 contracts at 1 request each plus retries, paced 5/min by the

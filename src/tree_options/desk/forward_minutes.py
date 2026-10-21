@@ -27,10 +27,14 @@ Three moving parts, each independently testable:
   under ``budget/``, a headroom rule (a request is only made when the
   retry budget still fits under the cap), stop-on-exceed with every
   refusal logged. Cache hits cost nothing and are not ledgered.
-* :func:`verify_session` is the coverage proof: for every captured
-  contract, a minute bar must land inside each decision clock's minute
-  (``10:00``, ``10:15``, ``15:15`` ET -- exactly ``outcomes.py``'s
-  ``decision_clocks_et``; a test pins that equality).
+* :func:`verify_session` is the strict three-clock check: for every
+  captured contract, a minute bar must land inside each decision clock's
+  minute (``10:00``, ``10:15``, ``15:15`` ET -- exactly ``outcomes.py``'s
+  ``decision_clocks_et``; a test pins that equality). Thin option prints
+  make its ``ok`` false on nearly every real session, so it is INFORMATION
+  (with per-clock counts), never the capture's exit code:
+  :func:`capture_exit_code` reports the capture alone, and the eight-clock
+  coverage facts live in ``forward_coverage.py``.
 
 Calendar-day distances are epoch arithmetic; weekday/monthly-expiry logic
 is imported from ``time/`` (the AST lint bans it elsewhere). Nothing here
@@ -86,7 +90,9 @@ VERIFY_SCHEMA = "desk-forward-verify/1"
 # fixed exit codes beyond the desk's shared 0/1/2/3 convention
 STALE_SELECTION_EXIT = 4  # no usable selection: run forward-select
 BUDGET_EXIT = 5  # the daily wire budget stopped the capture before anything landed
-COVERAGE_EXIT = 6  # captured, but a decision clock has no bar (or no bars at all)
+# forward-minutes: the session was captured but NO contract banked a single bar;
+# forward-verify (standalone): the strict three-clock verdict is not ok
+COVERAGE_EXIT = 6
 
 # the shipped schedule (deploy/desk/desk-forward-*.timer must match exactly;
 # tests/unit/test_desk_forward_minutes.py fails if either side drifts)
@@ -583,6 +589,34 @@ def capture_session(
     )
 
 
+def banked_contracts(session: date, root: Path | None = None) -> int:
+    """How many of ``session``'s contracts banked at least one minute bar.
+
+    Reads the stored ``bars/<session>.json`` (0 when there is none); a
+    contract counts when its capture status is ``ok`` and its bar list is
+    non-empty. No wire.
+    """
+    source = bars_path(session, root)
+    if not source.exists():
+        return 0
+    contracts = json.loads(source.read_text()).get("contracts", {})
+    return sum(1 for e in contracts.values() if e.get("status") == "ok" and e.get("bars"))
+
+
+def capture_exit_code(result: CaptureResult, root: Path | None = None) -> int:
+    """``forward-minutes``' exit code: the CAPTURE alone.
+
+    A non-zero capture code (1 nothing usable, 4 stale selection, 5 budget)
+    and a dry run keep their own code. A written or already-banked session
+    exits 0 when at least one contract banked bars and
+    :data:`COVERAGE_EXIT` only when none did. The strict three-clock verify
+    and the eight-clock coverage facts never move it.
+    """
+    if result.exit_code or result.status not in ("written", "exists"):
+        return result.exit_code
+    return 0 if banked_contracts(result.session, root) else COVERAGE_EXIT
+
+
 # ---------------------------------------------------------------- verify
 
 
@@ -594,11 +628,15 @@ class Verdict:
     covered_contracts: int = 0
     no_trade: int = 0
     note: str = ""
+    #: clock -> (contracts with a bar in that exact minute, contracts scored)
+    per_clock: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     def line(self) -> str:
+        clocks = " ".join(f"{c}={n}/{total}" for c, (n, total) in self.per_clock.items())
         return (
             f"forward-verify: {self.session} ok={self.ok} "
             f"covered={self.covered_contracts} no_trade={self.no_trade}"
+            + (f" clocks {clocks}" if clocks else "")
             + (f" ({self.note})" if self.note else "")
         )
 
@@ -646,6 +684,12 @@ def verify_session(
         }
         covered += not missing
     ok = bool(contracts) and covered == len(contracts)
+    # per-clock counts over the contracts that printed at all (the no-trade
+    # ones are listed apart, as before)
+    per_clock = {
+        clock: (sum(clock in row["covered"] for row in contracts.values()), len(contracts))
+        for clock in DECISION_CLOCKS
+    }
     verdict = {
         "schema": VERIFY_SCHEMA,
         "session": session.isoformat(),
@@ -656,13 +700,16 @@ def verify_session(
         "contracts": contracts,
         "no_trade": sorted(no_trade),
         "covered_contracts": covered,
+        "per_clock": {c: {"covered": n, "total": t} for c, (n, t) in per_clock.items()},
         "ok": ok,
         "execution_authorized": False,
     }
     out = verdict_path(session, root)
     out.parent.mkdir(parents=True, exist_ok=True)
     store.atomic_write_json(out, verdict)
-    return Verdict(session, 0 if ok else COVERAGE_EXIT, ok, covered, len(no_trade))
+    return Verdict(
+        session, 0 if ok else COVERAGE_EXIT, ok, covered, len(no_trade), per_clock=per_clock
+    )
 
 
 # ---------------------------------------------------------------- cli
@@ -695,9 +742,11 @@ __all__ = [
     "SelectionError",
     "Verdict",
     "WireBudget",
+    "banked_contracts",
     "bars_path",
     "budget_path",
     "build_client",
+    "capture_exit_code",
     "capture_session",
     "clock_ms",
     "default_massive_cache",

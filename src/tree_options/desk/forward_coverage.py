@@ -34,6 +34,16 @@ Semantics, mirroring ``intraday_action_graph``'s staleness discipline:
 The scorer decides NOTHING. It produces raw per-clock numbers and boolean
 facts (``every clock >= 50% covered`` style); the qualifying thresholds
 stay the operator's sealed call. Nothing here authorizes execution.
+
+Per-underlying facts sit beside the session table: C3 asks for coverage
+"for every traded underlying", and two readings are both printed as facts
+(contract-clock points per underlying, and how many clocks had ANY of the
+underlying's contracts observed). Which one the sealed clause means stays
+the owner's call.
+
+``forward-minutes`` scores each session it captures (same run, no wire);
+:func:`backfill` scores sessions banked before that existed, from the
+stored bars documents alone (no client, no wire budget, no network).
 """
 
 from __future__ import annotations
@@ -41,6 +51,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -55,7 +66,7 @@ from tree_options.desk.forward_minutes import (
     latest_selection,
     selection_path,
 )
-from tree_options.desk.intraday_action_graph import ET
+from tree_options.desk.intraday_action_graph import ET, parse_contract
 from tree_options.desk.intraday_action_graph import SCHEDULE as EIGHT_CLOCKS
 
 #: the ``_latest`` age horizon at decision time, in whole seconds between
@@ -115,6 +126,47 @@ def _windows(session: date, schedule: tuple[str, ...]) -> list[tuple[str, int, i
         lo = clock_ms(session, clock)
         out.append((clock, lo, lo + AGE_WINDOW_SECONDS * 1000))
     return out
+
+
+def _underlying_of(ticker: str, entry: Mapping[str, Any]) -> str:
+    """The entry's own ``underlying`` (the capture copies the selection's), else the OCC root."""
+    named = entry.get("underlying")
+    if isinstance(named, str) and named:
+        return named
+    try:
+        return parse_contract(ticker).underlying
+    except ValueError:
+        return "unknown"
+
+
+def _underlying_facts(
+    members: list[str], hits: Mapping[str, list[bool]], windows: list[tuple[str, int, int]]
+) -> dict[str, Any]:
+    """One underlying's per-clock numbers and boolean facts (no verdict)."""
+    total = len(members)
+    clocks: dict[str, dict[str, Any]] = {}
+    for index, (clock, _lo, _hi) in enumerate(windows):
+        covered_n = sum(1 for t in members if hits[t][index])
+        clocks[clock] = {
+            "covered": covered_n,
+            "total": total,
+            "pct": round(covered_n / total * 100, 2),
+        }
+    scheduled_points = total * len(windows)
+    covered_points = sum(row["covered"] for row in clocks.values())
+    return {
+        "contracts": total,
+        "clocks": clocks,
+        "scheduled_points": scheduled_points,
+        "covered_points": covered_points,
+        "covered_points_pct": round(covered_points / scheduled_points * 100, 2),
+        "min_clock_pct": min(row["pct"] for row in clocks.values()),
+        "clocks_with_any_contract_covered": sum(1 for row in clocks.values() if row["covered"]),
+        "all_clocks_ge_pct": {
+            str(int(floor)): all(row["pct"] >= floor for row in clocks.values())
+            for floor in FACT_FLOORS_PCT
+        },
+    }
 
 
 def clock_coverage(
@@ -215,6 +267,9 @@ def clock_coverage(
             "(session, clock) points across the qualifying corpus, not one session"
         ),
     }
+    groups: dict[str, list[str]] = {}
+    for ticker in tickers:
+        groups.setdefault(_underlying_of(ticker, entries[ticker]), []).append(ticker)
     return {
         "session": session.isoformat(),
         "schedule": list(clocks_list),
@@ -225,6 +280,15 @@ def clock_coverage(
         "clocks": clocks_table,
         "contracts": detail,
         "summary": summary,
+        "underlyings": {
+            name: _underlying_facts(members, hits, windows)
+            for name, members in sorted(groups.items())
+        },
+        "underlyings_note": (
+            "facts only, not a verdict: C3 asks coverage 'for every traded "
+            "underlying'; whether that reads as contract-clock points per "
+            "underlying or as clocks with any contract observed is the owner's call"
+        ),
     }
 
 
@@ -346,6 +410,15 @@ def render_lines(doc: Mapping[str, Any]) -> list[str]:
             min_pct=summary["min_clock_pct"],
         )
     )
+    # a coverage document written before per-underlying facts existed renders
+    # without these lines
+    for name, facts in (doc.get("underlyings") or {}).items():
+        lines.append(
+            f"underlying {name}: points {facts['covered_points']}/"
+            f"{facts['scheduled_points']} covered ({facts['covered_points_pct']}%); "
+            f"min clock {facts['min_clock_pct']}%; clocks with any contract covered "
+            f"{facts['clocks_with_any_contract_covered']}/{len(facts['clocks'])}"
+        )
     for floor in sorted(summary["all_clocks_ge_pct"], key=int):
         lines.append(
             f"fact: every clock >= {floor}% covered: "
@@ -358,6 +431,74 @@ def render_lines(doc: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def summary_line(doc: Mapping[str, Any]) -> str:
+    """One line per scored session (the backfill's journal shape): raw numbers only."""
+    summary = doc["summary"]
+    per_underlying = " ".join(
+        f"{name} {facts['covered_points']}/{facts['scheduled_points']} "
+        f"({facts['covered_points_pct']}%)"
+        for name, facts in (doc.get("underlyings") or {}).items()
+    )
+    return (
+        f"forward-coverage: {doc.get('session')} points {summary['covered_points']}/"
+        f"{summary['scheduled_points']} covered ({summary['covered_points_pct']}%); "
+        f"min clock {','.join(summary['min_clocks']) or '-'} at {summary['min_clock_pct']}%"
+        + (f"; {per_underlying}" if per_underlying else "")
+    )
+
+
+# ---------------------------------------------------------------- backfill
+
+
+def banked_sessions(since: date, root: Path | None = None) -> list[date]:
+    """The sessions on or after ``since`` with a stored ``bars/<D>.json``, oldest first."""
+    directory = (root or forward_root()) / "bars"
+    if not directory.is_dir():
+        return []
+    found: list[date] = []
+    for entry in directory.glob("*.json"):
+        try:
+            session = date.fromisoformat(entry.stem)
+        except ValueError:
+            continue
+        # only the canonical bars_path name is a banked session
+        if entry.name == f"{session.isoformat()}.json" and session >= since:
+            found.append(session)
+    return sorted(found)
+
+
+@dataclass(frozen=True)
+class BackfillRow:
+    session: date
+    exit_code: int  # 0 scored; else the single-session CLI's code
+    doc: dict[str, Any] | None = None
+    error: str = ""
+
+
+def backfill(
+    since: date, *, root: Path | None = None, now: datetime | None = None
+) -> list[BackfillRow]:
+    """Score every banked session on or after ``since`` and write its coverage file.
+
+    Files only: it reads ``bars/`` and ``selection/`` and writes
+    ``coverage/``; no client is built, no wire budget is touched, nothing
+    reaches the network. A session that cannot be scored is reported in its
+    row and the rest still score. Re-scoring rewrites a session's coverage
+    document (the bars it reads are write-once).
+    """
+    rows: list[BackfillRow] = []
+    for session in banked_sessions(since, root):
+        try:
+            doc = score_session(session, root=root, now=now)
+        except CoverageInputError as exc:
+            rows.append(BackfillRow(session, exc.exit_code, error=str(exc)))
+        except ValueError as exc:  # a bars document that is not one (fixed text)
+            rows.append(BackfillRow(session, 1, error=str(exc)))
+        else:
+            rows.append(BackfillRow(session, 0, doc=doc))
+    return rows
+
+
 __all__ = [
     "AGE_WINDOW_SECONDS",
     "COVERAGE_SCHEMA",
@@ -365,9 +506,13 @@ __all__ = [
     "FACT_FLOORS_PCT",
     "MISSING_SELECTION_EXIT",
     "NO_BARS_EXIT",
+    "BackfillRow",
     "CoverageInputError",
+    "backfill",
+    "banked_sessions",
     "clock_coverage",
     "coverage_path",
     "render_lines",
     "score_session",
+    "summary_line",
 ]
