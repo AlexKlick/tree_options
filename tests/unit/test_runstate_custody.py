@@ -7,11 +7,14 @@ directory custody.  A refusal must leave any link/hard-link target byte-identica
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import stat
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -507,28 +510,92 @@ def test_in_place_run_identity_rewrite_is_refused_on_rebind(scratch: Path) -> No
         store.refresh()
 
 
+def _arm_lease_lock_swap(monkeypatch: pytest.MonkeyPatch, store: RunStore) -> dict[str, bool]:
+    """Swap lease/adopt.lock to a fresh inode right after acquire() flocks it.
+
+    The probe is installed on the lease module's OWN ``fcntl`` binding and
+    fires once, only for an exclusive flock of THIS store's adopt.lock inode
+    (matched by st_dev/st_ino, never by call order). It used to replace
+    ``fcntl.flock`` process-wide and fire for the first LOCK_EX caller on any
+    thread: leaked research-worker daemon threads take LOCK_EX on their
+    queue.control.lock every poll, so one of them could consume the one-shot
+    swap before acquire() reached its flock, and the test then reported
+    DID NOT RAISE on unmodified code.
+    """
+    real_fcntl = L.fcntl
+    lease_dir = store.dir / L.LEASE_DIRNAME
+    lock = lease_dir / "adopt.lock"
+    held = lease_dir / "adopt.lock.held"
+    armed = {"done": False}
+
+    def flock_then_swap(fd: int, operation: int) -> None:
+        real_fcntl.flock(fd, operation)
+        if armed["done"] or operation != real_fcntl.LOCK_EX:
+            return
+        try:
+            named = os.stat(lock, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        flocked = os.fstat(fd)
+        if (flocked.st_dev, flocked.st_ino) != (named.st_dev, named.st_ino):
+            return
+        armed["done"] = True
+        lock.rename(held)
+        lock.write_bytes(b"replacement lock inode\n")
+
+    lease_fcntl = SimpleNamespace(
+        **{name: getattr(real_fcntl, name) for name in dir(real_fcntl) if not name.startswith("_")}
+    )
+    lease_fcntl.flock = flock_then_swap
+    monkeypatch.setattr(L, "fcntl", lease_fcntl)
+    return armed
+
+
 def test_lease_lock_deletion_recreation_refuses_before_owner_publish(
     scratch: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The lock name must still denote the flocked inode before owner mutation."""
     store = _store(scratch)
-    real_flock = L.fcntl.flock
-    armed = {"done": False}
-
-    def flock_then_swap(fd: int, operation: int) -> None:
-        real_flock(fd, operation)
-        if operation == L.fcntl.LOCK_EX and not armed["done"]:
-            armed["done"] = True
-            lease_dir = store.dir / L.LEASE_DIRNAME
-            lock = lease_dir / "adopt.lock"
-            held = lease_dir / "adopt.lock.held"
-            lock.rename(held)
-            lock.write_bytes(b"replacement lock inode\n")
-
-    monkeypatch.setattr(L.fcntl, "flock", flock_then_swap)
+    armed = _arm_lease_lock_swap(monkeypatch, store)
     with pytest.raises(StoreCustodyError, match="inode changed"):
         L.acquire(store.dir, _owner(), boot_id_now=BOOT)
 
+    assert armed["done"], "the swap fired on acquire's own adopt.lock flock"
+    assert not (store.dir / L.LEASE_DIRNAME / L.OWNER_FILENAME).exists()
+
+
+def test_lease_lock_swap_probe_ignores_foreign_exclusive_flocks(
+    scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (W1 fx-flakes): another thread's LOCK_EX must not consume the probe.
+
+    In a full-suite run dozens of leaked research-worker daemon threads each
+    call ``fcntl.flock(<queue.control.lock>, fcntl.LOCK_EX)`` once per poll
+    (ResearchWorker._recover_interrupted via _queue_control). This thread
+    makes exactly that call after the probe is armed and before acquire():
+    the swap must still land on acquire's own adopt.lock flock, the refusal
+    must hold, and the foreign caller must be left alone.
+    """
+    store = _store(scratch)
+    armed = _arm_lease_lock_swap(monkeypatch, store)
+    foreign_errors: list[Exception] = []
+
+    def foreign_worker_poll() -> None:
+        try:
+            with (scratch / "queue.control.lock").open("a+b") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+        except Exception as exc:  # the worker loop swallows it; record it here
+            foreign_errors.append(exc)
+
+    foreign = threading.Thread(target=foreign_worker_poll, name="research-worker")
+    foreign.start()
+    foreign.join()
+
+    with pytest.raises(StoreCustodyError, match="inode changed"):
+        L.acquire(store.dir, _owner(), boot_id_now=BOOT)
+
+    assert armed["done"], "the swap fired on acquire's own adopt.lock flock"
+    assert foreign_errors == [], "the probe must never act on another thread's lock"
     assert not (store.dir / L.LEASE_DIRNAME / L.OWNER_FILENAME).exists()
 
 

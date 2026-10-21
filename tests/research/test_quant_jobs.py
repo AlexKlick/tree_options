@@ -316,7 +316,18 @@ def test_dirty_source_refuses_before_persisting(tmp_path, monkeypatch):
     assert not (tmp_path / "research" / "runstate.sqlite3").exists()
 
 
-def test_stop_during_completion_cannot_overwrite_terminal_results(tmp_path, monkeypatch):
+# Hang guard for the cross-thread handshake below, never a timing oracle:
+# every wait also wakes when the worker step ends, so a healthy run spends
+# none of it and a broken one fails at once with the step's own outcome.
+# The old 5 s bounds failed under full-suite load (W1 fx-flakes) because the
+# real compute phase (git identity, source hashing, a fsync-heavy campaign
+# store) legitimately ran longer than 5 s on a saturated host.
+HANDSHAKE_HANG_GUARD_S = 300.0
+
+
+def _stop_during_completion(tmp_path, monkeypatch, *, slow_compute_s: float = 0.0):
+    """Drive one worker step to the point between compute and publish, issue
+    STOP from this (the control) thread there, then let the step publish."""
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
@@ -324,23 +335,51 @@ def test_stop_during_completion_cannot_overwrite_terminal_results(tmp_path, monk
 
     workspace = tmp_path / "research"
     job, _ = enqueue(workspace, request(), datasets_dir=tmp_path)
-    completed_inner, release = Event(), Event()
+    completed_inner, release, wake = Event(), Event(), Event()
     original = jobs.compute_job
 
     def pause_before_publish(*args):
         result = original(*args)
+        if slow_compute_s:
+            Event().wait(slow_compute_s)  # a compute phase as slow as a loaded host
         completed_inner.set()
-        assert release.wait(5)
+        wake.set()
+        assert release.wait(HANDSHAKE_HANG_GUARD_S)
         return result
 
     monkeypatch.setattr(jobs, "compute_job", pause_before_publish)
     worker = ResearchWorker(workspace=workspace, catalog_provider=lambda: [])
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(worker.step)
-        assert completed_inner.wait(5)
-        assert set_stopped(workspace, job["run_id"], True)["status"] == "stopping"
-        release.set()
-        assert future.result(timeout=5)
+        future.add_done_callback(lambda _step: wake.set())
+        try:
+            assert wake.wait(HANDSHAKE_HANG_GUARD_S), "worker step hung before publish"
+            assert completed_inner.is_set(), (
+                "worker step ended before reaching the publish window: "
+                f"{job_detail(workspace, job['run_id'])['job']}"
+            )
+            assert set_stopped(workspace, job["run_id"], True)["status"] == "stopping"
+        finally:
+            release.set()  # never strand the step thread, whatever failed above
+        assert future.result(timeout=HANDSHAKE_HANG_GUARD_S)
+    return workspace, job, worker
+
+
+def test_stop_during_completion_survives_a_compute_slower_than_five_seconds(tmp_path, monkeypatch):
+    """Regression (W1 fx-flakes): the compute phase's wall time is not an oracle.
+
+    Under full-suite load the real compute (git identity, source hashing, a
+    fsync-heavy campaign store) ran past the old 5 s handshake bound and the
+    test failed with nothing wrong. A compute phase slower than that bound
+    must still reach the same terminal stopped state.
+    """
+    workspace, job, _worker = _stop_during_completion(tmp_path, monkeypatch, slow_compute_s=5.5)
+    assert job_detail(workspace, job["run_id"])["job"]["status"] == "stopped"
+    assert job_detail(workspace, job["run_id"])["result"] is None
+
+
+def test_stop_during_completion_cannot_overwrite_terminal_results(tmp_path, monkeypatch):
+    workspace, job, worker = _stop_during_completion(tmp_path, monkeypatch)
     assert job_detail(workspace, job["run_id"])["job"]["status"] == "stopped"
     assert job_detail(workspace, job["run_id"])["result"] is None
     set_stopped(workspace, job["run_id"], False)
