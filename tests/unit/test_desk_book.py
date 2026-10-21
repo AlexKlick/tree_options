@@ -851,3 +851,230 @@ def test_invalid_owner_envelopes_are_uncountable(tmp_path, change):
     )
     assert not exposure.countable
     assert "unreadable" in exposure.problems[0]
+
+
+# ------------------------------------------------- Wave 2: trex-desk-spec/2
+#
+# Equity positions are owned by the supervised desk (lane C) and written as
+# ``trex-desk-spec/2`` equity specs. Oracle for every equity loss figure: the
+# frozen contract arithmetic ``equity_max_loss_cents`` (C2.1) over an effect
+# at the basis price, never this adapter's own helper.
+
+
+def _v2_equity_tree(
+    tmp_path: Path, state: dict[str, object] | None, **effect_changes: object
+) -> tuple[Path, Path, Path]:
+    from tests.unit.trex_fakes import equity_effect
+    from tree_options.trex.contracts import desk_spec_v2_for, model_bytes
+
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    specs = tmp_path / "desk" / "specs"
+    specs.mkdir(parents=True)
+    effect = equity_effect(**effect_changes)
+    spec = desk_spec_v2_for(effect, datetime(2026, 10, 22, 10, 2, 30, tzinfo=ET))
+    (specs / f"{effect.intent_id}.json").write_bytes(model_bytes(spec))
+    book = specs.parent / "book.json"
+    if state is not None:
+        book.write_text(json.dumps({"heartbeat": None, "structures": {effect.intent_id: state}}))
+    return plans, specs, book
+
+
+def _equity_loss_usd(**effect_changes: object) -> Decimal:
+    from tests.unit.trex_fakes import equity_effect
+    from tree_options.trex.contracts import equity_max_loss_cents
+
+    return Decimal(equity_max_loss_cents(equity_effect(**effect_changes))) / 100
+
+
+class TestDeskSpecV2:
+    def test_a_registered_equity_is_working_at_its_reserved_max_loss(self, tmp_path) -> None:
+        plans, specs, book = _v2_equity_tree(tmp_path, None)
+        before = _tree_digest(tmp_path)
+        view = desk_book.load_book(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert view.problems == ()
+        [p] = view.positions
+        assert (p.id, p.source, p.underlying, p.status) == (
+            "desk:eq-spy-001",
+            "desk",
+            "SPY",
+            "working",
+        )
+        # 2 x 671.50 with the 20% gap reserve over the 13.00 stop loss
+        assert p.max_loss_usd == _equity_loss_usd() == D("268.60")
+        assert (p.quantity, p.exit_deadline, p.spec) == (2, date(2026, 10, 23), None)
+        assert _tree_digest(tmp_path) == before
+
+    def test_an_open_equity_risks_its_open_shares_at_the_fill(self, tmp_path) -> None:
+        state = _state(status="open", entry_fill="670.00", filled_qty=2, exit_filled_qty=1)
+        plans, specs, book = _v2_equity_tree(tmp_path, state)
+        view = desk_book.load_book(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert view.problems == ()
+        [p] = view.positions
+        assert (p.status, p.quantity) == ("open", 1)
+        assert p.max_loss_usd == _equity_loss_usd(quantity=1, limit_cents=67000)
+
+    def test_a_sub_penny_fill_rounds_the_basis_up(self, tmp_path) -> None:
+        state = _state(status="open", entry_fill="670.0012", filled_qty=2)
+        plans, specs, book = _v2_equity_tree(tmp_path, state)
+        view = desk_book.load_book(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert view.positions[0].max_loss_usd == _equity_loss_usd(limit_cents=67001)
+
+    def test_a_partial_entry_still_working_risks_the_whole_order(self, tmp_path) -> None:
+        state = _state(status="enter_working", filled_qty=37)
+        plans, specs, book = _v2_equity_tree(tmp_path, state, quantity=100)
+        view = desk_book.load_book(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        [p] = view.positions
+        assert (p.status, p.quantity) == ("working", 100)
+        assert p.max_loss_usd == _equity_loss_usd(quantity=100)
+
+    def test_a_closed_equity_is_not_exposure(self, tmp_path) -> None:
+        state = _state(status="closed", entry_fill="670.00", filled_qty=2, exit_filled_qty=2)
+        plans, specs, book = _v2_equity_tree(tmp_path, state)
+        view = desk_book.load_book(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert (view.positions, view.problems) == ((), ())
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            {"status": "open", "entry_fill": "671.51", "filled_qty": 2},  # above the BUY limit
+            {"status": "open", "entry_fill": "670", "filled_qty": 3},  # more than ordered
+            {"status": "open", "entry_fill": "670", "filled_qty": 2, "exit_filled_qty": 3},
+            {"status": "open", "entry_fill": "0", "filled_qty": 2},
+        ],
+    )
+    def test_an_incoherent_equity_state_is_a_problem(self, tmp_path, state) -> None:
+        plans, specs, book = _v2_equity_tree(tmp_path, _state(**state))
+        exposure = desk_book.account_exposure(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert not exposure.countable
+        assert exposure.problems and exposure.problems[0].startswith("desk:eq-spy-001")
+
+    def test_the_account_split_counts_the_equity_in_the_desk_slice(self, tmp_path) -> None:
+        state = _state(status="open", entry_fill="671.50", filled_qty=2)
+        plans, specs, book = _v2_equity_tree(tmp_path, state)
+        exposure = desk_book.account_exposure(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert exposure.countable
+        assert exposure.desk.structures == 1 and exposure.outside.structures == 0
+        assert exposure.desk.max_loss_usd == _equity_loss_usd()
+        assert exposure.desk.legs == 1, "a stock position is one leg, not an unknown count"
+        assert exposure.desk.earliest_exit_deadline == date(2026, 10, 23)
+
+    def test_a_v2_option_spec_counts_exactly_like_its_v1_twin(self, tmp_path) -> None:
+        from tree_options.trex.contracts import OptionDeskSpecV2, model_bytes
+
+        plans = tmp_path / "plans"
+        plans.mkdir()
+        specs = tmp_path / "desk" / "specs"
+        specs.mkdir(parents=True)
+        v2 = OptionDeskSpecV2(
+            intent_id="intent-1",
+            account_id="DU0000001",
+            entry_order_ref="trex:sup:intent-1",
+            registered_at=datetime(2026, 9, 24, 10, tzinfo=ET),
+            asset_kind="option",
+            structure=_spec(),
+        )
+        (specs / "d1.json").write_bytes(model_bytes(v2))
+        book = specs.parent / "book.json"
+        book.write_text(
+            json.dumps(
+                {
+                    "structures": {
+                        "d1": _state(
+                            status="open", entry_fill="1.10", filled_qty=2, exit_filled_qty=1
+                        )
+                    }
+                }
+            )
+        )
+        exposure = desk_book.account_exposure(
+            as_of=AS_OF,
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert exposure.countable
+        assert exposure.desk.max_loss_usd == D("190")  # as the v1 twin above
+        assert exposure.desk.positions[0].spec == _spec()
+
+    @pytest.mark.parametrize("change", ["asset_kind", "position_id", "stop_above_entry", "extra"])
+    def test_an_invalid_v2_equity_spec_is_uncountable(self, tmp_path, change) -> None:
+        plans, specs, book = _v2_equity_tree(tmp_path, None)
+        path = specs / "eq-spy-001.json"
+        raw = json.loads(path.read_bytes())
+        if change == "asset_kind":
+            raw["asset_kind"] = "future"
+        elif change == "position_id":
+            raw["position"]["position_id"] = "someone-else"
+        elif change == "stop_above_entry":
+            raw["position"]["exit_policy"]["stop_price_cents"] = 67150
+        else:
+            raw["unexpected"] = "do not ignore"
+        path.write_text(json.dumps(raw))
+        exposure = desk_book.account_exposure(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert not exposure.countable
+        assert "unreadable" in exposure.problems[0]
+
+    def test_a_book_entry_without_its_equity_spec_is_a_problem(self, tmp_path) -> None:
+        plans, specs, book = _v2_equity_tree(tmp_path, None)
+        (specs / "eq-spy-001.json").unlink()
+        book.write_text(
+            json.dumps({"structures": {"eq-spy-001": _state(status="open", filled_qty=2)}})
+        )
+        view = desk_book.load_book(
+            as_of=date(2026, 10, 22),
+            plans_root=plans,
+            state_root=tmp_path / "state",
+            desk_specs=specs,
+            desk_book=book,
+        )
+        assert view.problems == ("desk book: eq-spy-001 (open) has no spec",)

@@ -130,10 +130,12 @@ class StructureState:
         "exit_order_notional",
         "exit_order_seen",
         "exit_order_unpriced",
+        "exit_outside_qty",
         "exit_reason",
         "exit_unpriced_qty",
         "filled_qty",
         "status",
+        "stop_tick_at",
         "stop_ticks",
         "touch_ts",
         "updated_at",
@@ -163,6 +165,8 @@ class StructureState:
         entry_order_unpriced: int = 0,
         exit_unpriced_qty: int = 0,
         exit_order_unpriced: int = 0,
+        stop_tick_at: datetime | None = None,
+        exit_outside_qty: int = 0,
     ) -> None:
         self.status = status
         self.entry_order = entry_order
@@ -200,6 +204,15 @@ class StructureState:
         self.entry_order_unpriced = entry_order_unpriced
         self.exit_unpriced_qty = exit_unpriced_qty
         self.exit_order_unpriced = exit_order_unpriced
+        # Wave 2 equities: the instant of the last quote tick the stop
+        # confirmation counted (``stop_ticks`` counts NEW realtime ticks
+        # only), persisted so a restart neither recounts nor skips one
+        self.stop_tick_at = stop_tick_at
+        # Wave 2 equities: shares in the position's contract that were NOT
+        # the desk's when its last sell went out (an outside holding beside
+        # it). A restart that finds the sell gone expects exactly the book
+        # plus these; anything else may hide an unseen fill
+        self.exit_outside_qty = exit_outside_qty
 
     @property
     def open_qty(self) -> int:
@@ -220,6 +233,10 @@ class StructureState:
         for name in _UNPRICED:
             if getattr(self, name):
                 out[name] = getattr(self, name)
+        if self.stop_tick_at is not None:
+            out["stop_tick_at"] = _iso(self.stop_tick_at)
+        if self.exit_outside_qty:
+            out["exit_outside_qty"] = self.exit_outside_qty
         return out
 
     def _legacy_dict(self) -> dict[str, Any]:
@@ -276,6 +293,8 @@ class StructureState:
             entry_order_unpriced=int(raw.get("entry_order_unpriced", 0)),
             exit_unpriced_qty=int(raw.get("exit_unpriced_qty", 0)),
             exit_order_unpriced=int(raw.get("exit_order_unpriced", 0)),
+            stop_tick_at=_parse_iso(raw.get("stop_tick_at")),
+            exit_outside_qty=int(raw.get("exit_outside_qty", 0)),
         )
 
 

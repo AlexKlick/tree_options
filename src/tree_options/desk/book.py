@@ -12,11 +12,13 @@ Two sources, one :class:`~tree_options.desk.rails.BookView`:
   for anything missing, and never written (no lock or temp file either);
 * the DESK structure specs: ``<desk_specs>/*.json``, one
   :class:`~tree_options.trex.plan.LegStructure` per file
-  (``LegStructure.model_dump_json()``), with their state in an optional
-  desk ``book.json`` (the same format). The Wave 3 runtime owns that
-  directory; an absent directory is an empty desk. When its run dir lives
-  under the legacy state root (``desk-paper/``), pass its book here: it is
-  then the desk's, not an orphan.
+  (``LegStructure.model_dump_json()``), or a versioned owner envelope
+  (``trex.desk_spec.load_spec``: ``trex-desk-spec/1``, or Wave 2's
+  ``trex-desk-spec/2`` option or EQUITY spec), with their state in an
+  optional desk ``book.json`` (the same format). The Wave 3 runtime owns
+  that directory; an absent directory is an empty desk. When its run dir
+  lives under the legacy state root (``desk-paper/``), pass its book here:
+  it is then the desk's, not an orphan.
 
 Each structure maps to at most one position (id ``legacy:<plan>/<sid>`` or
 ``desk:<sid>``, unique across books):
@@ -37,6 +39,14 @@ Each structure maps to at most one position (id ``legacy:<plan>/<sid>`` or
   cap (the monitor may not have saved it yet); one whose entry date has
   passed is UNRESOLVED (a problem): its history is gone.
 
+A Wave 2 EQUITY position (id ``desk:<intent_id>``, underlying its symbol,
+no ``spec``: there are no option legs to price) reserves the contract's
+equity loss (C2.1 ``equity_max_loss_cents``: the stop loss or the 20% gap
+reserve, whichever is larger) in integer cents: an open one for its open
+shares at its entry fill (rounded up to the cent; the limit when no fill
+is on record), a working or registered one for the whole order at its
+limit. ``quantity`` is shares; :attr:`BookSlice.legs` counts it as one.
+
 Fail closed: an unreadable plan, book or spec, a missing plans dir, a
 duplicate plan id, an orphan legacy book with anything not CLOSED, a book
 entry that is not CLOSED but unknown to its plan/specs, and an inconsistent
@@ -55,18 +65,22 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 
 from tree_options.desk import paths
 from tree_options.desk.rails import BookPosition, BookView
-from tree_options.trex.desk_spec import DeskSpec
+from tree_options.trex.contracts.defaults import EQUITY_GAP_RESERVE_BPS
+from tree_options.trex.contracts.desk_spec_v2 import EquityDeskSpecV2
+from tree_options.trex.desk_spec import DeskSpec, load_spec
 from tree_options.trex.plan import LegStructure, PutSpread, load_plan
 from tree_options.trex.state import Status, StructureState
 
 _OPEN = frozenset({Status.OPEN, Status.EXIT_WORKING})
 _HUNDRED = Decimal(100)
 _ZERO = Decimal(0)
+#: the detail every equity position carries first (how slices tell one)
+EQUITY_DETAIL_PREFIX = "equity "
 
 Struct = PutSpread | LegStructure
 
@@ -289,6 +303,7 @@ def _desk(
     positions: list[BookPosition] = []
     problems: list[str] = []
     specs: dict[str, LegStructure] = {}
+    equities: dict[str, EquityDeskSpecV2] = {}
     if specs_dir is not None and specs_dir.is_dir():
         for spec_path in sorted(specs_dir.glob("*.json")):
             try:
@@ -298,16 +313,23 @@ def _desk(
                 if isinstance(raw, dict) and ("schema" in raw or "structure" in raw):
                     if "schema" not in raw:
                         raise ValueError("desk spec wrapper missing schema")
-                    spec = DeskSpec.model_validate(raw).structure
+                    owned = load_spec(raw)
+                    spec: LegStructure | EquityDeskSpecV2 = (
+                        owned.structure if isinstance(owned, DeskSpec) else owned
+                    )
                 else:
                     spec = LegStructure.model_validate(raw)
             except (OSError, ValueError) as exc:
                 problems.append(f"desk spec {spec_path.name} unreadable ({type(exc).__name__})")
                 continue
-            if spec.id in specs:
-                problems.append(f"desk spec {spec_path.name}: duplicate id {spec.id}")
+            sid = spec.id if isinstance(spec, LegStructure) else spec.intent_id
+            if sid in specs or sid in equities:
+                problems.append(f"desk spec {spec_path.name}: duplicate id {sid}")
                 continue
-            specs[spec.id] = spec
+            if isinstance(spec, LegStructure):
+                specs[sid] = spec
+            else:
+                equities[sid] = spec
     states: dict[str, StructureState] = {}
     if book_path is not None:
         try:
@@ -316,7 +338,7 @@ def _desk(
             problems.append(f"desk book {book_path.name} unreadable ({type(exc).__name__})")
             return positions, problems
     for sid, st in states.items():
-        if sid not in specs and st.status is not Status.CLOSED:
+        if sid not in specs and sid not in equities and st.status is not Status.CLOSED:
             problems.append(f"desk book: {sid} ({st.status.value}) has no spec")
     for sid, spec in specs.items():
         pid = f"desk:{sid}"
@@ -334,7 +356,87 @@ def _desk(
             continue
         if pos is not None:
             positions.append(pos)
+    for sid, equity in equities.items():
+        pid = f"desk:{sid}"
+        try:
+            pos = _equity_position(pid, equity, states.get(sid) or StructureState())
+        except _Inconsistent as exc:
+            problems.append(f"{pid}: {exc}")
+            continue
+        if pos is not None:
+            positions.append(pos)
     return positions, problems
+
+
+def _equity_loss_cents(shares: int, basis_cents: int, stop_cents: int) -> int:
+    """C2.1's reserved equity loss for ``shares`` bought at ``basis_cents``:
+    the stop loss, or the gap reserve (ceil(notional x bps / 10000)) when
+    that is larger. Integer cents throughout."""
+    stop_loss = shares * (basis_cents - stop_cents)
+    gap = -(-shares * basis_cents * EQUITY_GAP_RESERVE_BPS // 10_000)
+    return max(stop_loss, gap)
+
+
+def _validate_equity(spec: EquityDeskSpecV2, st: StructureState) -> None:
+    filled, exited = st.filled_qty, st.exit_filled_qty
+    ordered = spec.position.quantity
+    if filled < 0 or exited < 0:
+        raise _Inconsistent(f"negative quantity (filled {filled}, exited {exited})")
+    if exited > filled:
+        raise _Inconsistent(f"exited {exited} > filled {filled}")
+    if filled > ordered:
+        raise _Inconsistent(f"filled {filled} > the order's {ordered} shares")
+    if st.status is Status.OPEN and st.open_qty < 1:
+        raise _Inconsistent(f"open with {st.open_qty} open")
+    if st.status is Status.EXIT_WORKING and filled < 1:
+        raise _Inconsistent("exiting with nothing filled")
+    fill = st.entry_fill
+    if fill is not None:
+        if not fill.is_finite() or fill <= 0:
+            raise _Inconsistent(f"entry fill {fill} is not a positive price")
+        if fill * _HUNDRED > spec.position.entry_limit_cents:
+            raise _Inconsistent(f"entry fill {fill} above the BUY limit")
+
+
+def _equity_position(pid: str, spec: EquityDeskSpecV2, st: StructureState) -> BookPosition | None:
+    """A Wave 2 equity position's exposure (None once CLOSED)."""
+    _validate_equity(spec, st)
+    if st.status is Status.CLOSED:
+        return None
+    pos = spec.position
+    stop = pos.exit_policy.stop_price_cents
+    if st.status in _OPEN:
+        shares = st.open_qty
+        if st.entry_fill is None:
+            basis, how = pos.entry_limit_cents, f"open {shares} sh, no fill: at the limit"
+        else:
+            basis = int((st.entry_fill * _HUNDRED).to_integral_value(rounding=ROUND_CEILING))
+            how = f"open {shares} sh @ {st.entry_fill}"
+        status = "open"
+    else:
+        shares, basis = pos.quantity, pos.entry_limit_cents
+        how, status = f"{st.status.value}: at the limit for {shares} sh", "working"
+    loss = Decimal(_equity_loss_cents(shares, basis, stop)) / _HUNDRED
+    return BookPosition(
+        pid,
+        "desk",
+        pos.symbol,
+        status,
+        loss,
+        detail=f"{EQUITY_DETAIL_PREFIX}{pos.symbol} {how}",
+        spec=None,
+        quantity=shares,
+        exit_deadline=pos.exit_policy.exit_deadline_session,
+    )
+
+
+def is_equity_position(position: BookPosition) -> bool:
+    """A desk-owned Wave 2 stock position (no option legs to price)."""
+    return (
+        position.source == DESK_SOURCE
+        and position.spec is None
+        and position.detail.startswith(EQUITY_DETAIL_PREFIX)
+    )
 
 
 def load_book(
@@ -382,9 +484,11 @@ class BookSlice:
 
     @property
     def legs(self) -> int | None:
-        if any(p.spec is None for p in self.positions):
+        """Option legs, plus one per desk equity position (a stock is one
+        leg); None when any OPTION position's structure is unknown."""
+        if any(p.spec is None and not is_equity_position(p) for p in self.positions):
             return None
-        return sum(len(p.spec.legs) for p in self.positions if p.spec is not None)
+        return sum(len(p.spec.legs) if p.spec is not None else 1 for p in self.positions)
 
     @property
     def max_loss_usd(self) -> Decimal | None:

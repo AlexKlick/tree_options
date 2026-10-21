@@ -301,3 +301,25 @@ class TestLiveBookCompatibility:
         assert raw["stop_ticks"] == 2
         assert StructureState.from_dict(raw).stop_ticks == 2
         assert "stop_ticks" not in StructureState(status=Status.OPEN).to_dict()
+
+    def test_stop_tick_at_round_trips_once_used(self) -> None:
+        """Wave 2 equities: the instant of the last quote tick the stop
+        confirmation counted, so a restart neither recounts nor skips it."""
+        at = datetime(2026, 10, 22, 14, 0, 3, tzinfo=ET)
+        st = StructureState(status=Status.OPEN, stop_ticks=1, stop_tick_at=at)
+        raw = json.loads(json.dumps(st.to_dict()))
+        assert raw["stop_tick_at"] == at.isoformat()
+        back = StructureState.from_dict(raw)
+        assert back.stop_tick_at == at and back.stop_ticks == 1
+        assert "stop_tick_at" not in StructureState(status=Status.OPEN).to_dict()
+
+    def test_exit_outside_qty_round_trips_once_used(self) -> None:
+        """Wave 2 equities: the shares in the position's contract that were
+        not the desk's when its last sell went out, so a restart can tell a
+        stable outside holding from an exit that filled unseen."""
+        st = StructureState(status=Status.EXIT_WORKING, filled_qty=2, exit_outside_qty=5)
+        raw = json.loads(json.dumps(st.to_dict()))
+        assert raw["exit_outside_qty"] == 5
+        assert StructureState.from_dict(raw).exit_outside_qty == 5
+        assert StructureState.from_dict({"status": "open"}).exit_outside_qty == 0
+        assert "exit_outside_qty" not in StructureState(status=Status.OPEN).to_dict()
