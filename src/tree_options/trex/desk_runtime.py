@@ -45,6 +45,10 @@ working order's fills, then decide); this module is only I/O around it:
   structures at marketable prices.
 - **Arm gate.** ``exit_owner_ready`` = a fresh heartbeat AND the runtime's
   process lock held: the canary's ``protective_exit_ready`` input.
+- **Custody.** ``beat`` (single-threaded, under the lock: consistent) takes
+  the ``trex.desk_backup`` snapshot on a ``BACKUP-REQUEST`` file or on the
+  first beat after 16:30 ET of a session day; a failure is the
+  ``backup_failed`` event, never an exception in the loop.
 
 Assignment risk: ``assignment_plan`` is the canary's
 ``assignment_plan_verified`` input. A structure without a short call is
@@ -69,6 +73,7 @@ from typing import Any
 from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.desk.dividends import DividendSnapshot, ex_dividends
 from tree_options.trex.clock import ET, EntryWindow
+from tree_options.trex.desk_backup import OwnerBackups, default_backup_root
 from tree_options.trex.desk_spec import SPEC_SCHEMA as SPEC_SCHEMA
 from tree_options.trex.desk_spec import DeskSpec as DeskSpec
 from tree_options.trex.engine import (
@@ -233,6 +238,7 @@ _NOTIFY_EVENTS: dict[str, str] = {
     "entry_uncertain_held": "urgent",
     "gateway_lost": "urgent",
     "exit_blocked": "urgent",
+    "backup_failed": "default",
     "entry_request": "default",
     "entry_filled": "default",
     "exit_begin": "default",
@@ -254,10 +260,14 @@ class DeskRuntime:
         config: EngineConfig | None = None,
         clock: Callable[[], datetime] | None = None,
         notify: NotifyFn | None = None,
+        backup_root: Path | None = None,
     ) -> None:
         self.ib = ib
         self.paths = paths
         self.supervised = supervised or SupervisedPaths.default()
+        self.backups = OwnerBackups(
+            paths.root, self.supervised, backup_root or default_backup_root(paths.root)
+        )
         self.spots = spots
         self.dividends = dividends
         self.clock = clock or (lambda: datetime.now(ET))
@@ -465,6 +475,18 @@ class DeskRuntime:
         book.heartbeat = self._now()
         self._save(book)
         self._write_health(None, tick_ran=False)
+        self._custody()
+
+    def _custody(self) -> None:
+        """Phase 0 owner custody (``trex.desk_backup``): the snapshot is
+        consistent because this runs under the lock, between beats. Never
+        raises into the owner loop: a failed backup is an event."""
+        try:
+            outcome = self.backups.on_beat(self._now(), self._owner_epoch())
+            if outcome is not None:
+                self._event(outcome.pop("event"), **outcome)
+        except Exception:
+            log.exception("desk custody hook failed (the owner loop is unaffected)")
 
     def _snapshot(self, specs: Mapping[str, DeskSpec], now: datetime) -> Snapshot:
         structures = [s.structure for s in specs.values()]
