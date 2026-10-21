@@ -1,0 +1,19 @@
+[Service]
+# Drop-in for desk-evidence.service. Pins code to one sealed release; the base
+# unit keeps its Slice, memory caps, timeout and sandbox (AF_UNIX only).
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
+Environment=TREX_DESK_STATE=@DESK_STATE@
+Environment=DESK_STORE=@DESK_STORE@
+# Same write root as the base unit, stated against the release's desk state.
+ReadWritePaths=@DESK_STATE@/evidence
+# Reset every command list: a oneshot drop-in otherwise APPENDS and would run
+# the previous release first. The release identity check gates the start.
+ExecStartPre=
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
+ExecStart=
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.desk shadows
+ExecStartPost=

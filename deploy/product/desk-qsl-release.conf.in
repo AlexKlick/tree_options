@@ -1,11 +1,21 @@
 [Service]
+# Drop-in for desk-qsl.service. Runs the release interpreter directly: the base
+# unit is sandboxed (ProtectHome=read-only), so host-work could neither write
+# its /run/user payload nor keep the workload inside this unit's sandbox.
 WorkingDirectory=@SOURCE@
 Environment=PYTHONPATH=@SOURCE@/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
 Environment=TREX_DESK_STATE=@DESK_STATE@
 Environment=DESK_STORE=@DESK_STORE@
 Environment=TREX_DESK_QSL_QUEUE=@DESK_STATE@/queue-qsl
 Environment=TREX_DESK_QSL_DB=@DESK_STATE@/evidence/qsl.sqlite3
+ReadWritePaths=@DESK_STATE@
+# The base unit's ExecStartPre checks an older release; reset it.
+ExecStartPre=
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
 ExecStart=
-ExecStart=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.desk qsl
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.desk qsl
 ExecStartPost=
-ExecStartPost=%h/.local/bin/host-test @SOURCE@/.venv/bin/python -m tree_options.desk shadows --queue-dir @DESK_STATE@/queue-qsl --database @DESK_STATE@/evidence/qsl.sqlite3
+ExecStartPost=@SOURCE@/.venv/bin/python -m tree_options.desk shadows --queue-dir @DESK_STATE@/queue-qsl --database @DESK_STATE@/evidence/qsl.sqlite3

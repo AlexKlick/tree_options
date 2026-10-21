@@ -23,7 +23,18 @@ COMMANDS = [
     "tree_options.desk publish-evidence",
     "tree_options.trex.premarket",
     "tree_options.research.experiments",
+    "tree_options.desk shadows",
+    "tree_options.desk desk-enter",
 ]
+EXEC_KEYS = (
+    "ExecCondition",
+    "ExecStartPre",
+    "ExecStart",
+    "ExecStartPost",
+    "ExecReload",
+    "ExecStop",
+    "ExecStopPost",
+)
 STATE_KEYS = (
     "research_workspace",
     "paper_workspace",
@@ -174,20 +185,49 @@ def verify_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError(f"release_identity_changed:{key}")
 
 
+def _unit_commands(content: str) -> list[str]:
+    """`module [subcommand]` of every command line in a unit; "" if not `-m`."""
+    commands = []
+    for line in content.splitlines():
+        key, _, value = line.strip().partition("=")
+        tokens = value.split()
+        if key not in EXEC_KEYS or not tokens:
+            continue
+        if "-m" not in tokens[:-1]:
+            commands.append("")
+            continue
+        rest = tokens[tokens.index("-m") + 1 :]
+        sub = rest[1:2] if len(rest) > 1 and not rest[1].startswith("-") else []
+        commands.append(" ".join(rest[:1] + sub))
+    return commands
+
+
 def render_units(manifest: dict[str, Any], destination: Path) -> None:
+    """Write unit files and drop-ins for one verified release; never installs them.
+
+    All or nothing: every template is resolved and checked before anything is
+    written, so a refused render leaves no partial unit set behind.
+    """
     verify_manifest(manifest)
     source = Path(manifest["source"])
     if destination.exists():
         raise ValueError("unit_destination_exists")
-    destination.mkdir(parents=True)
     values = {**manifest, "release_dir": str(destination.parent)}
+    supported = set(manifest["supported_commands"])
+    rendered: dict[str, str] = {}
     for template in sorted((source / "deploy/product").glob("*.in")):
         content = template.read_text()
         for key, value in values.items():
             content = content.replace("@" + key.upper() + "@", str(value))
         if "@" in content:
             raise ValueError("unresolved_unit_template")
-        (destination / template.name.removesuffix(".in")).write_text(content)
+        for command in _unit_commands(content):
+            if command not in supported:
+                raise ValueError(f"release_template_command_unbound:{template.name}:{command}")
+        rendered[template.name.removesuffix(".in")] = content
+    destination.mkdir(parents=True)
+    for name, content in rendered.items():
+        (destination / name).write_text(content)
 
 
 def main() -> int:

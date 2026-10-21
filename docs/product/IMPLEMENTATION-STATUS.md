@@ -44,6 +44,18 @@ There were three claimed request/result pairs at intake, including the canary,
 and no pending/sending outbox file was observed. This is local journal inventory;
 it does not substitute for reconciliation with all broker orders.
 
+### Unit and release inventory (2026-10-21, read-only)
+
+`scripts/trex_inventory.py` maps every `trex-*`/`desk-*` user unit to the code it
+runs; see [INVENTORY.md](INVENTORY.md). In the 2026-10-21 run, 22 of 28 services
+ran from the serving checkout with `PYTHONPATH=src`. `trex-web`,
+`trex-premarket` and staging ran release `0ec5acb`, and `desk-qsl` ran
+`cc91b783`. `desk-evidence` and `desk-admission-preview` ran an untracked copy
+(`desk-wave3-safety-rc2`) that has no recorded identity. The run also found 5
+unreferenced release directories and 24 local branches with no upstream that are
+not merged into `origin/main`. This is an observation, not a custody receipt. The
+run did not check what a running process actually imported.
+
 ## Long-run artifact reconciliation
 
 Both artifacts name run `20260929T094303Z`. Both retain the partial/untrusted,
@@ -85,6 +97,16 @@ both originals; this increment does not replace either artifact.
   locks, supported commands, and every frontend asset. Mutable state remains
   outside the release. The tooling prepares manifests and unit files; activation
   and rollback remain owner-coordinated deployment steps.
+- Rendering now covers every unit that ran outside the serving checkout. There
+  are drop-ins for `trex-web`, `trex-web-staging`, `desk-qsl`, `desk-evidence`
+  and `desk-admission-preview`, plus the premarket unit. Each is pinned to one
+  release and gated on that release's identity check, and each resets the
+  inherited command lists. Render writes nothing unless every template passes,
+  and it refuses commands the manifest does not list. Sandboxed templates no
+  longer launch through `host-work`, which could not write its payload under
+  `ProtectHome=read-only`. The staging drop-in pins code only and keeps
+  staging's own state. None of this is installed. The ~22 units that run from
+  the serving checkout have no release template yet.
 
 At intake, real HTTP health and scorecards returned 200. The earlier reported
 HTTP failure was not reproduced; snapshot work removes the filesystem dependency
@@ -94,7 +116,12 @@ without claiming that an observed outage was fixed on the installed service.
 
 Phase 0 is OPEN: canary recovery/exit, complete owner-coordinated backup and
 restore rehearsal, and complete experiment/source inventory remain outstanding.
-Phase 1 is an isolated candidate, not an installed release.
+The read-only unit/release inventory exists, but it does not close custody. Still
+open: retiring the untracked `desk-wave3-safety-rc2` copy, deciding on the 5
+unreferenced release directories, and triaging the 24 branches that have no
+upstream.
+Phase 1 is an isolated candidate, not an installed release. No unit has been
+switched to a rendered drop-in.
 
 Phase 2 now has an isolated experiment index, detail API and React destination;
 see [EXPERIMENTS.md](EXPERIMENTS.md). Its nine-source publication preserves
