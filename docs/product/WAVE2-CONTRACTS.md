@@ -419,3 +419,32 @@ The 2026-10-14 plan is silent on these; each default is in
   is the property the golden test pins.
 - `ruff format --check` and `ruff check` clean on the new files; `mypy`
   (repo config, 349 files) clean.
+
+## C2.8 delivered (2026-10-21, on `wave2/base`)
+
+Added below the Wave 1 fakes in `tests/unit/trex_fakes.py`. The existing
+fakes (`FakeGateway`, `SupervisedGateway`, `FakeDeskBroker`, helpers) are
+unchanged; the new code imports no broker library (a test pins this).
+Tests: `tests/unit/test_trex_fakes_wave2.py`.
+
+| C2.8 item | Use |
+| --- | --- |
+| 1 | `FakeCommandAuthority(clock=, refuse_with=)`: `verify`, `make_request(body, family_sub=, peer_host=)`, `family_actor()`; records `calls` / `actors` / `refusals`. `sign_family_actor` mints family-apps v1 `x-family-actor` values (golden-checked against `src/actor.mjs`). Refusals: reason `command_unauthorized`; `detail` names the mode (`wrong_peer`, `bad_signature`, `actor_expired`, `wrong_audience`, `wrong_route`, `forwarded_without_actor`, forced). |
+| 2-4 | `Wave2Gateway(con_ids=, account="DU0000001", stocks={"SPY": 756733}, clock=)`, a `SupervisedGateway` subclass. Market data: `reqMarketDataType`, `set_market_data_type`, `script_ticks` / `script_bids` / `push_tick`. Orders: STK `placeOrder` checked against the C2.1 wire shape (`wire_violations`), `script_fills(order_ref, [FillStep(qty, price_micros, commission_micros)])`, `auto_fill`, `cancelOrder`, DAY expiry at the session close. Executions: IBKR exec ids (the first is the fixture's), `execDetailsEvent`, late `commissionReportEvent` (`commission_lag`, `deliver_commissions`), `correct_execution` (`.01` to `.02`). Positions: `positions()`, `portfolio()`, `accountValues()` (with `SettledCash`), `marks`; faults `add_broker_position` (unexplained, outside, fractional, unknown secType), `hide_position` (missing), `override_position` (quantity mismatch), `account_view_error`. |
+| 5 | `SessionClock()`: ET-aware and callable, over the trex NYSE calendar; `advance`, `to`, `to_et`, `to_open`, `to_close`, `to_next_open`, `close_of` (early closes), `next_session`, `trading_session`. `restart(down_s=, until=)` mints a new `owner_epoch`; the first epoch is the fixtures' `owner-20261022T133000Z-4242`. |
+| 6 | `contract_fixture`, `equity_effect`, `entry_proposal`, `approve_command`, `mandate_v2`, `ledger_event`; with no changes each reproduces its fixture. |
+
+Choices lanes should know:
+
+- Stock support is a subclass, not an edit of `FakeGateway`. As in ib_async
+  2.x, its `qualifyContracts` returns None for an unqualified contract.
+- Fills, ticks, cancels and commission reports advance one step per
+  `sleep`, and each `sleep(s)` advances the gateway's clock by `s`.
+- A wire violation raises `AssertionError` and is also recorded, so an
+  adapter that swallows the raise still fails its test.
+- Stock positions are derived from fills; option positions stay manual
+  (`position_rows`). The fake does not compute realized PnL (ib_async
+  reports `0.0`) or charge commissions to cash.
+- Verification: the required Wave 1 suites, `tests/soak/`,
+  `tests/contracts/` and the new file: 453 passed (host-work test profile).
+  `ruff` and `mypy` (repo config, plus the two test files) are clean.
