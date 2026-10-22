@@ -365,9 +365,11 @@ class IbkrSupervisedBroker:
         return blockers
 
     def _cash_blockers(self, account_id: str, notional_cents: int) -> list[str]:
-        """Cash-only cover (no margin): settled cash, net of what working
-        stock buys commit, must cover the entry's notional. An unreadable
-        view blocks by name; a lost session propagates."""
+        """Cash-only cover (no margin): the account's cash, net of what
+        working stock buys commit, must cover the entry's notional. The
+        cash is the books' one rule (``IbkrTrex.account_cash``):
+        ``SettledCash``, else ``TotalCashValue`` (a margin-type account).
+        An unreadable view blocks by name; a lost session propagates."""
         from tree_options.trex.contracts.vocabulary import Blocker
 
         try:

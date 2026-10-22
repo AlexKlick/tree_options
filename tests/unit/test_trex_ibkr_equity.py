@@ -539,16 +539,49 @@ def test_settled_cash_in_whole_cents_floored(value: str, cents: int) -> None:
 @pytest.mark.parametrize("value", [None, "nan", "junk", "inf"])
 def test_settled_cash_absent_or_junk_is_none(value: str | None) -> None:
     ib, gw = session()
-    if value is None:
+    if value is None:  # absent: neither SettledCash nor TotalCashValue
         del gw.account_values["SettledCash"]
-    else:
+        del gw.account_values["TotalCashValue"]
+    else:  # junk: never replaced by TotalCashValue
         gw.account_values["SettledCash"] = value
     assert ib.settled_cash_cents(ACCOUNT) is None
+    assert ib.account_cash(ACCOUNT) is None
 
 
 def test_settled_cash_of_another_account_is_never_read() -> None:
     ib, _ = session()
     assert ib.settled_cash_cents(OTHER_ACCOUNT) is None
+    assert ib.account_cash(OTHER_ACCOUNT) is None
+
+
+def test_a_margin_type_account_reads_total_cash_value() -> None:
+    """2026-10-21: the paper account (margin-type) has no SettledCash tag;
+    the adapter reads its TotalCashValue by the books' shared rule and
+    names the tag."""
+    ib, gw = session()
+    del gw.account_values["SettledCash"]
+    gw.account_values["TotalCashValue"] = "48657.049"
+    cash = ib.account_cash(ACCOUNT)
+    assert cash is not None
+    assert (cash.cents, cash.source) == (4_865_704, "TotalCashValue")
+    assert ib.settled_cash_cents(ACCOUNT) == 4_865_704
+    gw.account_values["SettledCash"] = "100.00"  # both: SettledCash wins
+    cash = ib.account_cash(ACCOUNT)
+    assert cash is not None
+    assert (cash.cents, cash.source) == (10_000, "SettledCash")
+    assert ib.settled_cash_cents(ACCOUNT) == 10_000
+
+
+def test_the_adapter_reads_a_base_currency_cash_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    ib, gw = session()
+    rows = [
+        SimpleNamespace(account=ACCOUNT, tag="TotalCashValue", value="9.00", currency="BASE"),
+        SimpleNamespace(account=ACCOUNT, tag="NetLiquidation", value="9.00", currency="USD"),
+    ]
+    monkeypatch.setattr(gw, "accountValues", lambda account="": rows)
+    cash = ib.account_cash(ACCOUNT)
+    assert cash is not None
+    assert (cash.cents, cash.source) == (900, "TotalCashValue")
 
 
 def test_working_stock_buys_commit_cash_until_filled() -> None:

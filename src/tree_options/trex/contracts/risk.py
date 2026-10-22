@@ -20,9 +20,9 @@ mismatch: it is an ``outside_positions`` row of the risk snapshot
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.trex.contracts.canonical import UTCInstant
@@ -35,6 +35,7 @@ from tree_options.trex.contracts.vocabulary import Blocker
 __all__ = [
     "RECONCILIATION_SCHEMA",
     "RISK_SNAPSHOT_SCHEMA",
+    "CashSource",
     "OutsidePosition",
     "PositionMismatch",
     "Reconciliation",
@@ -48,6 +49,9 @@ RECONCILIATION_SCHEMA = "trex-reconciliation/1"
 
 Cents = Annotated[int, Field(strict=True)]
 NonNegativeCents = Annotated[int, Field(strict=True, ge=0)]
+#: the IBKR account-value tag ``cash_cents`` was read from (amendment
+#: 2026-10-21, cash tag): ``SettledCash``, else ``TotalCashValue``
+CashSource = Literal["SettledCash", "TotalCashValue"]
 
 
 def _fresh(as_of: datetime, now: datetime, max_age_s: int) -> bool:
@@ -80,7 +84,11 @@ class RiskSnapshot(StrictModel):
     - ``day_realized_loss_cents``: today's realized losses (>= 0);
     - ``cash_cents``: settled cash (negative = borrowing, which a
       cash-only account must treat as ``insufficient_cash``);
-    - ``equity_gross_cents``: gross long stock exposure at marks.
+    - ``equity_gross_cents``: gross long stock exposure at marks;
+    - ``cash_source`` (additive, optional; amendment 2026-10-21): the
+      IBKR account-value tag ``cash_cents`` was read from. Absent from
+      the document when None (every earlier snapshot); an unavailable
+      snapshot never carries it.
 
     ``complete``: every figure was read; ``unavailable``: none is trusted
     (all figures None).
@@ -98,6 +106,16 @@ class RiskSnapshot(StrictModel):
     equity_gross_cents: NonNegativeCents | None
     outside_positions: tuple[OutsidePosition, ...] = ()
     stale_after_s: Literal[120] = RISK_SNAPSHOT_STALE_AFTER_S
+    cash_source: CashSource | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_cash_source(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """An absent ``cash_source`` stays absent: the document (and its
+        canonical bytes) of a snapshot without one is unchanged."""
+        document = handler(self)
+        if self.cash_source is None and isinstance(document, dict):
+            document.pop("cash_source", None)
+        return document
 
     @model_validator(mode="after")
     def _status_shape(self) -> RiskSnapshot:
@@ -110,7 +128,9 @@ class RiskSnapshot(StrictModel):
         if self.status == "complete" and any(f is None for f in figures):
             raise ValueError("a complete snapshot reads every figure")
         if self.status == "unavailable" and (
-            any(f is not None for f in figures) or self.outside_positions
+            any(f is not None for f in figures)
+            or self.outside_positions
+            or self.cash_source is not None
         ):
             raise ValueError("an unavailable snapshot carries no figures")
         return self

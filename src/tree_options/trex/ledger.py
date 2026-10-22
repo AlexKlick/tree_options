@@ -106,6 +106,7 @@ __all__ = [
     "AppendResult",
     "AttributionIndex",
     "AttributionTotals",
+    "CashIn",
     "HoldingsDocument",
     "HoldingsUnavailable",
     "LedgerConflict",
@@ -515,6 +516,21 @@ class StockCashOut:
 
 
 @dataclass(frozen=True)
+class CashIn:
+    """What one booked execution, stock or option, brought into cash
+    (micros, > 0): its proceeds net of its corrections (a sale, a credit).
+    IBKR's ``TotalCashValue`` shows them on the trade date, settled cash
+    only once they settle; the risk snapshot takes the unsettled ones back
+    out of a ``TotalCashValue`` figure (never added early, W2c)."""
+
+    account_id: str
+    con_id: int
+    #: the broker time of the fill (its ET date is the trade date)
+    at: datetime
+    micros: int
+
+
+@dataclass(frozen=True)
 class AttributionTotals:
     open_quantity: dict[int, int]
     realized_micros: int = 0
@@ -546,6 +562,8 @@ class LedgerFold:
     pending_commissions: tuple[str, ...] = ()
     #: every booked stock execution's cash out, in broker-time order (W2c)
     stock_cash_out: tuple[StockCashOut, ...] = ()
+    #: every booked execution's proceeds, in broker-time order (cash tag fix)
+    cash_in: tuple[CashIn, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -803,6 +821,11 @@ def fold_ledger(events: Iterable[LedgerEvent]) -> LedgerFold:
             _cash_out(fill)
             for fill in sorted(effective.values(), key=lambda f: (f.at, f.base))
             if fill.sec_type == "STK"
+        ),
+        cash_in=tuple(
+            CashIn(account_id=fill.account_id, con_id=fill.con_id, at=fill.at, micros=fill.cash)
+            for fill in sorted(effective.values(), key=lambda f: (f.at, f.base))
+            if fill.cash > 0
         ),
     )
 

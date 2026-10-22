@@ -580,6 +580,32 @@ def test_a_quote_and_a_cash_blocker_are_both_reported() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("total", "blockers"),
+    [
+        (EQ_NOTIONAL_USD, []),
+        ("1342.99", [Blocker.INSUFFICIENT_CASH]),
+        ("-100.00", [Blocker.INSUFFICIENT_CASH]),
+    ],
+)
+def test_preflight_cash_falls_back_to_total_cash_value(total: str, blockers: list[str]) -> None:
+    """2026-10-21: the margin-type paper account carries no SettledCash; the
+    preflight reads TotalCashValue by the same rule as the books."""
+    ib, gw = _eq_session()
+    _quoted(gw)
+    del gw.account_values["SettledCash"]
+    gw.account_values["TotalCashValue"] = total
+    assert _eq_broker(ib, gw).preflight(_eq_payload()) == blockers
+
+
+def test_preflight_settled_cash_wins_over_total_cash_value() -> None:
+    ib, gw = _eq_session()
+    _quoted(gw)
+    gw.account_values["SettledCash"] = "1342.99"
+    gw.account_values["TotalCashValue"] = "1000000.00"
+    assert _eq_broker(ib, gw).preflight(_eq_payload()) == [Blocker.INSUFFICIENT_CASH]
+
+
 EQ_SECRET = "acct DU0000001 provider detail"
 
 
@@ -587,6 +613,10 @@ def test_unreadable_settled_cash_blocks_with_the_view_name_only() -> None:
     ib, gw = _eq_session()
     _quoted(gw)
     del gw.account_values["SettledCash"]
+    del gw.account_values["TotalCashValue"]  # neither cash tag: unreadable
+    assert _eq_broker(ib, gw).preflight(_eq_payload()) == ["broker_view_unreadable:account_values"]
+    gw.account_values["SettledCash"] = "junk"  # junk: never replaced
+    gw.account_values["TotalCashValue"] = EQ_NOTIONAL_USD
     assert _eq_broker(ib, gw).preflight(_eq_payload()) == ["broker_view_unreadable:account_values"]
     gw.account_view_error = TimeoutError(EQ_SECRET)
     blockers = _eq_broker(ib, gw).preflight(_eq_payload())

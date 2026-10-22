@@ -42,7 +42,10 @@ primitives beside the option packages, still pure I/O:
   cannot represent is listed in ``unrepresentable``, never dropped; an
   unreadable view carries its error CLASS only;
 - ``settled_cash_cents`` / ``working_stock_buy_cents`` are the cash-only
-  facts the supervised equity preflight checks.
+  facts the supervised equity preflight checks; ``account_cash`` (the
+  cents and the tag) is what the books publish. Both read the account
+  values by the books' one rule (``risk_snapshot.account_cash``):
+  ``SettledCash``, else ``TotalCashValue``.
 
 The contracts package imports this module (``contracts.books``), so it is
 imported lazily here, never at module level.
@@ -65,6 +68,7 @@ from tree_options.trex.plan import Leg, LegStructure, PutSpread, validate_packag
 if TYPE_CHECKING:
     from tree_options.trex.contracts.books import BrokerExecution, BrokerPortfolioItem
     from tree_options.trex.contracts.proposals import Quote
+    from tree_options.trex.risk_snapshot import AccountCash
 
 log = logging.getLogger("trex.ibkr")
 
@@ -1086,25 +1090,23 @@ class IbkrTrex:
             return BrokerView(error=type(exc).__name__)
         return _map_rows(_of_account(rows, account), lambda row: broker_portfolio_item(row, at))
 
-    def settled_cash_cents(self, account: str) -> int | None:
-        """``account``'s settled cash in whole cents, floored: its
-        ``SettledCash`` account value in USD (else BASE). None when absent,
-        junk or ambiguous (two different values). Read errors propagate."""
+    def account_cash(self, account: str) -> AccountCash | None:
+        """``account``'s cash in whole cents, floored, and its tag, by the
+        books' shared rule (``risk_snapshot.account_cash``): its
+        ``SettledCash`` account value (USD, else BASE), else its
+        ``TotalCashValue`` (a margin-type account, e.g. the IBKR paper
+        account, may report no ``SettledCash``). None when neither is
+        reported, junk or ambiguous. Read errors propagate."""
+        from tree_options.trex.risk_snapshot import account_cash
+
         assert self._ib is not None
-        rows = [
-            r
-            for r in self._ib.accountValues()
-            if getattr(r, "tag", "") == "SettledCash" and str(getattr(r, "account", "")) == account
-        ]
-        for currency in ("USD", "BASE"):
-            values = [_number(r.value) for r in rows if getattr(r, "currency", "") == currency]
-            if not values:
-                continue
-            value = values[0]
-            if value is None or any(v != value for v in values):
-                return None
-            return _scaled(value, _CENT, ROUND_FLOOR)
-        return None
+        return account_cash(self._ib.accountValues(), account_id=account)
+
+    def settled_cash_cents(self, account: str) -> int | None:
+        """``account_cash`` in cents alone (the equity preflight's cash):
+        the same rule. Read errors propagate."""
+        cash = self.account_cash(account)
+        return None if cash is None else cash.cents
 
     def working_stock_buy_cents(self, account: str) -> int | None:
         """Cash ``account``'s working STK BUY orders commit: unfilled shares

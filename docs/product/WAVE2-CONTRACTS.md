@@ -275,7 +275,10 @@ read; `unavailable` = all figures null), `open_loss_cents` (>= 0),
 borrowing; W2c: net of the booked stock cash the broker's settled figure
 does not show yet, see the amendment log), `equity_gross_cents` (>= 0),
 `outside_positions` (rows in
-contracts the Wave 2 ledger never touched), `stale_after_s` = 120.
+contracts the Wave 2 ledger never touched), `stale_after_s` = 120,
+`cash_source` (optional, additive 2026-10-21: `SettledCash` or
+`TotalCashValue`, the account-value tag `cash_cents` was read from; absent
+when unknown, never on an unavailable snapshot).
 `risk_snapshot_blockers`: absent, unavailable, older than 120 s or
 future-dated gives `risk_snapshot_stale`.
 
@@ -597,6 +600,25 @@ its commission, a sale's commission alone (a sale's proceeds are never
 added early). Conservative by construction: a double count could only
 understate cash and refuse an entry (`insufficient_cash`), never admit one;
 exits never read it (`trex.risk_snapshot` module docstring).
+
+### 2026-10-21: C2.5 cash tag fallback, `cash_source` (paper account hotfix)
+
+Additive: one new optional field, no vocabulary change. Observed live on
+the IBKR paper account (21:52 ET): it is margin-type, its account values
+carry `TotalCashValue` but no `SettledCash`, so the books logged
+`books_problem: risk:settled cash unreadable` and every entry failed
+closed. One rule (`risk_snapshot.account_cash`, read by the books and by
+the equity preflight through `IbkrTrex.account_cash`): `SettledCash` when
+the account reports it (USD, else BASE), else `TotalCashValue` (USD, else
+BASE), else unreadable as before; a reported but junk or ambiguous figure
+is unreadable, never replaced. `RiskSnapshot.cash_source` records the tag
+(absent from the document when None, so every earlier snapshot and the
+frozen fixture keep their bytes; an unavailable snapshot never carries
+it). The W2c subtraction is unchanged; `TotalCashValue` already shows a
+same-day purchase (the double count only understates) and also a same-day
+sale's proceeds, so from it the books also take every booked execution's
+unsettled proceeds (stock or option, same settlement rule) back out:
+never more than the `SettledCash` figure of the same books.
 
 ### 2026-10-21: default 11, a resume never lifts a newer stop (W2c refix)
 

@@ -236,6 +236,30 @@ def test_unreadable_broker_views_make_both_status_files_unavailable(rig):
     assert len(codes) == len(set(codes)), "each problem code is recorded once"
 
 
+def test_a_margin_type_account_publishes_cash_from_total_cash_value(rig):
+    """2026-10-21 21:52 ET, IBKR paper: the margin-type account reports no
+    SettledCash and the books logged ``risk:settled cash unreadable`` on
+    every publish, failing every entry closed. Its TotalCashValue is the
+    cash now, and the snapshot names the tag it came from."""
+    rig.gw.account_values.pop("SettledCash")
+    rig.gw.account_values["TotalCashValue"] = "48657.04"
+    step = rig.books.step()
+    assert step.risk_snapshot == "complete", step.problems
+    assert not any("cash" in p for p in step.problems), step.problems
+    risk = rig.risk()
+    assert (risk.cash_cents, risk.cash_source) == (4_865_704, "TotalCashValue")
+    rig.gw.account_values["SettledCash"] = "40000.00"
+    assert rig.books.step(force=True).risk_snapshot == "complete"
+    assert (rig.risk().cash_cents, rig.risk().cash_source) == (4_000_000, "SettledCash")
+    # neither tag: unavailable exactly as before
+    rig.gw.account_values.pop("SettledCash")
+    rig.gw.account_values.pop("TotalCashValue")
+    blocked = rig.books.step(force=True)
+    assert blocked.risk_snapshot == "unavailable"
+    assert "risk:settled cash unreadable" in blocked.problems
+    assert (rig.risk().cash_cents, rig.risk().cash_source) == (None, None)
+
+
 def test_an_execution_the_contracts_cannot_carry_fails_closed(rig):
     rig.gw.fill_rows.append(
         SimpleNamespace(
