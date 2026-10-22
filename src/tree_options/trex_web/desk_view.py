@@ -14,7 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from tree_options.desk import book as desk_book
@@ -29,12 +29,7 @@ from tree_options.trex.contracts import CommandAuthority
 from tree_options.trex.desk_cli import collect_status
 from tree_options.trex.desk_runtime import DeskPaths
 from tree_options.trex.supervised import SupervisedPaths
-from tree_options.trex_web.automation import (
-    automation_action,
-    automation_status,
-    kill_file_action,
-)
-from tree_options.trex_web.commands_view import LoopbackCommandAuthority, command_actor_guard
+from tree_options.trex_web.automation import automation_status
 
 _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
@@ -142,15 +137,16 @@ def attach(
     run_dir: Callable[[], Path] | None = None,
     supervised_dir: Callable[[], Path] | None = None,
 ) -> None:
-    """Mount the desk routes.
+    """Mount the desk's READ routes.
 
-    The two POST routes (automation, kill files) run only for an actor the
-    ``authority`` verified (default: ``LoopbackCommandAuthority``); a
-    refused request is a 403 before any effect. ``run_dir`` /
-    ``supervised_dir`` resolve the desk's directories per request (default:
-    their env-driven ``default()``)."""
+    Every effecting desk route (the legacy kill-file verbs and the timer
+    controls) lives in ``commands_view`` with the command backend, which
+    authenticates and queues for the desk owner; nothing mounted here
+    writes. ``authority`` is accepted for the app's call signature and not
+    used. ``run_dir`` / ``supervised_dir`` resolve the desk's directories
+    per request (default: their env-driven ``default()``)."""
+    del authority  # the effecting routes moved to commands_view
     snapshot_path = os.environ.get("TREX_DESK_READ_SNAPSHOT")
-    operator = Depends(command_actor_guard(authority or LoopbackCommandAuthority()))
 
     def desk_paths() -> DeskPaths:
         return DeskPaths(run_dir()) if run_dir is not None else DeskPaths.default()
@@ -463,38 +459,6 @@ def attach(
         try:
             doc = automation_status(desk_paths().root)
         except (OSError, RuntimeError):
-            return _unavailable()
-        return JSONResponse(doc, headers={"Cache-Control": "no-store"})
-
-    @app.post("/api/desk/automation/{key}/{action}", dependencies=[operator])
-    def automation_control(key: str, action: str) -> JSONResponse:
-        """Enable/disable a whitelisted desk timer, or run its service now.
-
-        Only for a verified operator (403 before any effect otherwise). The
-        unit whitelist is the whole surface: an unknown key or action is a
-        404/422, never a shell. Every action is audited to automation.jsonl
-        (actor: cockpit)."""
-        if action not in ("enable", "disable", "run"):
-            return JSONResponse({"error": "unknown_action"}, status_code=422)
-        try:
-            doc = automation_action(desk_paths().root, key, action)
-        except KeyError:
-            return JSONResponse({"error": "unknown_unit"}, status_code=404)
-        except (OSError, RuntimeError):
-            return _unavailable()
-        return JSONResponse(doc, headers={"Cache-Control": "no-store"})
-
-    @app.post("/api/desk/supervised/{action}", dependencies=[operator])
-    def supervised_control(action: str) -> JSONResponse:
-        """HALT / FLATTEN / resume for the supervised desk (the desk_cli
-        verbs, surfaced; the running desk observes the files on its next
-        tick - nothing here contacts the broker). Only for a verified
-        operator: a refused request is a 403 and touches no file."""
-        if action not in ("halt", "flatten", "resume"):
-            return JSONResponse({"error": "unknown_action"}, status_code=422)
-        try:
-            doc = kill_file_action(desk_paths().root, action)
-        except OSError:
             return _unavailable()
         return JSONResponse(doc, headers={"Cache-Control": "no-store"})
 

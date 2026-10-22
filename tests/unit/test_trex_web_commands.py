@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -41,8 +42,9 @@ from tree_options.trex.contracts import (
     proposal_sha256,
     sha256_hex,
 )
+from tree_options.trex_web import automation
 from tree_options.trex_web.app import create_app
-from tree_options.trex_web.command_store import CommandStore
+from tree_options.trex_web.command_store import CommandStore, command_window_blocker
 from tree_options.trex_web.commands_view import LoopbackCommandAuthority
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -138,7 +140,7 @@ def test_unauthenticated_command_is_refused_and_writes_nothing(desk):
 
 def test_the_authority_sees_the_transport_peer_and_raw_bytes(desk):
     raw = json.dumps(command_body(desk.clock)).encode()
-    assert post(desk, raw).status_code == 200
+    assert post(desk, raw).status_code == 202
     [call] = desk.authority.calls
     assert call.method == "POST" and call.path == COMMANDS
     assert call.peer_host == "127.0.0.1" and call.body == raw
@@ -255,53 +257,62 @@ def test_accepted_command_is_queued_atomically_and_nothing_is_applied(desk):
     assert not desk.supervised.exists()
 
 
-@pytest.mark.parametrize("kind", ["flatten", "resume_all", "resume_entries"])
-def test_owner_only_kinds_are_queued_never_applied_by_the_web(desk, kind):
+REASON_KINDS = ("pause_entries", "resume_entries", "halt", "flatten", "resume_all")
+
+
+@pytest.mark.parametrize("kind", REASON_KINDS)
+def test_every_kind_is_queued_and_never_applied_by_the_web(desk, kind):
+    """Coordinator decision 2026-10-21: the desk owner applies EVERY kind,
+    the safety direction included; the web only queues."""
     desk.run_dir.mkdir(parents=True)
-    for name in ("HALT", "PAUSE_ENTRIES"):
-        (desk.run_dir / name).write_text("")
+    (desk.run_dir / "HALT").write_text("")
+    (desk.run_dir / "PAUSE_ENTRIES").write_text("")
+    before = {name: (desk.run_dir / name).read_bytes() for name in ("HALT", "PAUSE_ENTRIES")}
     response = post(desk, command_body(desk.clock, kind))
-    assert response.status_code == 202 and response.json()["status"] == "accepted"
-    # flatten creates no FLATTEN, resume_* removes nothing: the desk applies them
-    assert (desk.run_dir / "HALT").exists() and (desk.run_dir / "PAUSE_ENTRIES").exists()
-    assert not (desk.run_dir / "FLATTEN").exists()
-    assert desk.layout.command(KEY).exists()
-
-
-# -- safety direction: pause_entries / halt apply directly ---------------------------
+    assert response.status_code == 202
+    result = CommandResult.model_validate(response.json())
+    assert result.status == "accepted" and result.reason is None and result.result is None
+    # no kill file created, removed or rewritten; nothing outside commands/
+    assert {n: (desk.run_dir / n).read_bytes() for n in before} == before
+    assert sorted(tree(desk.run_dir)) == [
+        "HALT",
+        "PAUSE_ENTRIES",
+        "commands/.lock",
+        f"commands/{KEY}.json",
+        f"commands/{KEY}.result.json",
+    ]
+    assert parse_command(json.loads(desk.layout.command(KEY).read_bytes())).kind == kind
 
 
 @pytest.mark.parametrize(
     ("kind", "kill_file"), [("pause_entries", "PAUSE_ENTRIES"), ("halt", "HALT")]
 )
-def test_safety_direction_applies_the_kill_file_and_still_queues(desk, kind, kill_file):
+def test_the_safety_direction_writes_no_kill_file_either(desk, kind, kill_file):
     response = post(desk, command_body(desk.clock, kind))
-    assert response.status_code == 200
-    result = CommandResult.model_validate(response.json())
-    assert result.status == "applied" and result.reason is None
-    assert result.result == {"kill_file": kill_file, "present": True}
-    assert (desk.run_dir / kill_file).exists()
-    other = {"PAUSE_ENTRIES", "HALT"} - {kill_file}
-    assert not any((desk.run_dir / name).exists() for name in other)
-    assert not (desk.run_dir / "FLATTEN").exists()
-    # the owner still sees the command (it logs the event; re-applying is idempotent)
-    assert parse_command(json.loads(desk.layout.command(KEY).read_bytes())).kind == kind
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    assert not (desk.run_dir / kill_file).exists()
+    assert sorted(tree(desk.run_dir)) == [
+        "commands/.lock",
+        f"commands/{KEY}.json",
+        f"commands/{KEY}.result.json",
+    ]
 
 
-def test_direct_apply_blocked_by_the_sandbox_degrades_to_queued(desk):
-    """The unit may write ONLY <run_dir>/commands: a kill file in the run dir
-    root then fails, and the command is queued for the owner instead."""
+@pytest.mark.parametrize("kind", ["halt", "pause_entries", "flatten"])
+def test_a_web_that_may_write_only_commands_queues_every_kind(desk, kind):
+    """The unit may write ONLY <run_dir>/commands: a read-only run dir root
+    changes nothing, because the web never writes there."""
     desk.layout.commands().mkdir(parents=True)
     os.chmod(desk.run_dir, 0o555)
     try:
-        response = post(desk, command_body(desk.clock, "halt"))
+        response = post(desk, command_body(desk.clock, kind))
     finally:
         os.chmod(desk.run_dir, 0o755)
     assert response.status_code == 202
     result = CommandResult.model_validate(response.json())
-    assert result.status == "accepted" and "queued for the desk owner" in result.detail
-    assert not (desk.run_dir / "HALT").exists()
-    assert parse_command(json.loads(desk.layout.command(KEY).read_bytes())).kind == "halt"
+    assert result.status == "accepted" and result.detail == ""
+    assert sorted(p.name for p in desk.run_dir.iterdir()) == ["commands"]
+    assert parse_command(json.loads(desk.layout.command(KEY).read_bytes())).kind == kind
 
 
 # -- idempotency ----------------------------------------------------------------------
@@ -379,12 +390,99 @@ def test_expired_command_is_refused_and_never_queued(desk):
     assert retry["status"] == "duplicate" and retry["result"]["first_status"] == "refused"
 
 
-def test_a_command_issued_in_the_future_is_not_accepted(desk):
-    issued = desk.clock.utc() + timedelta(seconds=600)
-    response = post(desk, command_body(desk.clock, "halt", issued=issued))
-    assert response.status_code == 422
-    assert response.json()["error"] == "command_not_yet_valid"
-    assert tree(desk.run_dir) == {}
+# -- one validity rule for every kind, web and owner alike ---------------------------
+#
+# The rule (stated, not derived from the code): a command is valid while
+# issued_at <= now + 60 s (client clock skew) and now < expires_at. Beyond
+# the skew it is refused ``command_not_yet_valid``; from expires_at on it is
+# refused ``command_expired``. Both refusals are durable (the key is spent).
+
+#: (issued_at minus now in seconds, ttl in seconds, expected refusal or None)
+WINDOW_GRID = [
+    (600, 120, "command_not_yet_valid"),
+    (61, 120, "command_not_yet_valid"),
+    (60, 120, None),
+    (30, 120, None),
+    (0, 120, None),
+    (-119, 120, None),
+    (-120, 120, "command_expired"),
+    (-300, 300, "command_expired"),
+]
+
+
+def approve_args() -> dict:
+    return model_document(approve_command(entry_proposal()))["args"]
+
+
+def kind_args(kind: str) -> dict | None:
+    return approve_args() if kind == "approve_entry" else None
+
+
+@pytest.mark.parametrize(("lead_s", "ttl_s", "refusal"), WINDOW_GRID)
+def test_pause_and_approve_get_the_same_verdict_from_the_web(desk, lead_s, ttl_s, refusal):
+    issued = desk.clock.utc() + timedelta(seconds=lead_s)
+    verdicts = {}
+    for n, kind in enumerate(("pause_entries", "approve_entry")):
+        key = (KEY, KEY2)[n]
+        body = command_body(desk.clock, kind, key=key, args=kind_args(kind), issued=issued)
+        body["expires_at"] = _iso(issued + timedelta(seconds=ttl_s))
+        response = post(desk, body)
+        result = CommandResult.model_validate(response.json())
+        verdicts[kind] = (response.status_code, result.status, result.reason)
+        if refusal is None:
+            assert desk.layout.command(key).exists()
+        else:
+            # refused durably and never queued: the owner never sees it
+            assert not desk.layout.command(key).exists()
+            stored = CommandResult.model_validate_json(desk.layout.command_result(key).read_bytes())
+            assert stored == result
+    expected = (202, "accepted", None) if refusal is None else (409, "refused", refusal)
+    assert verdicts == {"pause_entries": expected, "approve_entry": expected}
+    assert not (desk.run_dir / "PAUSE_ENTRIES").exists()
+
+
+@pytest.mark.parametrize(("lead_s", "ttl_s", "refusal"), WINDOW_GRID)
+def test_the_owner_applies_exactly_what_the_web_accepts(tmp_path, desk, lead_s, ttl_s, refusal):
+    """The same instant, the same command: the web's intake verdict and the
+    owner-side ``apply_entries_command`` verdict never disagree."""
+    issued = desk.clock.utc() + timedelta(seconds=lead_s)
+    body = command_body(desk.clock, "pause_entries", issued=issued)
+    body["expires_at"] = _iso(issued + timedelta(seconds=ttl_s))
+    actor = desk.authority.verify(desk.authority.make_request(b"{}"))
+    command = parse_command({**body, "issued_by": model_document(actor)})
+    now = desk.clock()
+    assert command_window_blocker(command, now) == refusal
+    owner_dir = tmp_path / "owner-run"
+    if refusal is None:
+        assert automation.apply_entries_command(owner_dir, command, now=now)["entries_paused"]
+    else:
+        with pytest.raises(ValueError, match=refusal):
+            automation.apply_entries_command(owner_dir, command, now=now)
+        assert not (owner_dir / "PAUSE_ENTRIES").exists()
+
+
+def test_a_pause_accepted_ahead_of_its_issued_at_is_not_dropped_by_the_owner(tmp_path, desk):
+    """The review P2: the web accepted a pause issued 30 s ahead (client
+    skew); the owner claimed it 1 s later, still before issued_at. The owner
+    must apply it, not refuse it on a different rule."""
+    issued = desk.clock.utc() + timedelta(seconds=30)
+    response = post(desk, command_body(desk.clock, "pause_entries", issued=issued))
+    assert response.status_code == 202
+    queued = parse_command(json.loads(desk.layout.command(KEY).read_bytes()))
+    desk.clock.advance(1)
+    doc = automation.apply_entries_command(tmp_path / "owner-run", queued, now=desk.clock())
+    assert doc["entries_paused"] is True and doc["changed"] is True
+
+
+@pytest.mark.parametrize("kind", ["approve_entry", "halt", "flatten", "resume_all", "backup_state"])
+def test_the_rule_is_kind_blind(desk, kind):
+    args = {"backup_state": {}}.get(kind, kind_args(kind))
+    actor = desk.authority.verify(desk.authority.make_request(b"{}"))
+    for lead_s, ttl_s, refusal in WINDOW_GRID:
+        issued = desk.clock.utc() + timedelta(seconds=lead_s)
+        body = command_body(desk.clock, kind, args=args, issued=issued, ttl_s=ttl_s)
+        command = parse_command({**body, "issued_by": model_document(actor)})
+        assert command_window_blocker(command, desk.clock()) == refusal, (kind, lead_s)
 
 
 def test_an_unreadable_stored_result_is_503_never_overwritten(desk):
@@ -445,6 +543,33 @@ def test_a_crash_between_result_and_queue_is_finished_by_the_retry(desk):
     assert retry.result.status == "duplicate"
     assert desk.layout.command(KEY).read_bytes() == model_bytes(command)
     assert not staged.exists()
+
+
+@pytest.mark.parametrize("owner_status", ["applied", "failed", "refused"])
+def test_staged_debris_is_never_published_once_the_owner_moved_the_result_on(desk, owner_status):
+    """Only an ``accepted`` result means "queued by the web, not yet seen by
+    the owner". A staged file beside any other outcome is debris: publishing
+    it would hand the owner a command it already finished."""
+    store = CommandStore(desk.run_dir)
+    command = parse_command(
+        {
+            **command_body(desk.clock, "flatten"),
+            "issued_by": model_document(desk.authority.verify(desk.authority.make_request(b"{}"))),
+        }
+    )
+    assert store.submit(command, now=desk.clock.utc()).result.status == "accepted"
+    accepted = CommandResult.model_validate_json(desk.layout.command_result(KEY).read_bytes())
+    moved_on = {**model_document(accepted), "status": owner_status, "result": {"done": True}}
+    if owner_status != "applied":
+        moved_on["reason"] = "kill_file_present"
+    desk.layout.command_result(KEY).write_bytes(model_bytes(CommandResult.model_validate(moved_on)))
+    staged = desk.layout.commands() / f".{KEY}.json.staged"
+    desk.layout.command(KEY).rename(staged)  # as if left behind
+    retry = store.submit(command, now=desk.clock.utc())
+    assert retry.result.status == "duplicate"
+    assert retry.result.result is not None
+    assert retry.result.result["first_status"] == owner_status
+    assert not desk.layout.command(KEY).exists() and not staged.exists()
 
 
 # -- read APIs ---------------------------------------------------------------------
@@ -537,43 +662,161 @@ def test_no_proposals_dir_is_an_empty_list_not_an_error(desk):
     assert not desk.run_dir.exists()
 
 
-# -- the two legacy POST routes are behind the same authority -------------------------
+# -- the legacy POST routes: authenticated, translated, QUEUED ------------------------
+
+#: legacy verb -> the trex-command/1 kind it queues
+LEGACY_KINDS = {"halt": "halt", "flatten": "flatten", "resume": "resume_all"}
 
 
-@pytest.mark.parametrize("action", ["halt", "flatten", "resume"])
-def test_legacy_kill_file_route_requires_the_authority(desk, action):
+def legacy(desk, action: str, **headers: str):
+    return desk.client.post(f"/api/desk/supervised/{action}", headers=headers)
+
+
+def queued_commands(desk) -> list:
+    folder = desk.layout.commands()
+    if not folder.is_dir():
+        return []
+    return [
+        parse_command(json.loads(p.read_bytes()))
+        for p in sorted(folder.glob("*.json"))
+        if not p.name.endswith(".result.json")
+    ]
+
+
+@pytest.mark.parametrize("action", sorted(LEGACY_KINDS))
+def test_legacy_route_requires_the_authority_and_queues_with_the_actor(desk, action):
     desk.run_dir.mkdir(parents=True)
     (desk.run_dir / "HALT").write_text("")
     before = tree(desk.run_dir)
     desk.authority.refuse_with = "wrong_peer"
-    response = desk.client.post(f"/api/desk/supervised/{action}")
+    response = legacy(desk, action)
     assert response.status_code == 403
     assert response.json()["detail"]["error"] == "command_unauthorized"
-    assert tree(desk.run_dir) == before  # no kill file touched, no audit line
+    assert tree(desk.run_dir) == before
     desk.authority.refuse_with = None
-    assert desk.client.post(f"/api/desk/supervised/{action}").status_code == 200
-    assert tree(desk.run_dir) != before
-    # the route acts on the app's run dir (the one the command backend uses)
-    assert (desk.run_dir / "automation.jsonl").exists()
+
+    response = legacy(desk, action)
+    assert response.status_code == 202
+    doc = response.json()
+    [command] = queued_commands(desk)
+    assert command.kind == LEGACY_KINDS[action]
+    assert doc["command_key"] == command.idempotency_key
+    assert doc["kind"] == command.kind
+    assert doc["result_url"] == f"{COMMANDS}/{command.idempotency_key}"
+    # issued_by is the AUTHENTICATED actor of this very request, not "cockpit"
+    actor = desk.authority.actors[-1]
+    assert command.issued_by == actor and actor.ingress == "loopback"
+    assert actor_binds_request(actor, desk.authority.calls[-1])
+    # stamped on the app's clock, inside the contract's command lifetime
+    assert command.issued_at == desk.clock.utc()
+    assert (command.expires_at - command.issued_at).total_seconds() == 300
+    # the durable result is the queued (accepted) outcome the response carries
+    result = CommandResult.model_validate(doc["queued"])
+    assert result.status == "accepted" and result.kind == command.kind
+    assert result.command_body_sha256 == command_body_sha256(command)
+    stored = desk.layout.command_result(command.idempotency_key).read_bytes()
+    assert CommandResult.model_validate_json(stored) == result
+    # nothing applied: the kill files stand as they were, no audit line
+    assert (desk.run_dir / "HALT").read_bytes() == before["HALT"]
+    assert not (desk.run_dir / "FLATTEN").exists()
+    assert not (desk.run_dir / "automation.jsonl").exists()
+    assert doc["kill_files"] == ["HALT"]
+    assert sorted(set(tree(desk.run_dir)) - set(before)) == [
+        "commands/.lock",
+        f"commands/{command.idempotency_key}.json",
+        f"commands/{command.idempotency_key}.result.json",
+    ]
 
 
-def test_legacy_automation_route_requires_the_authority(desk, monkeypatch):
-    import tree_options.trex_web.desk_view as desk_view_mod
+def test_legacy_halt_route_queues_a_halt_command_and_writes_no_kill_file(desk):
+    response = legacy(desk, "halt")
+    assert response.status_code == 202
+    [command] = queued_commands(desk)
+    assert command.kind == "halt"
+    assert not (desk.run_dir / "HALT").exists()
+    assert sorted(p.name for p in desk.run_dir.iterdir()) == ["commands"]
+    # the owner's result is what the read API then serves
+    key = response.json()["command_key"]
+    applied = CommandResult.model_validate(
+        {**response.json()["queued"], "status": "applied", "result": {"kill_file": "HALT"}}
+    )
+    desk.layout.command_result(key).write_bytes(model_bytes(applied))
+    assert desk.client.get(f"{COMMANDS}/{key}").json() == model_document(applied)
 
-    calls: list[tuple] = []
 
-    def record(*args: object) -> dict:
+def test_each_legacy_post_is_its_own_command(desk):
+    first = legacy(desk, "halt").json()["command_key"]
+    second = legacy(desk, "halt").json()["command_key"]
+    assert first != second
+    assert [c.idempotency_key for c in queued_commands(desk)] == sorted([first, second])
+
+
+def test_legacy_flatten_under_halt_still_warns_and_writes_nothing(desk):
+    desk.run_dir.mkdir(parents=True)
+    (desk.run_dir / "HALT").write_text("")
+    doc = legacy(desk, "flatten").json()
+    assert doc["kind"] == "flatten" and "HALT" in doc["warning"]
+    assert not (desk.run_dir / "FLATTEN").exists()
+    (desk.run_dir / "HALT").unlink()
+    assert "warning" not in legacy(desk, "flatten").json()
+
+
+def test_legacy_resume_never_lifts_a_standing_entries_pause(desk):
+    """The cockpit's resume verb meant HALT and FLATTEN only. It queues
+    ``resume_all`` (contract default 11: the superset), so while entries are
+    paused it is refused rather than widened to lift the pause."""
+    desk.run_dir.mkdir(parents=True)
+    (desk.run_dir / "HALT").write_text("")
+    (desk.run_dir / "PAUSE_ENTRIES").write_text("")
+    response = legacy(desk, "resume")
+    assert response.status_code == 409
+    assert response.json()["error"] == "legacy_resume_would_lift_entries_pause"
+    assert queued_commands(desk) == []
+    assert (desk.run_dir / "HALT").exists() and (desk.run_dir / "PAUSE_ENTRIES").exists()
+
+
+def test_legacy_resume_never_lifts_a_queued_entries_pause(desk):
+    assert post(desk, command_body(desk.clock, "pause_entries")).status_code == 202
+    response = legacy(desk, "resume")
+    assert response.status_code == 409
+    assert [c.kind for c in queued_commands(desk)] == ["pause_entries"]
+    # the owner claims and applies the pause: now the file is what refuses
+    desk.layout.command(KEY).rename(desk.layout.commands() / f"{KEY}.claimed")
+    (desk.run_dir / "PAUSE_ENTRIES").write_text("")
+    assert legacy(desk, "resume").status_code == 409
+    # entries resumed by the owner: the legacy resume is a resume_all again
+    (desk.run_dir / "PAUSE_ENTRIES").unlink()
+    response = legacy(desk, "resume")
+    assert response.status_code == 202 and response.json()["kind"] == "resume_all"
+
+
+def test_legacy_unknown_action_is_422_after_authentication(desk):
+    assert legacy(desk, "arm").status_code == 422
+    desk.authority.refuse_with = "bad_signature"
+    assert legacy(desk, "arm").status_code == 403
+    assert not desk.run_dir.exists()
+
+
+def test_legacy_automation_route_is_authenticated_and_never_applied(desk, monkeypatch):
+    """Timer control has no trex-command/1 kind, so it cannot be queued for
+    the owner: the web refuses it after authentication and runs nothing."""
+    calls: list[object] = []
+
+    def record(*args: object, **kwargs: object) -> object:
         calls.append(args)
-        return {}
+        raise AssertionError("the web must not run systemctl for a POST")
 
-    monkeypatch.setattr(desk_view_mod, "automation_action", record)
+    monkeypatch.setattr(subprocess, "run", record)
     desk.authority.refuse_with = "bad_signature"
     assert desk.client.post("/api/desk/automation/desk-lab/run").status_code == 403
-    assert desk.client.post("/api/desk/automation/desk-lab/bogus").status_code == 403
-    assert calls == []
     desk.authority.refuse_with = None
-    assert desk.client.post("/api/desk/automation/desk-lab/run").status_code == 200
-    assert calls == [(desk.run_dir, "desk-lab", "run")]
+    response = desk.client.post("/api/desk/automation/desk-lab/run")
+    assert response.status_code == 501
+    assert response.json()["error"] == "automation_not_queueable"
+    assert desk.client.post("/api/desk/automation/trex-monitor/run").status_code == 404
+    assert desk.client.post("/api/desk/automation/desk-lab/restart").status_code == 422
+    assert calls == []
+    assert not desk.run_dir.exists()
 
 
 # -- the loopback authority (workspace_guard's rules over the raw request) ----------
@@ -676,6 +919,92 @@ def test_default_app_authority_is_loopback_and_refuses_the_portal_shape(tmp_path
     assert accepted.status_code == 202
     actor = parse_command(json.loads(Wave2RunDir(run_dir).command(KEY).read_bytes())).issued_by
     assert actor.ingress == "loopback" and actor.sub == "loopback-operator"
+
+
+# -- the repo unit: the web may write only the desk's command queue -------------------
+
+
+WEB_UNIT = REPO_ROOT / "deploy" / "trex" / "trex-web.service"
+UNIT_HOME = "/home/alexk"
+UNIT_RUN_DIR = f"{UNIT_HOME}/.local/state/trex/desk-paper"
+#: the whole write surface of the web: the discovery spool, the research
+#: lane's workspace and the desk's command queue (nothing else)
+WEB_WRITABLE = {
+    f"{UNIT_HOME}/.local/state/trex-discovery/spool",
+    f"{UNIT_HOME}/.local/state/trex-research",
+    f"{UNIT_RUN_DIR}/commands",
+}
+#: what trex-desk runs or imports. uv HARDLINKS a venv's packages from its
+#: cache (one inode), so a writable cache is a writable desk venv; the data
+#: dir holds the interpreters uv installs.
+DESK_CODE = (
+    f"{UNIT_HOME}/documents/tree_options/.venv/lib/python3.12/site-packages",
+    f"{UNIT_HOME}/documents/tree_options/src",
+    f"{UNIT_HOME}/.cache/uv",
+    f"{UNIT_HOME}/.local/share/uv",
+    f"{UNIT_HOME}/.local/bin",
+    f"{UNIT_HOME}/.local/state/trex-premarket/releases",
+    "/usr/bin/python3.12",
+    "/usr/lib/python3.12",
+)
+
+
+def _unit_list(text: str, key: str) -> list[str]:
+    """A list-valued directive as systemd folds it: lines append, an empty
+    assignment resets, and the '-'/'+' path prefixes are not part of the path."""
+    values: list[str] = []
+    for value in re.findall(rf"^{key}=(.*)$", text, re.MULTILINE):
+        if not value.strip():
+            values = []
+            continue
+        values.extend(word.lstrip("-+") for word in value.split())
+    return values
+
+
+def _reaches(grant: str, target: str) -> bool:
+    grant, target = grant.rstrip("/"), target.rstrip("/")
+    return grant == target or target.startswith(grant + "/") or grant.startswith(target + "/")
+
+
+def test_the_repo_web_unit_may_write_only_the_desk_command_queue():
+    text = WEB_UNIT.read_text()
+    paths = _unit_list(text, "ReadWritePaths")
+    # the write surface is exactly the allowlist: no cache, no data dir
+    assert set(paths) == WEB_WRITABLE and len(paths) == len(WEB_WRITABLE)
+    # no grant covers the run dir itself (kill files, specs, ledger) ...
+    assert [p for p in paths if _reaches(p, UNIT_RUN_DIR) and p != f"{UNIT_RUN_DIR}/commands"] == []
+    # ... only its commands/ subdirectory, and nothing of the supervised dir
+    assert [p for p in paths if p.startswith(UNIT_RUN_DIR)] == [f"{UNIT_RUN_DIR}/commands"]
+    assert not any("trex/supervised" in p for p in paths)
+    assert "ProtectSystem=strict" in text and "ProtectHome=read-only" in text
+    # the installed drop-in that still grants the whole run dir and the user
+    # bus is called out, with both lines to remove
+    assert "automation.conf" in text and "narrow that drop-in" in text
+    assert "remove its RestrictAddressFamilies line" in text
+
+
+@pytest.mark.parametrize("target", DESK_CODE)
+def test_the_repo_web_unit_cannot_write_what_the_desk_runs(target):
+    paths = _unit_list(WEB_UNIT.read_text(), "ReadWritePaths")
+    assert [p for p in paths if _reaches(p, target)] == []
+
+
+def test_the_repo_web_unit_runs_a_prebuilt_venv_and_has_no_bus():
+    text = WEB_UNIT.read_text()
+    # uv run needs a writable uv cache; the web runs the venv's python as
+    # the release drop-in already does
+    [exec_start] = [v for v in re.findall(r"^ExecStart=(.*)$", text, re.MULTILINE) if v.strip()]
+    program = exec_start.split()[0]
+    assert program.startswith("/") and program.endswith("/.venv/bin/python")
+    assert "uv" not in re.findall(r"[\w.-]+", exec_start)
+    assert not re.search(r"^Environment=UV_", text, re.MULTILINE)
+    # no AF_UNIX: the user bus would let the web start unsandboxed units
+    families = _unit_list(text, "RestrictAddressFamilies")
+    assert families and "AF_UNIX" not in families and not families[0].startswith("~")
+    # nothing re-grants writes behind the strict protections
+    assert not re.search(
+        r"^(BindPaths|ProtectHome=(no|false)|ProtectSystem=(no|false))", text, re.M
+    )
 
 
 # -- broker-free: importing and serving trex_web never loads ib_async -----------------

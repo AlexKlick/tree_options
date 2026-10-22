@@ -1,9 +1,10 @@
 """Wave 2 lane G: GET /api/portfolio, the owner's books as the files stand.
 
 Every figure comes from the books lane's files under ``<run dir>/ledger``
-(``Wave2RunDir`` paths). Oracles are the contract fixtures and the contract
-blocker functions, never this lane's code. An absent, unreadable or invalid
-file is ``unavailable`` with a reason and null figures: never a zero.
+(``Wave2RunDir`` paths). Oracles are the contract fixtures, the books
+lane's own ``trex-holdings/1`` model (``ledger.HoldingsDocument``) and the
+contract blocker functions, never this lane's code. An absent, unreadable or
+invalid file is ``unavailable`` with a reason and null figures: never a zero.
 """
 
 from __future__ import annotations
@@ -22,14 +23,46 @@ from tree_options.trex.contracts import (
     Reconciliation,
     RiskSnapshot,
     Wave2RunDir,
+    model_bytes,
     model_document,
     reconciliation_blockers,
     risk_snapshot_blockers,
 )
+from tree_options.trex.ledger import HoldingsDocument
 from tree_options.trex_web.app import create_app
 
 #: the fixtures' ``as_of`` (risk snapshot and reconciliation)
 AS_OF = datetime(2026, 10, 22, 14, 4, tzinfo=UTC)
+#: the ledger projection's own ``as_of`` (10 s before the clock below)
+HOLDINGS_AS_OF = datetime(2026, 10, 22, 14, 4, 20, tzinfo=UTC)
+LEDGER_CASH_MICROS = 3_657_040_000
+
+
+def holdings_document(*rows: dict, account_id: str = "DU0000001") -> HoldingsDocument:
+    """A ``trex-holdings/1`` document built by the books lane's own model."""
+    return HoldingsDocument(
+        account_id=account_id,
+        as_of=HOLDINGS_AS_OF,
+        cash_micros=LEDGER_CASH_MICROS,
+        holdings=tuple(Holding.model_validate(row) for row in rows),
+    )
+
+
+def write_holdings(books, document: HoldingsDocument) -> None:
+    path = books.layout.holdings()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(model_bytes(document))
+
+
+#: an unavailable holdings block: every figure null, never zero
+UNAVAILABLE_HOLDINGS = {
+    "status": "unavailable",
+    "account_id": None,
+    "as_of": None,
+    "age_s": None,
+    "ledger_cash_micros": None,
+    "rows": None,
+}
 
 
 @pytest.fixture
@@ -62,10 +95,7 @@ def full_books(books, *, reconciliation: dict | None = None) -> None:
         books.layout.reconciliation(),
         reconciliation or contract_fixture("reconciliation_required.json"),
     )
-    write(
-        books.layout.holdings(),
-        {"account_id": "DU0000001", "holdings": [contract_fixture("holding.json")]},
-    )
+    write_holdings(books, holdings_document(contract_fixture("holding.json")))
 
 
 def clean_reconciliation() -> dict:
@@ -85,7 +115,7 @@ def portfolio(books) -> dict:
 
 def test_no_books_is_unavailable_with_reasons_never_zeros(books):
     doc = portfolio(books)
-    assert doc["holdings"] == {"status": "unavailable", "reason": "holdings_missing", "rows": None}
+    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_missing"}
     cash = doc["cash"]
     assert cash["status"] == "unavailable" and cash["reason"] == "risk_snapshot_missing"
     assert cash["settled_cash_cents"] is None
@@ -108,8 +138,15 @@ def test_complete_books_are_served_exactly_as_the_owner_wrote_them(books):
     snapshot = RiskSnapshot.model_validate(contract_fixture("risk_snapshot.json"))
     holding = Holding.model_validate(contract_fixture("holding.json"))
 
-    assert doc["holdings"]["status"] == "ok" and doc["holdings"]["reason"] is None
-    assert doc["holdings"]["rows"] == [model_document(holding)]
+    assert doc["holdings"] == {
+        "status": "ok",
+        "reason": None,
+        "account_id": "DU0000001",
+        "as_of": "2026-10-22T14:04:20Z",
+        "age_s": 10,
+        "ledger_cash_micros": LEDGER_CASH_MICROS,
+        "rows": [model_document(holding)],
+    }
     assert doc["cash"] == {
         "status": "fresh",
         "reason": None,
@@ -193,15 +230,69 @@ def test_bad_files_are_unavailable_never_partial(books, content, reason):
 def test_one_invalid_holding_makes_the_whole_list_unavailable(books):
     good = contract_fixture("holding.json")
     bad = {**good, "quantity": -2}  # a short stock row: long-only refuses
-    write(books.layout.holdings(), {"holdings": [good, bad]})
+    document = model_document(holdings_document(good))
+    document["holdings"] = [good, bad]
+    write(books.layout.holdings(), document)
     doc = portfolio(books)
-    assert doc["holdings"] == {"status": "unavailable", "reason": "holdings_invalid", "rows": None}
+    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_invalid"}
+
+
+def _adhoc_shapes() -> dict[str, object]:
+    """Holdings-like documents that are NOT the books lane's trex-holdings/1."""
+    good = contract_fixture("holding.json")
+    canonical = model_document(holdings_document(good))
+    return {
+        "bare-list": [good],
+        "no-schema": {"account_id": "DU0000001", "holdings": [good]},
+        "wrong-schema": {**canonical, "schema": "trex-holdings/2"},
+        "schema-missing": {k: v for k, v in canonical.items() if k != "schema"},
+        "no-as-of": {k: v for k, v in canonical.items() if k != "as_of"},
+        "float-cash": {**canonical, "cash_micros": 1.0},
+        "extra-field": {**canonical, "total_cents": 0},
+    }
+
+
+@pytest.mark.parametrize("shape", sorted(_adhoc_shapes()))
+def test_only_the_books_lane_document_is_read(books, shape):
+    """Coordinator decision 2026-10-21: every reader uses D's trex-holdings/1;
+    an ad-hoc shape is unavailable, never re-interpreted."""
+    write(books.layout.holdings(), _adhoc_shapes()[shape])
+    doc = portfolio(books)
+    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_invalid"}
+
+
+def test_a_projection_naming_two_accounts_is_unavailable(books):
+    other = {**contract_fixture("holding.json"), "account_id": "DU0000002"}
+    for lot in other["lots"]:
+        lot["attribution"]["intent_id"] = "eq-spy-002"
+    write_holdings(books, holdings_document(contract_fixture("holding.json"), other))
+    doc = portfolio(books)
+    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_account_mismatch"}
+    assert "account_mismatch" in [p["reason"] for p in doc["problems"]]
 
 
 def test_an_empty_ledger_projection_is_a_real_empty_list(books):
-    write(books.layout.holdings(), {"account_id": "DU0000001", "holdings": []})
+    write_holdings(books, holdings_document())
     doc = portfolio(books)
-    assert doc["holdings"] == {"status": "ok", "reason": None, "rows": []}
+    assert doc["holdings"]["status"] == "ok" and doc["holdings"]["reason"] is None
+    assert doc["holdings"]["rows"] == []
+    # the ledger's cash is the document's figure, not a placeholder zero
+    assert doc["holdings"]["ledger_cash_micros"] == LEDGER_CASH_MICROS
+
+
+def test_an_unreadable_projection_is_unavailable(books):
+    full_books(books, reconciliation=clean_reconciliation())
+    path = books.layout.holdings()
+    path.write_text('{"schema": "trex-holdings/1", torn')
+    doc = portfolio(books)
+    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_unreadable"}
+    # a symlinked projection is not the books lane's file
+    path.unlink()
+    path.symlink_to(books.layout.risk_snapshot())
+    doc = portfolio(books)
+    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_unreadable"}
+    # the other blocks are unaffected: one bad file never zeroes the rest
+    assert doc["cash"]["status"] == "fresh"
 
 
 def test_pause_blocks_entries_never_exits_and_halt_blocks_both(books):

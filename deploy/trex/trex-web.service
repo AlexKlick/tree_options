@@ -10,31 +10,56 @@ WorkingDirectory=/home/alexk/documents/tree_options
 # Import the main checkout's code whatever the shared .venv's editable pointer
 # says (on 2026-09-23 an unknown writer repointed it to a worktree).
 Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
-Environment=UV_NO_SYNC=1
-ExecStart=/home/alexk/.local/bin/uv run --group trex-web python -m tree_options.trex_web --host 127.0.0.1 --port 8090
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The checkout's prebuilt venv runs directly (as the release drop-in does),
+# never `uv run`: uv needs a WRITABLE uv cache, and uv HARDLINKS a venv's
+# packages from that cache (one inode), so a web that may write
+# ~/.cache/uv may rewrite the broker library trex-desk imports. The venv is
+# built outside this unit (the web never syncs it).
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.trex_web --host 127.0.0.1 --port 8090
 Restart=on-failure
 RestartSec=5
 # Read-only operator tool: only the trex state dirs under %h/.local/state
 # are read, plus three writable directories: the discovery spool (scan
 # requests from the site), the research lane's own workspace (runstate
 # store for /api/research/*; RL-1) and the supervised desk's command queue.
+# That is the WHOLE write surface: no uv cache (~/.cache/uv), no uv data
+# dir (~/.local/share/uv, uv's interpreters), no venv, no source tree.
 # All must EXIST before the unit starts (ReadWritePaths on a missing path
 # fails the unit):
 #   mkdir -p ~/.local/state/trex-discovery/spool
 #   mkdir -p ~/.local/state/trex-research/run-anon
 #   mkdir -p ~/.local/state/trex/desk-paper/commands
 #
-# Desk commands (Wave 2, POST /api/commands): the web may write ONLY
+# Desk commands (Wave 2; coordinator decision 2026-10-21): the desk OWNER
+# (trex-desk) applies EVERY command, pause_entries and halt included. The web
+# only authenticates, validates and queues, so it may write ONLY
 # <desk run dir>/commands = ~/.local/state/trex/desk-paper/commands (each
 # command <key>.json, its <key>.result.json and the store's .lock). It never
-# writes the run dir itself (kill files, specs, ledger, proposals), the
-# supervised authority dir, or anything a broker reads; the desk owner
-# (trex-desk) claims and applies the queued commands. Any drop-in that grants
-# the whole run dir must be narrowed to this path. Consequences of the
-# narrow grant, by design: pause_entries/halt commands are QUEUED (accepted)
-# for the owner instead of written in-process, and the legacy
-# POST /api/desk/supervised/{halt,flatten,resume} and
-# POST /api/desk/automation/* routes answer 503.
+# writes the run dir itself (kill files PAUSE_ENTRIES/HALT/FLATTEN, specs,
+# ledger, proposals, automation.jsonl), the supervised authority dir, or
+# anything a broker reads. Routes, all behind the command authority:
+#   POST /api/commands                     queue a trex-command/1 (202)
+#   POST /api/desk/supervised/{halt,flatten,resume}
+#                                          queue halt/flatten/resume_all (202)
+#   POST /api/desk/automation/*            refused (501): no command kind
+#   GET  /api/commands/<key>               the owner's latest result
+#
+# CUTOVER NOTE (owner action; drop-in list directives only ADD to this
+# unit, so they must be removed there, not overridden here). The INSTALLED
+#   ~/.config/systemd/user/trex-web.service.d/automation.conf
+# still grants ReadWritePaths=<the whole run dir> (written for the old
+# in-process kill files and automation.jsonl audit) and
+# RestrictAddressFamilies=... AF_UNIX. Nothing in the web writes the run
+# dir any more: at the next cutover narrow that drop-in by deleting its
+# ReadWritePaths line (this unit already grants commands/), and
+# remove its RestrictAddressFamilies line too. AF_UNIX reaches the user bus,
+# and a process on the user bus can start a transient unit (systemd-run
+# --user) with no sandbox at all, so the grant voids every line below.
+# Without it the read-only GET /api/desk/automation timer card answers
+# "unavailable" (a failed systemctl is never shown as state); a desk-side
+# published timer status file would restore it. The installed copy of THIS
+# unit also still grants the uv cache: install this copy at the same cutover.
 # Every mutating desk route requires the command authority: the loopback
 # operator only (loopback peer + Host, exact same-origin Origin, no
 # forwarding header), and only when opted in with
@@ -45,7 +70,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv /home/alexk/.local/state/trex-discovery/spool /home/alexk/.local/state/trex-research /home/alexk/.local/state/trex/desk-paper/commands
+ReadWritePaths=/home/alexk/.local/state/trex-discovery/spool /home/alexk/.local/state/trex-research /home/alexk/.local/state/trex/desk-paper/commands
 RestrictAddressFamilies=AF_INET AF_INET6
 
 [Install]

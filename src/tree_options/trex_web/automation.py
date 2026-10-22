@@ -1,24 +1,26 @@
-"""Operator automation surface for the cockpit: timer settings + kill files.
+"""Desk automation helpers: timer status, kill-file verbs, entries pause.
 
-Every action goes through a FIXED WHITELIST of the desk's own user units
-and the desk run dir's kill files - never an arbitrary unit, path or
-command. Each action appends one audit line to
-``<desk run dir>/automation.jsonl`` (actor is always the cockpit; the
-operator's own systemctl use is not logged here).
+Coordinator decision 2026-10-21: every command is APPLIED BY THE DESK OWNER
+process. The web only authenticates, validates and queues
+(``commands_view``); no web route calls a function here that writes. What
+the web serves from this module is read-only: ``automation_status`` (timer
+states over a FIXED WHITELIST of the desk's own user units, plus the kill
+files as they stand). The systemctl runner is injectable so tests never
+touch the real session bus. Timer CONTROL has no ``trex-command/1`` kind,
+so the cockpit cannot queue it; the operator uses ``systemctl --user``.
 
-The systemctl runner is injectable so tests never touch the real
-session bus.
+For the owner process (and the CLI):
 
-The entries-only pause (``PAUSE_ENTRIES``, ``trex.pause``) has its own
-functions for the web command backend: ``pause_entries_action`` /
-``resume_entries_action`` (actor and reason supplied by the caller), and
-``apply_entries_command`` for a validated ``pause_entries`` /
-``resume_entries`` ``trex-command/1``. They are audited by ``trex.pause``
-(``pause-entries.jsonl``, with the actor), never by ``automation.jsonl``.
-The cockpit's ``resume`` kill-file verb keeps its meaning (HALT and
-FLATTEN) and never lifts the pause. Contracts default 10: a pause may be
-applied by whichever process receives it; whether a RESUME is applied by
-the backend or queued for the desk process is the command backend's rule.
+- ``kill_file_action``: the desk_cli HALT/FLATTEN/resume verbs on a run
+  dir, audited to ``automation.jsonl``. ``resume`` keeps its meaning (HALT
+  and FLATTEN) and never lifts the entries pause.
+- the entries-only pause (``PAUSE_ENTRIES``, ``trex.pause``):
+  ``pause_entries_action`` / ``resume_entries_action`` (actor and reason
+  supplied by the caller) and ``apply_entries_command`` for a validated
+  ``pause_entries`` / ``resume_entries`` ``trex-command/1``, judged by the
+  same validity rule as the web's intake
+  (``command_store.command_window_blocker``). They are audited by
+  ``trex.pause`` (``pause-entries.jsonl``, with the actor).
 """
 
 from __future__ import annotations
@@ -37,8 +39,8 @@ from tree_options.trex.contracts.commands import (
     PauseEntriesCommand,
     ResumeEntriesCommand,
 )
-from tree_options.trex.contracts.vocabulary import Blocker
 from tree_options.trex.desk_cli import HALT_FLATTEN_WARNING
+from tree_options.trex_web.command_store import command_window_blocker
 
 #: the desk's own timers -> their oneshot services (the whole surface)
 AUTOMATION_UNITS: dict[str, dict[str, str]] = {
@@ -131,33 +133,15 @@ def automation_status(
     }
 
 
-def automation_action(
-    run_dir: Path, key: str, action: str, *, systemctl: SystemctlRunner = real_systemctl
-) -> dict[str, Any]:
-    """enable/disable a whitelisted timer, or run its service once now."""
-    if key not in AUTOMATION_UNITS:
-        raise KeyError(key)
-    spec = AUTOMATION_UNITS[key]
-    commands = {
-        "enable": ["enable", "--now", spec["timer"]],
-        "disable": ["disable", "--now", spec["timer"]],
-        "run": ["start", spec["service"]],
-    }
-    if action not in commands:
-        raise ValueError(action)
-    systemctl(commands[action])
-    _audit(run_dir, action, spec["timer"])
-    return {"key": key, "action": action, "unit": spec["timer"]}
-
-
 def kill_file_action(run_dir: Path, action: str) -> dict[str, Any]:
     """HALT/FLATTEN/resume for the supervised desk (the desk_cli verbs;
     the file verbs are case-insensitive, resume clears both).
 
-    A FLATTEN placed while HALT is active carries the same warning
-    desk_cli prints, verbatim (HALT_FLATTEN_WARNING): the runtime gates
-    exits on HALT too, so the cockpit must not look quieter than the CLI
-    about a flatten that will close nothing."""
+    For the desk owner process and the CLI only: no web route calls this
+    (the cockpit's legacy verbs queue ``halt``/``flatten``/``resume_all``
+    commands instead). A FLATTEN placed while HALT is active carries the
+    same warning desk_cli prints, verbatim (HALT_FLATTEN_WARNING): the
+    runtime gates exits on HALT too."""
     verb = action.lower()
     if verb == "resume":
         for flag in KILL_FILES:
@@ -232,17 +216,16 @@ def apply_entries_command(
 
     The audit actor is ``<ingress>:<sub>`` of the command's verified
     ``issued_by``; the audit carries the idempotency key. A command is
-    applied only inside ``[issued_at, expires_at)`` (``command_expired``
-    otherwise); any other kind is not an entries command (ValueError)."""
+    applied only while ``command_window_blocker`` (the one rule the web's
+    intake also uses) has no objection; otherwise ``ValueError`` names the
+    reason (``command_not_yet_valid`` / ``command_expired``). Any other
+    kind is not an entries command (ValueError)."""
     if not isinstance(command, PauseEntriesCommand | ResumeEntriesCommand):
         raise ValueError(f"not an entries-pause command: {command.kind}")
     at = now or datetime.now(UTC)
-    if at.tzinfo is None or at.utcoffset() is None:
-        raise ValueError("now must be timezone-aware")
-    if (at - command.issued_at).total_seconds() < 0 or (
-        at - command.expires_at
-    ).total_seconds() >= 0:
-        raise ValueError(Blocker.COMMAND_EXPIRED.value)
+    blocker = command_window_blocker(command, at)
+    if blocker is not None:
+        raise ValueError(blocker)
     action = (
         pause_entries_action if isinstance(command, PauseEntriesCommand) else resume_entries_action
     )
