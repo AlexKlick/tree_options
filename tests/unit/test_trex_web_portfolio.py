@@ -262,13 +262,20 @@ def test_only_the_books_lane_document_is_read(books, shape):
 
 
 def test_a_projection_naming_two_accounts_is_unavailable(books):
+    """The books lane's model refuses a projection whose rows name another
+    account (lane D2: one account per document), so such a file is not a
+    ``trex-holdings/1`` document at all: unavailable, never a partial list.
+    (W2c: the model rule landed after this lane's account check.)"""
     other = {**contract_fixture("holding.json"), "account_id": "DU0000002"}
     for lot in other["lots"]:
         lot["attribution"]["intent_id"] = "eq-spy-002"
-    write_holdings(books, holdings_document(contract_fixture("holding.json"), other))
+    with pytest.raises(ValueError, match="document's account"):
+        holdings_document(contract_fixture("holding.json"), other)
+    mixed = model_document(holdings_document(contract_fixture("holding.json")))
+    mixed["holdings"].append(other)
+    write(books.layout.holdings(), mixed)
     doc = portfolio(books)
-    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_account_mismatch"}
-    assert "account_mismatch" in [p["reason"] for p in doc["problems"]]
+    assert doc["holdings"] == {**UNAVAILABLE_HOLDINGS, "reason": "holdings_invalid"}
 
 
 def test_an_empty_ledger_projection_is_a_real_empty_list(books):
