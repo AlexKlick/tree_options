@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../lib/activityApi'
 import { ACTIVITY_PAGE_SIZE, COMMAND_STATUS_LABELS, DRILL_LABELS, INGRESS_LABELS, reasonText } from '../lib/activityApi'
-import type { AcceptanceView, ActivityPage as ActivityPageView, TodayView } from '../lib/contracts'
+import type { AcceptanceView, ActivityPage as ActivityPageView, DrillId, TodayView } from '../lib/contracts'
 import * as portfolio from '../lib/portfolioApi'
 import { samplePortfolio } from '../lib/portfolioSample'
 import { ActivityPage } from './ActivityPage'
@@ -131,6 +131,39 @@ describe('paper acceptance', () => {
     expect(within(sessions).getByText(reasonText('heartbeat_below_99pct'), { exact: false })).toBeTruthy()
     const lifecycles = screen.getByRole('region', { name: 'Paper trades' })
     expect(within(lifecycles).getByText(reasonText('not_exited'), { exact: false })).toBeTruthy()
+  })
+
+  it('takes each drill pill from the computed result, never from the recorded status', async () => {
+    const view = fixture<AcceptanceView>('acceptance_view.json')
+    if (view.status !== 'ok') throw new Error('the acceptance_view fixture must be readable')
+    const doc = view.document
+    // Recorded "passed" but attested by someone who is not an owner: the
+    // server computes it not passed (acceptance.py _drill_reasons).
+    doc.drills = doc.drills.map((d) => (d.id === 'relogin' ? { ...d, status: 'passed', attested_by: 'visitor@example.com' } : d))
+    doc.drill_results = doc.drill_results.map((r) =>
+      r.id === 'relogin' ? { ...r, passed: false, reasons: ['attester_not_owner'] } : r,
+    )
+    doc.drills_passed = 0
+    vi.mocked(api.getAcceptance).mockResolvedValue(view)
+    render(<ActivityPage section="acceptance" />)
+    const drills = await screen.findByRole('region', { name: 'Drills' })
+    const row = (id: DrillId) => within(within(drills).getByText(DRILL_LABELS[id]).closest('li')!)
+    expect(within(drills).queryByText('Passed')).toBeNull()
+    expect(row('relogin').getByText('Not accepted').className).toContain('acct-status-bad')
+    expect(row('relogin').getByText(reasonText('attester_not_owner'))).toBeTruthy()
+    expect(row('notification').getByText('Failed').className).toContain('acct-status-bad')
+    expect(row('backup_restore').getByText('Not run').className).toContain('acct-status-unknown')
+    expect(within(screen.getByRole('region', { name: 'Progress' })).getByText('0 of 7')).toBeTruthy()
+  })
+
+  it('shows a computed pass as passed', async () => {
+    const view = fixture<AcceptanceView>('acceptance_view.json')
+    vi.mocked(api.getAcceptance).mockResolvedValue(view)
+    render(<ActivityPage section="acceptance" />)
+    const drills = await screen.findByRole('region', { name: 'Drills' })
+    const relogin = within(within(drills).getByText(DRILL_LABELS.relogin).closest('li')!)
+    expect(relogin.getByText('Passed').className).toContain('acct-status-ok')
+    expect(within(drills).getAllByText('Passed')).toHaveLength(1)
   })
 
   it('shows a missing acceptance record as unavailable, with no counts', async () => {

@@ -55,6 +55,14 @@ describe('USER-GUIDE.md', () => {
     for (const id of DRILL_IDS) expect(guide).toContain(DRILL_LABELS[id])
   })
 
+  it('does not promise a Family key fact that Today does not carry', () => {
+    const start = guide.slice(guide.indexOf('## Getting started'), guide.indexOf('## Approve a trade'))
+    const step4 = start.slice(start.indexOf('4. **Family command key installed**'), start.indexOf('5. **'))
+    expect(step4.length).toBeGreaterThan(0)
+    expect(step4).toMatch(/Unknown/)
+    expect(step4).not.toMatch(/Today\s+raises/)
+  })
+
   it('never suggests that acceptance or anything else turns on live trading', () => {
     // markdown wraps lines, so words are matched across any whitespace
     expect(guide).toMatch(/never\s+unlocks\s+live\s+trading/)

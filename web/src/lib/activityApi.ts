@@ -251,8 +251,15 @@ export const ONBOARDING_TITLES: Record<OnboardingStepId, string> = {
 
 /** Today blocker codes that mean the capital profile is not usable. */
 export const PROFILE_BLOCKERS: readonly string[] = ['profile_absent', 'profile_invalid', 'profile_limits_missing']
-/** The Today blocker lane C raises while family commands are disabled. */
+/** The Today blocker that says family commands are disabled. Its PRESENCE is
+ * evidence (To do); its absence is not: trex-today/1 carries no positive fact
+ * about Family command ingress, so without the blocker the step is Unknown. */
 export const FAMILY_DISABLED = 'family_commands_disabled'
+
+/** Why the family key step is Unknown while Today has no positive fact. */
+export const FAMILY_UNKNOWN_DETAIL =
+  'Today has no positive fact about Family command ingress, so it cannot show whether the TREX command key is ' +
+  'installed. The copy of the key on the Family Apps portal cannot be seen from TREX at all.'
 
 type Outcome = Omit<OnboardingStep, 'id' | 'title'>
 const done = (detail: string): Outcome => ({ state: 'done', detail, next: '', href: null })
@@ -347,7 +354,11 @@ function familyStep(today: TodayView): Outcome {
       blocker.next_step || 'Install the same command key file on the Family Apps portal and on TREX.',
     )
   }
-  return done('Today reports Family Apps commands enabled: approvals from the phone reach the desk.')
+  return unknown(
+    FAMILY_UNKNOWN_DETAIL,
+    `Your first approval from the phone settles it: once it reaches the desk, Activity lists it "via ${INGRESS_LABELS.family}".`,
+    hashFor('activity'),
+  )
 }
 
 function firstApprovalStep(today: TodayView): Outcome {

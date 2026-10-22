@@ -15,7 +15,8 @@ const STATE_PILL: Record<OnboardingStep['state'], [Tone, string]> = {
 }
 
 function linkLabel(href: string): string {
-  return href.startsWith('#/trade-review/') ? 'Review the waiting proposal' : 'Open Today'
+  if (href.startsWith('#/trade-review/')) return 'Review the waiting proposal'
+  return href.startsWith('#/activity') ? 'Open Activity' : 'Open Today'
 }
 
 /** `3 of 5 steps done` (plus `, N unknown` when some are unknown). */

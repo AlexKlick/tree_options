@@ -39,7 +39,11 @@ things:
    can confirm it only through a proposal, so before the first proposal this
    step may read Unknown.
 4. **Family command key installed**: approvals from the phone reach the desk.
-   Today raises "Commands from Family Apps are turned off" when they cannot.
+   Today has no positive fact for this, so the step reads **Unknown**, or
+   **To do** when Today reports "Commands from Family Apps are turned off".
+   It never reads Done: the copy of the key on the Family Apps portal cannot
+   be seen from TREX. Your first approval from the phone settles it: Activity
+   then lists it "via Family Apps (phone or desktop)".
 5. **First paper approval**: TREX holds a desk position you approved, or paper
    acceptance counts a completed paper trade.
 
@@ -72,7 +76,7 @@ When an approval does not go through:
 | The approval ran out of time (`approval_expired`) | an approval lives at most 300 seconds and never past the proposal's deadline | approve sooner next time |
 | The command expired before the desk applied it (`command_expired`) | the desk did not apply it within 300 seconds | check the desk owner heartbeat on Today |
 | Duplicate (first outcome kept) | you sent the same approval twice | nothing: sending twice is safe |
-| Commands from Family Apps are turned off (`family_commands_disabled`) | the command key is not installed on both sides | see Getting started, step 4 |
+| The command was not authorized (`command_unauthorized`), or the portal answers `trex-commands-not-configured` | the command key is missing, or differs, on the Family Apps portal or on TREX | on the host, install the same key file on both sides (`~/.config/family-apps/trex-command.key` for the portal, `~/.config/trex/family-command.key` for TREX); see Getting started, step 4 |
 
 ## Pause new entries or stop everything
 
@@ -211,6 +215,7 @@ positions outside TREX (which TREX never trades or closes), and the age of the
 risk snapshot. It is read-only.
 
 Settings (`#/activity/settings`) shows the paper account, what Today can tell
-about the capital profile, the exit-watch and command time limits, whether
-phone commands are on, the stops' current state, and the acceptance rules. It
+about the capital profile, the exit-watch and command time limits, what Today
+can tell about phone commands, the stops' current state, and the acceptance
+rules. It
 changes nothing; the owner changes the profile on the host.

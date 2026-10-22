@@ -161,22 +161,21 @@ describe('onboarding checklist from /api/today', () => {
     ])
   })
 
-  it('marks every step done on a healthy desk with a counted paper trade', () => {
+  it('marks every evidenced step done on a healthy desk with a counted paper trade', () => {
     const steps = byId(today)
-    for (const id of ['gateway', 'heartbeat', 'profile', 'family_key', 'first_approval']) {
+    for (const id of ['gateway', 'heartbeat', 'profile', 'first_approval']) {
       expect([id, steps[id].state]).toEqual([id, 'done'])
     }
+    // trex-today/1 has no positive fact about Family command ingress
+    expect(steps.family_key.state).toBe('unknown')
     expect(steps.profile.detail).toContain(today.approvals.items![0].approve_args.profile_digest.slice(0, 12))
   })
 
   it('never marks an unknown fact done', () => {
     const steps = byId(unavailable)
-    expect(steps.gateway.state).toBe('unknown')
+    for (const step of Object.values(steps)) expect([step.id, step.state]).toEqual([step.id, 'unknown'])
     expect(steps.gateway.detail).toContain('gateway_watch_not_reporting')
-    expect(steps.heartbeat.state).toBe('unknown')
     expect(steps.heartbeat.detail).toContain('heartbeat_absent')
-    expect(steps.profile.state).toBe('unknown')
-    expect(steps.first_approval.state).toBe('unknown')
     expect(steps.first_approval.detail).toContain('acceptance_missing')
     expect(steps.first_approval.detail).toContain('holdings_missing')
   })
@@ -235,6 +234,16 @@ describe('onboarding checklist from /api/today', () => {
     expect(steps.family_key.state).toBe('todo')
     expect(steps.family_key.detail).toContain('Phone commands are off.')
     expect(steps.family_key.next).toContain('Install the key.')
+  })
+
+  it('never reads a missing family_commands_disabled blocker as the key installed', () => {
+    const steps = byId({ ...today, blockers: [] })
+    expect(steps.family_key.state).toBe('unknown')
+    expect(steps.family_key.detail).toMatch(/no positive fact/i)
+    expect(steps.family_key.detail).not.toMatch(/enabled|reach the desk/)
+    // the one thing that proves it end to end is a phone command in Activity
+    expect(steps.family_key.next).toContain(INGRESS_LABELS.family)
+    expect(steps.family_key.href).toBe('#/activity')
   })
 
   it('points a waiting proposal at its review page', () => {

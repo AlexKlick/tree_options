@@ -31,6 +31,7 @@ import {
   type ActivityRefKey,
   type ActivitySource,
   type DrillId,
+  type DrillResult,
   type SessionMetric,
   type SessionRecord,
 } from '../lib/contracts'
@@ -487,10 +488,14 @@ function LifecyclesSection({ doc }: { doc: AcceptanceDocument }) {
   )
 }
 
-const DRILL_STATUS: Record<'not_run' | 'passed' | 'failed', [Tone, string]> = {
-  passed: ['ok', 'Passed'],
-  failed: ['bad', 'Failed'],
-  not_run: ['unknown', 'Not run'],
+/** A drill's pill from the COMPUTED result only. The recorded status is an
+ * assertion: a drill recorded "passed" but attested by someone who is not an
+ * owner is computed not passed, and must never read as passed here. */
+function drillPill(result: DrillResult): [Tone, string] {
+  if (result.passed) return ['ok', 'Passed']
+  if (result.reasons.includes('drill_failed')) return ['bad', 'Failed']
+  if (result.reasons.includes('drill_not_run')) return ['unknown', 'Not run']
+  return ['bad', 'Not accepted']
 }
 
 function DrillsSection({ doc }: { doc: AcceptanceDocument }) {
@@ -500,12 +505,12 @@ function DrillsSection({ doc }: { doc: AcceptanceDocument }) {
       <ul className="acct-list">
         {doc.drill_results.map((result) => {
           const record = records.get(result.id)
-          const [tone, word] = DRILL_STATUS[record?.status ?? 'not_run']
+          const [tone, word] = drillPill(result)
           return (
             <li className="acct-row" key={result.id}>
               <div className="acct-row-head">
                 <strong>{DRILL_LABELS[result.id]}</strong>
-                <StatusPill tone={result.passed ? 'ok' : tone}>{result.passed ? 'Passed' : word}</StatusPill>
+                <StatusPill tone={tone}>{word}</StatusPill>
               </div>
               {record && record.at && (
                 <p className="acct-row-meta">

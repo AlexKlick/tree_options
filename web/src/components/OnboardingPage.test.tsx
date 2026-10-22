@@ -32,15 +32,21 @@ it('walks the five first-run steps from /api/today', async () => {
   const list = await screen.findByRole('list', { name: 'First-run checklist' })
   const steps = within(list).getAllByRole('listitem')
   expect(steps.map((s) => within(s).getByRole('heading').textContent)).toEqual(TITLES)
-  for (const step of steps) expect(within(step).getByText('Done')).toBeTruthy()
-  expect(screen.getByText('5 of 5 steps done')).toBeTruthy()
+  for (const step of [0, 1, 2, 4]) expect(within(steps[step]).getByText('Done')).toBeTruthy()
+  // Today has no positive fact about the family key: Unknown, never Done
+  const family = within(steps[3])
+  expect(family.queryByText('Done')).toBeNull()
+  expect(family.getByText('Unknown')).toBeTruthy()
+  expect(family.getByRole('link', { name: 'Open Activity' }).getAttribute('href')).toBe('#/activity')
+  expect(screen.getByText('4 of 5 steps done, 1 unknown')).toBeTruthy()
 })
 
 it('counts unknown steps apart from done ones and says why', async () => {
   vi.mocked(api.getToday).mockResolvedValue(fixture<TodayView>('today_unavailable.json'))
   render(<OnboardingPage />)
   const list = await screen.findByRole('list', { name: 'First-run checklist' })
-  expect(screen.getByText('1 of 5 steps done, 4 unknown')).toBeTruthy()
+  expect(screen.getByText('0 of 5 steps done, 5 unknown')).toBeTruthy()
+  expect(within(list).queryByText('Done')).toBeNull()
   const gateway = within(list).getAllByRole('listitem')[0]
   expect(within(gateway).getByText('Unknown')).toBeTruthy()
   expect(within(gateway).getByText(/gateway_watch_not_reporting/)).toBeTruthy()
@@ -61,7 +67,7 @@ it('links a waiting proposal to its review page', async () => {
   const approval = within(list).getAllByRole('listitem')[4]
   expect(within(approval).getByText('To do')).toBeTruthy()
   expect(within(approval).getByRole('link').getAttribute('href')).toBe(`#/trade-review/${today.approvals.items![0].proposal_id}`)
-  expect(screen.getByText('4 of 5 steps done')).toBeTruthy()
+  expect(screen.getByText('3 of 5 steps done, 1 unknown')).toBeTruthy()
 })
 
 it('marks every step unknown when Today cannot be read', async () => {

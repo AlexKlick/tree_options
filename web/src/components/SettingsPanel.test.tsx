@@ -65,6 +65,10 @@ it('shows the read-only profile facts and leaves unknown limits unavailable', as
   expect(within(profile).getByText(`${COMMAND_MAX_TTL_S} s`, { exact: false })).toBeTruthy()
   expect(within(profile).getByText(/Live trading/)).toBeTruthy()
   expect(within(profile).getByText(/Off\. Paper only/)).toBeTruthy()
+  // no positive fact about Family command ingress: never "Done"
+  const phone = within(profile).getByText('Phone commands').nextElementSibling!
+  expect(phone.textContent).toMatch(/^Unknown: /)
+  expect(phone.textContent).not.toMatch(/Done|enabled/)
   const acceptance = screen.getByRole('region', { name: 'Acceptance rules' })
   expect(within(acceptance).getByText(`${ACCEPTANCE_THRESHOLDS.streak_sessions} consecutive qualifying sessions`, { exact: false })).toBeTruthy()
   expect(within(acceptance).getByText(`${ACCEPTANCE_THRESHOLDS.heartbeat_min_percent}%`, { exact: false })).toBeTruthy()
