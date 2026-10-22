@@ -12,6 +12,10 @@
 //   mounted once shown so a decision in flight keeps reporting after the row
 //   leaves `pending`.
 // - An effect schema this page does not know is shown exactly as recorded.
+// - Wave 5: the index also lets the owner START an entry (TradeIdeas.tsx):
+//   Ideas (`GET api/ideas`) and the New SPY trade ticket each queue one
+//   `compose_entry`; the desk's proposal then appears under Waiting for your
+//   decision and is approved here as before, never by composing.
 
 import { useEffect, useId, useState, type ReactNode } from 'react'
 import { usePoll } from '../hooks/usePoll'
@@ -24,6 +28,7 @@ import {
   type TodayView,
 } from '../lib/contracts'
 import { approveArgsFromRow, getProposals, getToday, secondsUntil } from '../lib/commandsApi'
+import { getIdeas } from '../lib/ideasApi'
 import type { PollState } from '../hooks/usePoll'
 import { ago, etTime } from '../lib/format'
 import { formatCents, formatCountdown, reasonText } from '../lib/reviewFormat'
@@ -38,6 +43,7 @@ import {
   useNow,
   type ApprovalFacts,
 } from './ApprovalSheet'
+import { IdeasSection, ManualTicketSection } from './TradeIdeas'
 import './today-review.css'
 
 export const STATUS_LABEL: Record<ProposalRow['status'], string> = {
@@ -460,43 +466,51 @@ function LoadState({ poll, what }: { poll: PollState<unknown>; what: string }) {
 
 function ProposalIndex() {
   const poll = usePoll(getProposals)
+  const ideas = usePoll(getIdeas)
   const now = useNow(1000)
   const list = poll.data
   const receivedAtMs = poll.lastSuccessAt
   const pending = list ? list.proposals.filter((r) => r.status === 'pending') : []
   pending.sort((a, b) => Date.parse(a.send_deadline) - Date.parse(b.send_deadline))
   const earlier = list ? list.proposals.filter((r) => r.status !== 'pending') : []
+  const listClock = list !== null && receivedAtMs !== null ? { now: list.now, receivedAtMs } : null
   return (
     <AppShell title="Trade review" poll={poll} showRuntimeBanners={false} contextLabel="trex · paper desk" footerSource={FOOTER}>
       <div className="review-page">
         <p className="paper-note">{PAPER_NOTE}</p>
         <LoadState poll={poll} what="The proposal list" />
         {list !== null && receivedAtMs !== null && (
+          <section className="card" aria-label="Waiting for your decision">
+            <h2>Waiting for your decision</h2>
+            {pending.length === 0 ? (
+              <p className="muted">Nothing is waiting for your decision.</p>
+            ) : (
+              <ul className="proposal-rows">
+                {pending.map((row) => {
+                  const facts = approvalFromRow(row, list.now)
+                  return (
+                    <li key={row.proposal_id} className="proposal-row-item">
+                      <a className="tap-link proposal-link" href={hashFor('trade-review-proposal', row.proposal_id)}>
+                        {facts.summary}
+                      </a>
+                      <Countdown seconds={approvalSecondsLeft(facts, receivedAtMs, now)} />
+                      <span className="muted small">
+                        Max loss {formatCents(facts.max_loss_cents)}, notional {formatCents(facts.notional_cents)},{' '}
+                        {row.proposal.program_id}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </section>
+        )}
+        <div className="initiate-grid">
+          <IdeasSection poll={ideas} onComposed={poll.refresh} />
+          <ManualTicketSection ideas={ideas} fallbackClock={listClock} onComposed={poll.refresh} />
+        </div>
+        {list !== null && receivedAtMs !== null && (
           <>
-            <section className="card" aria-label="Waiting for your decision">
-              <h2>Waiting for your decision</h2>
-              {pending.length === 0 ? (
-                <p className="muted">Nothing is waiting for your decision.</p>
-              ) : (
-                <ul className="proposal-rows">
-                  {pending.map((row) => {
-                    const facts = approvalFromRow(row, list.now)
-                    return (
-                      <li key={row.proposal_id} className="proposal-row-item">
-                        <a className="tap-link proposal-link" href={hashFor('trade-review-proposal', row.proposal_id)}>
-                          {facts.summary}
-                        </a>
-                        <Countdown seconds={approvalSecondsLeft(facts, receivedAtMs, now)} />
-                        <span className="muted small">
-                          Max loss {formatCents(facts.max_loss_cents)}, notional {formatCents(facts.notional_cents)},{' '}
-                          {row.proposal.program_id}
-                        </span>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </section>
             <section className="card" aria-label="Earlier proposals">
               <h2>Earlier proposals</h2>
               {earlier.length === 0 ? (

@@ -20,7 +20,7 @@ Five destinations, on the desktop and on the phone (390 x 844 and up):
 | --- | --- | --- |
 | Today | Today | what needs you now: approvals with their countdown, the desk and gateway state, the stops |
 | Experiments | Experiments | research evidence and the research pilot |
-| Trade review | Review | one proposal in full before you approve or reject it |
+| Trade review | Review | one proposal in full before you approve or reject it; ideas and a manual SPY ticket to start one |
 | Portfolio | Portfolio | holdings, cash, reconciliation, positions outside TREX, the risk snapshot |
 | Activity & settings | Activity | the activity log, paper acceptance progress, settings |
 
@@ -77,6 +77,32 @@ When an approval does not go through:
 | The command expired before the desk applied it (`command_expired`) | the desk did not apply it within 300 seconds | check the desk owner heartbeat on Today |
 | Duplicate (first outcome kept) | you sent the same approval twice | nothing: sending twice is safe |
 | The command was not authorized (`command_unauthorized`), or the portal answers `trex-commands-not-configured` | the command key is missing, or differs, on the Family Apps portal or on TREX | on the host, install the same key file on both sides (`~/.config/family-apps/trex-command.key` for the portal, `~/.config/trex/family-command.key` for TREX); see Getting started, step 4 |
+
+## Start a trade yourself
+
+Trade review (the Review tab) also lets you start an entry. Starting one only
+asks the desk to prepare a proposal: nothing is approved or sent until you
+approve that proposal as above.
+
+- **Ideas** lists the candidates the desk qualified, each with its max loss,
+  notional and the time left to use it. **Prepare proposal** sends one
+  request; a blocked, expired or already used idea says why and has no
+  button, and an idea that already has a waiting proposal links to it.
+- Warnings such as "New entries are paused" or a closed entry window are
+  advisory: the page shows them in words, and the desk decides when it
+  prepares the proposal (a refusal shows its reason).
+- **New SPY trade** is a manual ticket for whole SPY shares: the number of
+  shares, how the entry limit is set (pay the ask, the midpoint, or your own
+  limit), a stop below the entry price, an optional target above it, and the
+  last market session to hold the position. The page checks these before it
+  sends; the desk checks everything again with its real-time quote.
+- The ticket is paper only and cash only (no margin, no short selling); the
+  desk refuses an SPY entry on a delayed quote and prepares entries only
+  during regular market hours.
+- When the desk has prepared the proposal, **Review and approve the proposal**
+  opens it; approve it there before its countdown runs out. If the request was
+  not confirmed, **Try again (same request)** re-sends the same request, so it
+  can never prepare two proposals from one press.
 
 ## Pause new entries or stop everything
 

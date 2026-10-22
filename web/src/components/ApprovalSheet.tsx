@@ -52,6 +52,8 @@ export function Unavailable({ reason, what = 'Unavailable' }: { reason: string; 
 }
 
 const APPLIED_TEXT: Partial<Record<CommandKind, string>> = {
+  // Wave 5: composing prepares a proposal only; approving it is a separate act
+  compose_entry: 'Proposal prepared. Nothing is approved or sent until you approve it on its page.',
   approve_entry: 'Approved. The desk owner granted this one paper entry.',
   reject_entry: 'Rejected. The desk will not send this entry.',
   pause_entries: 'New entries are paused. Pausing never stops exits.',

@@ -1,0 +1,162 @@
+/* Ideas and the New SPY trade ticket on Trade review (Wave 5 lane web).
+   Phone first (390 px wide): one column, 44 px touch targets, 16 px inputs
+   (no zoom on focus). From 960 px the two cards sit side by side. Tokens
+   come from styles.css (:root); buttons and status lines from
+   today-review.css. */
+
+.initiate-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+@media (min-width: 960px) {
+  .initiate-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+.card.initiate-card h2 { margin: 0 0 6px; font-size: 1.1rem; }
+.initiate-card > p { margin: 4px 0 10px; }
+
+/* -- ideas -------------------------------------------------------------- */
+
+.idea-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.idea-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--inset);
+  min-width: 0;
+}
+.idea-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.idea-summary { flex: 1 1 160px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.idea-facts { margin: 6px 0 0; overflow-wrap: anywhere; }
+.idea-why { margin: 8px 0 0; color: #f4d77f; font-size: 0.88rem; }
+.idea-prepare { margin-top: 10px; width: 100%; }
+.idea-problems { margin: 10px 0 0; padding-left: 18px; }
+.idea-hints,
+.ticket-hints {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-left: 4px solid #f4d77f;
+  border-radius: 6px;
+  background: var(--inset);
+  font-size: 0.86rem;
+}
+.ticket-hints { margin: 0 0 12px; }
+.idea-hints p,
+.ticket-hints p { margin: 0 0 2px; }
+.hint-list { margin: 0; padding-left: 18px; }
+.idea-blocked { margin-top: 14px; }
+.card.initiate-card .idea-blocked h3 { margin: 0 0 4px; font-size: 0.92rem; color: var(--muted); }
+.idea-blocked ul { margin: 0; padding-left: 18px; font-size: 0.86rem; }
+.idea-blocked li { margin: 3px 0; overflow-wrap: anywhere; }
+@media (min-width: 720px) {
+  .idea-prepare { width: auto; }
+}
+
+/* -- the outcome of one compose ----------------------------------------- */
+
+.compose-outcome { margin-top: 6px; }
+.compose-ready {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 8px 0 0;
+}
+.compose-link { min-height: 44px; font-weight: 700; }
+.compose-actions:empty { display: none; }
+
+/* -- the ticket ---------------------------------------------------------- */
+
+.ticket-warnings {
+  margin: 4px 0 12px;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+.ticket-warnings li { margin: 3px 0; }
+.ticket-warnings strong { color: var(--ink); }
+.ticket-blocked { margin: 0 0 10px; }
+.ticket-form { display: flex; flex-direction: column; gap: 12px; }
+.ticket-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.ticket-fields:disabled { opacity: 0.7; }
+.ticket-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ticket-field label,
+.ticket-policy legend { font-weight: 600; font-size: 0.9rem; }
+.ticket-field input,
+.ticket-field select {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 16px;
+  color: inherit;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ticket-field input[aria-invalid='true'],
+.ticket-field select[aria-invalid='true'] { border-color: var(--neg); }
+.ticket-field input:focus-visible,
+.ticket-field select:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.field-error { margin: 0; color: var(--neg); font-size: 0.86rem; font-weight: 600; }
+.field-hint { margin: 0; color: var(--muted); font-size: 0.82rem; }
+.ticket-policy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 6px 12px 8px;
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+.policy-option {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 0 8px;
+  min-height: 44px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.policy-option input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.policy-label { font-weight: 600; }
+.policy-note { grid-column: 2; color: var(--muted); font-size: 0.82rem; }
+/* one column on a phone (a wrapped label would misalign a pair), two from
+   about 400 px of card width */
+.ticket-row {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+}
+.idea-prepare,
+.ticket-submit { font-family: inherit; font-weight: 700; font-size: 0.95rem; }
+.ticket-preview {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--accent);
+  background: var(--inset);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.ticket-submit { width: 100%; }
+@media (min-width: 720px) {
+  .ticket-submit { width: auto; align-self: flex-start; }
+}
