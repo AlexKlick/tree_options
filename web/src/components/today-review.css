@@ -1,0 +1,348 @@
+/* Today, Trade review and the approval sheet (Wave 3 lane F).
+   Phone first (390 px wide): one column, 44 px touch targets, the approval
+   sheet as a bottom sheet. From 720 px the sheet is a centred dialog; from
+   960 px Today and the review detail use two columns. Tokens come from
+   styles.css (:root). */
+
+.today-page,
+.review-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.paper-note {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.load-error,
+.critical-banner {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #5a2f1f;
+  color: #ffd9c4;
+  font-weight: 600;
+}
+
+.warn-note {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 4px solid #f4d77f;
+  background: var(--inset);
+  border-radius: 6px;
+}
+.warn-text { color: #f4d77f; }
+.bad-text { color: var(--neg); font-weight: 700; }
+.small { font-size: 0.82rem; }
+
+.unavailable { color: var(--muted); font-style: italic; }
+.reason-code {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-style: normal;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--inset);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.hash { font-family: var(--mono); font-size: 0.78rem; overflow-wrap: anywhere; word-break: break-all; }
+
+/* -- status strip ------------------------------------------------------- */
+
+.status-strip {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+}
+.status-tile {
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 10px 14px;
+  min-width: 0;
+}
+.status-tile h3 {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.status-main { margin: 4px 0 2px; font-size: 1.05rem; font-weight: 700; }
+.status-sub { margin: 2px 0 0; font-size: 0.85rem; }
+.tone-ok { border-left-color: var(--pos); }
+.tone-warn { border-left-color: #f4d77f; }
+.tone-bad { border-left-color: var(--neg); }
+.tone-unknown { border-left-color: var(--muted); border-left-style: dashed; }
+.tone-neutral { border-left-color: var(--border); }
+
+/* -- layout ------------------------------------------------------------- */
+
+.today-grid,
+.review-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+.today-col,
+.review-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* `.card.x` outranks styles.css's `.card h3`, whatever the bundle order */
+.card.today-card h2 { font-size: 1.1rem; }
+.card.today-card h3 { margin: 18px 0 6px; font-size: 0.92rem; color: var(--muted); }
+
+@media (min-width: 960px) {
+  .today-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+  .review-grid { grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); }
+  .review-side { position: sticky; top: 16px; }
+}
+
+/* -- facts -------------------------------------------------------------- */
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 8px 0 0;
+}
+.facts dt { color: var(--muted); font-size: 0.86rem; }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+.facts-inline { grid-template-columns: repeat(3, max-content minmax(0, auto)); }
+.card.review-facts h3 { margin: 20px 0 4px; font-size: 0.95rem; }
+.card.review-facts h3:first-child { margin-top: 0; }
+.raw-effect { white-space: pre-wrap; overflow-wrap: anywhere; }
+.legs-table { margin-top: 10px; }
+
+/* -- buttons ------------------------------------------------------------ */
+
+.primary-button,
+.secondary-button,
+.danger-button {
+  min-height: 44px;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font: 700 0.95rem/1.2 inherit;
+  cursor: pointer;
+}
+.primary-button { background: var(--accent); color: #0b1322; border: 1px solid var(--accent); }
+.secondary-button { background: transparent; color: var(--ink); border: 1px solid var(--border); }
+.danger-button { background: #5a2f1f; color: #ffd9c4; border: 1px solid var(--neg); }
+.primary-button:disabled,
+.secondary-button:disabled,
+.danger-button:disabled { opacity: 0.45; cursor: not-allowed; }
+.primary-button:focus-visible,
+.secondary-button:focus-visible,
+.danger-button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* -- controls ----------------------------------------------------------- */
+
+.entries-control { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.entries-state { margin: 0; font-weight: 600; }
+.control-note { margin: 0; color: var(--muted); font-size: 0.86rem; }
+.queued-note { margin: 0; color: #f4d77f; font-size: 0.86rem; }
+.switch-list,
+.queued-list,
+.event-list,
+.blocker-list,
+.approval-list,
+.progress-list,
+.proposal-rows { list-style: none; margin: 0; padding: 0; }
+.switch-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.switch-row:last-child { border-bottom: 0; }
+.switch-label { font-weight: 600; }
+.switch-standing .switch-state { color: var(--neg); font-weight: 700; }
+.queued-list li { padding: 4px 0; font-size: 0.88rem; }
+
+/* -- approvals ---------------------------------------------------------- */
+
+.count-badge {
+  min-width: 28px;
+  padding: 2px 9px;
+  border-radius: 12px;
+  background: var(--border);
+  text-align: center;
+  font-weight: 700;
+}
+.approval-list { display: flex; flex-direction: column; gap: 12px; }
+.approval-item {
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--inset);
+}
+.approval-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.approval-summary { margin: 8px 0 4px; font-weight: 600; }
+.approval-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 10px; }
+.kind-badge {
+  padding: 2px 9px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: var(--border);
+}
+.precheck p { margin: 8px 0 2px; color: #f4d77f; font-size: 0.86rem; }
+.precheck ul,
+.precheck-list { margin: 0; padding-left: 18px; }
+
+.countdown { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
+.countdown-low { color: var(--neg); }
+.countdown-expired { color: var(--muted); }
+
+/* -- blockers, progress, events ----------------------------------------- */
+
+.blocker { padding: 8px 0 8px 12px; border-left: 4px solid var(--border); margin-bottom: 8px; }
+.blocker p { margin: 2px 0; }
+.severity-critical { border-left-color: var(--neg); }
+.severity-warning { border-left-color: #f4d77f; }
+.severity-info { border-left-color: var(--border); }
+.severity-label { font-weight: 700; margin-right: 4px; }
+.blocker-next { color: var(--muted); font-size: 0.88rem; }
+
+.progress-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  padding: 6px 0;
+}
+.progress-row progress { grid-column: 1 / -1; width: 100%; height: 8px; accent-color: var(--accent); }
+.live-note { margin: 12px 0 8px; font-weight: 600; }
+.positions-count { margin: 4px 0; font-size: 1.05rem; font-weight: 600; }
+.event-list li { padding: 5px 0; border-bottom: 1px solid var(--border-soft); }
+.event-list li:last-child { border-bottom: 0; }
+.event-list time { font-variant-numeric: tabular-nums; color: var(--muted); margin-right: 6px; }
+
+/* -- trade review ------------------------------------------------------- */
+
+/* the detail header stays in view while the owner reads the facts */
+.review-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 8px 0;
+  background: var(--page);
+}
+.review-head h2 { margin: 0; font-size: 1.3rem; }
+.head-countdown { font-weight: 700; font-variant-numeric: tabular-nums; }
+.jump-to-decision { display: none; }
+@media (max-width: 959px) {
+  .jump-to-decision { display: inline-block; margin-left: auto; }
+}
+.state-badge {
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: var(--border);
+}
+.state-pending { background: #5a4a1f; color: #f4d77f; }
+.state-approved,
+.state-consumed { background: #1f4a32; color: var(--pos); }
+.state-rejected,
+.state-unknown { background: #5a2f1f; color: var(--neg); }
+.proposal-row-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.proposal-row-item:last-child { border-bottom: 0; }
+.proposal-link { font-weight: 700; }
+
+/* -- the approval sheet ------------------------------------------------- */
+
+.approval-sheet {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+}
+.approval-sheet h2 { margin: 0; font-size: 1.1rem; }
+.approval-sheet h2:focus { outline: none; }
+.sheet-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.sheet-summary { margin: 8px 0; font-weight: 600; }
+.sheet-note { margin: 10px 0; color: var(--muted); font-size: 0.86rem; }
+.sheet-closed { margin: 8px 0; color: #f4d77f; font-weight: 600; }
+.sheet-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.sheet-actions > button { flex: 1 1 140px; }
+.reject-form { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.reject-form textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  resize: vertical;
+}
+.sheet-binds { margin-top: 12px; font-size: 0.86rem; }
+.sheet-binds summary { cursor: pointer; color: var(--muted); min-height: 32px; }
+.command-status { margin-top: 10px; font-size: 0.92rem; }
+.command-status:empty { margin: 0; }
+.command-status-ok { color: var(--pos); }
+.command-status-bad { color: var(--neg); }
+.command-status-warn { color: #f4d77f; }
+.status-blockers { margin: 4px 0 0; padding-left: 18px; }
+
+/* the inline sheet keeps its decision reachable on a phone */
+.approval-sheet-inline .sheet-decision {
+  position: sticky;
+  bottom: 0;
+  background: var(--card);
+  padding: 8px 0 calc(8px + env(safe-area-inset-bottom));
+}
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(5, 9, 18, 0.72);
+}
+.approval-sheet-dialog {
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  border-radius: 16px 16px 0 0;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+@media (min-width: 720px) {
+  .sheet-backdrop { align-items: center; padding: 24px; }
+  .approval-sheet-dialog { max-width: 560px; border-radius: 16px; }
+}
+
+@media (max-width: 520px) {
+  /* a compact 2 x 2 status strip so approvals start on the first screen */
+  .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .status-tile { padding: 8px 10px; border-left-width: 4px; }
+  .status-main { font-size: 0.95rem; }
+  .status-sub { font-size: 0.78rem; }
+  .status-sub.muted { display: none; }
+  .facts,
+  .facts-inline { grid-template-columns: max-content minmax(0, 1fr); }
+  .entries-control .control-button { width: 100%; }
+  .approval-actions .primary-button { flex: 1 1 100%; }
+}
