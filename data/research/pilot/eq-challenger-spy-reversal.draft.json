@@ -1,0 +1,62 @@
+{
+  "budgets": {
+    "compute_minutes_per_day": 10,
+    "requests_per_day": 20,
+    "storage_mb": 64
+  },
+  "controls": [
+    {
+      "program_id": "eq-baseline-spy-weekly",
+      "relation": "baseline"
+    }
+  ],
+  "created_at": "2026-10-21T20:00:00Z",
+  "data_sources": [
+    {
+      "dataset": "desk chain recorder SPY post-close snapshots chains/<D>/SPY.json.gz, header.underlying_quote",
+      "license": "cboe-delayed-quote-terms-not-reviewed",
+      "name": "cboe-delayed-spy-close",
+      "provenance": "Recorded by tree_options.desk.chains (SOURCE cboe-delayed) at about 17:46 ET since 2026-09-22; raw vendor bytes hash-addressed under raw/<D>/ for 20 sessions, gaps in gaps.jsonl (2026-09-23 lost). The signal needs both sessions recorded; a missing session means no entry, never an imputed close. Not a point-in-time qualified dataset: the owner should confirm the recorder's uptime before sealing.",
+      "provider": "CBOE delayed quotes via the desk chain recorder",
+      "realtime": false
+    },
+    {
+      "dataset": "data/calendar/trex/nyse_sessions_2018_01_02_2028_12_29.json",
+      "license": "repo-internal",
+      "name": "trex-session-calendar",
+      "provenance": "The committed TREX execution calendar (sha256 5c038a891c6ea99580b670518402fef7849ffd7a0f53d268fabdf1263f005f6b, read by tree_options.trex.clock). Defines the previous session for the signal and the exit deadline; sessions after 2028-12-29 cannot be scheduled until it is extended.",
+      "provider": "tree_options repository",
+      "realtime": false
+    },
+    {
+      "dataset": "IBKR paper account top-of-book quotes for SPY, read by the desk owner at entry and while watching the exit",
+      "license": "ibkr-market-data-terms-not-verified",
+      "name": "ibkr-paper-quotes",
+      "provenance": "Read live through the paper gateway by the desk equity path (Wave 2); not recorded as a dataset. The paper account's market data entitlement is NOT verified by this draft, so quotes are treated as possibly delayed (realtime false). Fills, commissions and positions come from the reconciled paper ledger, not from this feed.",
+      "provider": "IBKR paper gateway",
+      "realtime": false
+    }
+  ],
+  "decision_rule": {
+    "metric": "mean_net_pnl_cents_per_completed_lifecycle",
+    "minimum_lifecycles": 20,
+    "minimum_sessions": 60,
+    "statement": "Signal: SPY's recorded post-close price on session D is at least 1.00% below its recorded post-close price on the previous NYSE session (both recorded, cboe-delayed). Entry: on session D+1, the same order, sizing, owner approval and exit policy as the baseline (whole-share long SPY DAY limit at most 1,000.00 USD notional after 10:00 ET; stop 2% below entry; deadline the third session after entry; forced exit 15:45 ET); at most one open position. Decision, read once when both programs have at least 20 completed lifecycles and at least 60 sessions have passed since the later seal: the challenger beats the baseline only if its mean net P&L per completed lifecycle minus the baseline's is above 0 and the lower bound of a 95% bootstrap interval of that difference (10,000 draws, seed 20261021, lifecycles resampled within each program) is above 0. Otherwise it does not."
+  },
+  "existing_registration": null,
+  "hypothesis": "Short-term reversal: after a recorded close at least 1% below the previous session's, a SPY entry under the pilot's fixed exit policy earns more net per completed lifecycle than the signal-free weekly control.",
+  "program_id": "eq-challenger-spy-reversal",
+  "role": "challenger",
+  "schema": "trex-pilot-registration/1",
+  "sealed_at": null,
+  "sealed_by": null,
+  "sha256": null,
+  "status": "draft",
+  "title": "SPY one-day reversal (preregistered equity challenger)",
+  "universe": {
+    "asset_kind": "equity",
+    "symbols": [
+      "SPY"
+    ]
+  }
+}
