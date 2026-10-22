@@ -68,6 +68,15 @@ def verdicts(tmp_path, monkeypatch) -> Path:
     return directory
 
 
+@pytest.fixture(autouse=True)
+def no_live_game(monkeypatch) -> None:
+    """Never ask the real host whether desk-challenge.service is running: during the
+    nightly 19:00 game the real answer is "active", which downgraded a strict FAIL to
+    WARN/exit 0 (the Wave 2 gate failed exactly that way). Tests that need an
+    in-flight game override this."""
+    monkeypatch.setattr(watch, "_challenge_service_running", lambda: False)
+
+
 def _epoch(moment: datetime) -> float:
     return moment.timestamp()
 
