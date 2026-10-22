@@ -18,9 +18,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.unit.trex_fakes import SPY_CON_ID, FillStep, equity_effect
+from tests.unit.trex_fakes import CLOCK_START, SPY_CON_ID, FillStep, equity_effect
 from tests.unit.wave2_owner_rig import ACCOUNT, EQUITY_PROGRAM, OwnerRig
 
+from tree_options.action_graph.canary import equity_entry_window
 from tree_options.trex import supervised as supervised_core
 from tree_options.trex.contracts import (
     Blocker,
@@ -302,6 +303,35 @@ def test_reject_tombstones_the_proposal_and_the_web_shows_it(rig):
     refused = rig.approve(composed)
     assert (refused.status, refused.reason) == ("refused", "proposal_rejected")
     assert rig.orders() == []
+
+
+def test_an_equity_entry_before_the_window_opens_is_refused_then_allowed(tmp_path):
+    """The one scenario that starts at the session open (09:30 ET), before
+    the equity entry window (open + 5 min): compose refuses
+    ``entry_window_closed`` and places nothing; at 09:35 the same candidate
+    composes and its approval sends exactly one BUY."""
+    early = OwnerRig(tmp_path, start=CLOCK_START)
+    try:
+        assert early.step() == 0
+        effect = early.draft_equity()
+        early.quote()
+        refused = early.compose(effect.intent_id)
+        assert (refused.status, refused.reason) == (
+            "refused",
+            Blocker.ENTRY_WINDOW_CLOSED.value,
+        ), refused
+        assert early.orders() == []
+        window_start, _ = equity_entry_window(early.clock.today())
+        early.clock.to(window_start)
+        early.quote()
+        composed = early.compose(effect.intent_id)
+        assert composed.status == "applied", composed
+        early.quote()
+        approved = early.approve(composed)
+        assert approved.status == "applied" and approved.result["sent"] is True, approved
+        assert len(early.orders("BUY")) == 1
+    finally:
+        early.close()
 
 
 # ------------------------------------------------------------- facts
