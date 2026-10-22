@@ -909,9 +909,9 @@ def test_desk_spec_v2_refusals(name: str, path: str, value: Any) -> None:
 
 # ---------------------------------------------- vocabulary, layout, import
 
-
-def test_blocker_wire_strings_are_frozen() -> None:
-    assert {b.value for b in c.Blocker} == {
+#: C2.7 ``Blocker`` as frozen by the Wave 2 plan and the contracts lane.
+PLAN_BLOCKERS = frozenset(
+    {
         "entries_paused",
         "reconciliation_required",
         "risk_snapshot_stale",
@@ -930,6 +930,393 @@ def test_blocker_wire_strings_are_frozen() -> None:
         "command_unauthorized",
         "proposal_unknown",
         "session_entry_limit_reached",
+    }
+)
+#: Amendment 2026-10-21 (lane K): the wire strings the merged Wave 2 lanes
+#: emit as blockers, refusal reasons or view reasons, spelled as they do.
+AMENDED_BLOCKERS = frozenset(
+    {
+        # kill files and owner facts (trex.pause, trex.admission, desk.enter)
+        "halt",
+        "auto_off",
+        "exit_owner_not_ready",
+        "shadow_only_build",
+        "selection_rule_not_activated",
+        # entry screening (trex.supervised_canary, action_graph.canary)
+        "credit_open_not_supported_v1",
+        "risk_snapshot_account_mismatch",
+        "profile_limits_missing",
+        "effect_account_not_mandate_account",
+        "equity_not_whole_share_long",
+        "quote_stale_or_future",
+        "broker_owner_unhealthy",
+        "protective_exit_unavailable",
+        "equity_notional_exceeds_intended_capital",
+        "trade_exceeds_intended_capital",
+        "trade_loss_cap_exceeded",
+        "open_exposure_unknown",
+        "open_loss_cap_exceeded",
+        "daily_loss_unknown",
+        "daily_loss_cap_exceeded",
+        # equity preflight (trex.supervised_ibkr)
+        "gateway_disconnected",
+        "not_paper_gateway_port",
+        "wrong_client_id",
+        "account_not_managed_by_session",
+        "account_not_paper",
+        "equity_con_id_mismatch",
+        "equity_quote_incomplete",
+        "broker_view_unreadable:account_values",
+        "broker_view_unreadable:open_orders",
+        "cash_commitment_unbounded",
+        # per-trade authority refusals (trex.supervised, trex.grant_policy)
+        "effect_invalid",
+        "effects_halted",
+        "entry_mandate_already_granted",
+        "intent_id_not_path_safe",
+        "mandate_absent",
+        "mandate_account_mismatch",
+        "mandate_binding_mismatch",
+        "mandate_scope_mismatch",
+        "permit_already_issued",
+        "product_strategy_requires_approval",
+        # holdings checks before a desk equity sell (trex.desk_runtime ``why``)
+        "holdings_mismatch",
+        "holdings_excess",
+        "not_a_stock_row",
+        "fractional_position",
+        "order_fill_not_whole_shares",
+        # web command ingress and store (trex_web.commands_view, command_store)
+        "body_too_large",
+        "invalid_json",
+        "issued_by_is_stamped_by_the_backend",
+        "invalid_command",
+        "command_not_yet_valid",
+        "unknown_command",
+        "command_store_unavailable",
+        "commands_dir_unwritable",
+        "command_store_unreadable",
+        "command_store_foreign_file",
+        "command_result_invalid",
+        "staged_command_invalid",
+        "staged_command_mismatch",
+        # web views (trex_web.commands_view proposals, trex_web.portfolio_view)
+        "proposal_unreadable",
+        "proposal_invalid",
+        "proposal_not_canonical",
+        "proposal_id_mismatch",
+        "mandate_unreadable",
+        "holdings_missing",
+        "holdings_unreadable",
+        "holdings_invalid",
+        "risk_snapshot_missing",
+        "risk_snapshot_unreadable",
+        "risk_snapshot_invalid",
+        "risk_snapshot_unavailable",
+        "reconciliation_missing",
+        "reconciliation_unreadable",
+        "reconciliation_invalid",
+        "reconciliation_stale",
+        "reconciliation_unavailable",
+        "account_mismatch",
+        "non_paper_account",
+    }
+)
+#: Amendment 2026-10-21: reserved for the Wave 2b lanes (not yet emitted).
+RESERVED_BLOCKERS = frozenset({"entry_window_closed", "outside_undefined_risk", "exit_quote_blind"})
+#: Built by the portfolio view as ``f"{label}_<state>"``, so never a literal.
+PORTFOLIO_LABEL_REASONS = frozenset(
+    f"{label}_{state}"
+    for label in ("holdings", "risk_snapshot", "reconciliation")
+    for state in ("missing", "unreadable", "invalid")
+)
+#: C2.7 ``DeskEvent`` as frozen by the contracts lane.
+PLAN_EVENTS = frozenset(
+    {
+        "proposal_composed",
+        "entry_approved",
+        "entry_rejected",
+        "entries_paused",
+        "entries_resumed",
+        "approvals_invalidated",
+        "command_applied",
+        "command_refused",
+        "equity_exit_stop",
+        "equity_exit_target",
+        "equity_exit_deadline",
+        "equity_exit_forced",
+        "reconciliation_clean",
+        "reconciliation_required",
+    }
+)
+#: Amendment 2026-10-21: event names the desk runtime's equity path added.
+AMENDED_EVENTS = frozenset(
+    {
+        "equity_contract_mismatch",
+        "equity_unqualified",
+        "exit_evidence_inconclusive",
+        "holdings_unverifiable",
+        "structure_tick_failed",
+    }
+)
+#: The strings the coordinator and the lane handoffs named (2026-10-21).
+NAMED_LANE_CODES: list[tuple[type[c.Blocker] | type[c.DeskEvent], str]] = [
+    (c.Blocker, "entry_mandate_already_granted"),
+    (c.Blocker, "mandate_absent"),
+    (c.Blocker, "mandate_binding_mismatch"),
+    (c.Blocker, "exit_owner_not_ready"),
+    (c.Blocker, "halt"),
+    (c.Blocker, "auto_off"),
+    (c.Blocker, "shadow_only_build"),
+    (c.Blocker, "selection_rule_not_activated"),
+    (c.DeskEvent, "holdings_unverifiable"),
+    (c.DeskEvent, "equity_contract_mismatch"),
+    (c.DeskEvent, "equity_unqualified"),
+    (c.DeskEvent, "exit_evidence_inconclusive"),
+    (c.Blocker, "equity_con_id_mismatch"),
+    (c.Blocker, "equity_quote_incomplete"),
+    (c.Blocker, "broker_view_unreadable:account_values"),
+    (c.Blocker, "broker_view_unreadable:open_orders"),
+    (c.Blocker, "cash_commitment_unbounded"),
+    (c.Blocker, "entry_window_closed"),
+    (c.Blocker, "outside_undefined_risk"),
+    (c.Blocker, "exit_quote_blind"),
+    (c.DeskEvent, "approvals_invalidated"),
+]
+#: The merged modules whose string literals the amended values must match.
+PRODUCERS = (
+    "trex/admission.py",
+    "trex/pause.py",
+    "trex/supervised.py",
+    "trex/grant_policy.py",
+    "trex/supervised_canary.py",
+    "trex/supervised_ibkr.py",
+    "trex/desk_runtime.py",
+    "action_graph/canary.py",
+    "desk/enter.py",
+    "trex_web/commands_view.py",
+    "trex_web/command_store.py",
+    "trex_web/portfolio_view.py",
+)
+
+
+def _member_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in value).upper()
+
+
+def test_blocker_wire_strings_are_frozen() -> None:
+    assert {b.value for b in c.Blocker} == PLAN_BLOCKERS | AMENDED_BLOCKERS | RESERVED_BLOCKERS
+    # the amendment is additive: no plan value is re-added or renamed
+    assert not PLAN_BLOCKERS & (AMENDED_BLOCKERS | RESERVED_BLOCKERS)
+    assert not AMENDED_BLOCKERS & RESERVED_BLOCKERS
+    assert PORTFOLIO_LABEL_REASONS <= AMENDED_BLOCKERS
+
+
+def test_desk_event_wire_strings_are_frozen() -> None:
+    assert {e.value for e in c.DeskEvent} == PLAN_EVENTS | AMENDED_EVENTS
+    assert not PLAN_EVENTS & AMENDED_EVENTS
+
+
+@pytest.mark.parametrize("vocabulary", [c.Blocker, c.DeskEvent], ids=["Blocker", "DeskEvent"])
+def test_vocabulary_values_are_unique(vocabulary: Any) -> None:
+    # ``__members__`` keeps aliases (a repeated value), iteration hides them
+    values = [member.value for member in vocabulary.__members__.values()]
+    assert len(values) == len(set(values))
+    assert len(values) == len(list(vocabulary))
+    # names are the values spelled as identifiers (``:`` becomes ``_``)
+    assert {name: m.value for name, m in vocabulary.__members__.items()} == {
+        _member_name(value): value for value in values
+    }
+
+
+@pytest.mark.parametrize(
+    ("vocabulary", "code"), NAMED_LANE_CODES, ids=[code for _, code in NAMED_LANE_CODES]
+)
+def test_named_lane_codes_round_trip(vocabulary: Any, code: str) -> None:
+    member = vocabulary(code)
+    assert member.value == code
+    assert member == code
+    assert str(member) == code
+    assert f"{member}" == code
+    assert json.dumps({"reason": member}) == json.dumps({"reason": code})
+    assert vocabulary[_member_name(code)] is member
+    assert vocabulary(json.loads(json.dumps(member))) is member
+
+
+def _producer_literals() -> set[str]:
+    import ast
+
+    found: set[str] = set()
+    for relative in PRODUCERS:
+        tree = ast.parse((REPO / "src" / "tree_options" / relative).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.add(node.value)
+                # desk.enter lowercases its kill-file names into blockers
+                if node.value.isupper():
+                    found.add(node.value.lower())
+    return found
+
+
+def test_amended_values_are_the_producers_literals() -> None:
+    literals = _producer_literals()
+    expected = (AMENDED_BLOCKERS - PORTFOLIO_LABEL_REASONS) | AMENDED_EVENTS
+    assert sorted(expected - literals) == []
+
+
+def test_producer_constants_are_vocabulary_members() -> None:
+    from tree_options.trex import admission, pause, supervised_canary, supervised_ibkr
+
+    assert pause.HALTED == c.Blocker.HALT
+    assert admission.HALTED == c.Blocker.HALT
+    assert admission.EXIT_OWNER_NOT_READY == c.Blocker.EXIT_OWNER_NOT_READY
+    assert supervised_canary.CREDIT_OPEN_BLOCKER == c.Blocker.CREDIT_OPEN_NOT_SUPPORTED_V1
+    assert supervised_ibkr.EQUITY_CON_ID_MISMATCH == c.Blocker.EQUITY_CON_ID_MISMATCH
+    assert supervised_ibkr.EQUITY_QUOTE_INCOMPLETE == c.Blocker.EQUITY_QUOTE_INCOMPLETE
+    assert (
+        supervised_ibkr.ACCOUNT_VALUES_UNREADABLE == c.Blocker.BROKER_VIEW_UNREADABLE_ACCOUNT_VALUES
+    )
+    assert supervised_ibkr.OPEN_ORDERS_UNREADABLE == c.Blocker.BROKER_VIEW_UNREADABLE_OPEN_ORDERS
+    assert supervised_ibkr.CASH_COMMITMENT_UNBOUNDED == c.Blocker.CASH_COMMITMENT_UNBOUNDED
+
+
+def test_admission_blockers_are_vocabulary(tmp_path: Path) -> None:
+    from tree_options.trex.admission import entry_blockers
+
+    (tmp_path / "PAUSE_ENTRIES").write_text("{}")
+    (tmp_path / "HALT").write_text("{}")
+    blockers = entry_blockers(tmp_path, at("2026-10-22T14:04:30+00:00"))
+    assert set(blockers) == {
+        c.Blocker.ENTRIES_PAUSED,
+        c.Blocker.HALT,
+        c.Blocker.RISK_SNAPSHOT_STALE,
+        c.Blocker.RECONCILIATION_REQUIRED,
+        c.Blocker.EXIT_OWNER_NOT_READY,
+    }
+
+
+def test_equity_review_blockers_are_vocabulary() -> None:
+    from decimal import Decimal
+
+    from tree_options.action_graph.canary import EquityEntryFacts, review_equity_entry
+    from tree_options.action_graph.capital import CapitalProfile
+
+    effect = c.SupervisedEquityEffect.model_validate(load("equity_effect.json"))
+    now = at("2026-10-22T14:04:30+00:00")
+
+    def profile(cap: Decimal | None) -> CapitalProfile:
+        return CapitalProfile(
+            profile_id="paper-tiny",
+            revision=1,
+            intended_capital=Decimal("1"),
+            risk_style="defined-risk",
+            goals=("equity-pilot",),
+            allowed_strategy_versions=("equity-pilot/1",),
+            max_loss_per_trade=cap,
+            max_open_loss=cap,
+            max_daily_loss=cap,
+            horizon_days=30,
+        )
+
+    def facts(loss: int | None) -> EquityEntryFacts:
+        return EquityEntryFacts(
+            mandate_account_id="DU0000009",
+            checked_at=now,
+            market_data_type="delayed",
+            quote_observed_at=None,
+            settled_cash_cents=None,
+            open_loss_cents=loss,
+            day_realized_loss_cents=loss,
+            entries_this_session=3,
+            owner_healthy=False,
+            protective_exit_ready=False,
+        )
+
+    capped = review_equity_entry(profile(Decimal("1")), effect, facts(0))
+    unknown = review_equity_entry(
+        profile(None),
+        effect.model_copy(update={"quantity": 0}),
+        facts(None),
+        symbol_allowlist=frozenset(),
+    )
+    seen = set(capped) | set(unknown)
+    assert seen <= {b.value for b in c.Blocker}
+    assert seen == {
+        c.Blocker.PROFILE_LIMITS_MISSING,
+        c.Blocker.EFFECT_ACCOUNT_NOT_MANDATE_ACCOUNT,
+        c.Blocker.EQUITY_SYMBOL_NOT_QUALIFIED,
+        c.Blocker.EQUITY_NOT_WHOLE_SHARE_LONG,
+        c.Blocker.EQUITY_QUOTE_NOT_REALTIME,
+        c.Blocker.QUOTE_STALE_OR_FUTURE,
+        c.Blocker.BROKER_OWNER_UNHEALTHY,
+        c.Blocker.PROTECTIVE_EXIT_UNAVAILABLE,
+        c.Blocker.INSUFFICIENT_CASH,
+        c.Blocker.EQUITY_NOTIONAL_EXCEEDS_INTENDED_CAPITAL,
+        c.Blocker.TRADE_EXCEEDS_INTENDED_CAPITAL,
+        c.Blocker.TRADE_LOSS_CAP_EXCEEDED,
+        c.Blocker.OPEN_EXPOSURE_UNKNOWN,
+        c.Blocker.OPEN_LOSS_CAP_EXCEEDED,
+        c.Blocker.DAILY_LOSS_UNKNOWN,
+        c.Blocker.DAILY_LOSS_CAP_EXCEEDED,
+        c.Blocker.SESSION_ENTRY_LIMIT_REACHED,
+    }
+
+
+def _reasons(document: Any) -> set[str]:
+    """Every non-null ``reason`` anywhere in a JSON-shaped document."""
+    if isinstance(document, dict):
+        own = {document["reason"]} if isinstance(document.get("reason"), str) else set()
+        return own.union(*(_reasons(v) for v in document.values()))
+    if isinstance(document, list):
+        return set().union(*(_reasons(v) for v in document))
+    return set()
+
+
+def test_portfolio_view_reasons_are_vocabulary(tmp_path: Path) -> None:
+    from tree_options.trex_web.portfolio_view import portfolio_payload
+
+    now = at("2026-10-22T14:04:30+00:00")
+    risk_unavailable = {
+        **load("risk_snapshot.json"),
+        "account_id": "U0000009",
+        "status": "unavailable",
+        "open_loss_cents": None,
+        "day_realized_loss_cents": None,
+        "cash_cents": None,
+        "equity_gross_cents": None,
+        "outside_positions": [],
+    }
+    rec = load("reconciliation_required.json")
+    rec_unavailable = {**rec, "status": "unavailable", "mismatches": []}
+    rec_clean = {**rec, "status": "clean", "mismatches": []}
+    scenarios: list[tuple[dict[str, bytes], datetime]] = [
+        ({}, now),
+        ({name: b"{" for name in ("holdings", "risk-snapshot", "reconciliation")}, now),
+        ({name: b"{}" for name in ("holdings", "risk-snapshot", "reconciliation")}, now),
+        (
+            {
+                "holdings": b'{"holdings": []}',
+                "risk-snapshot": json.dumps(risk_unavailable).encode(),
+                "reconciliation": json.dumps(rec_unavailable).encode(),
+            },
+            now,
+        ),
+        ({"reconciliation": json.dumps(rec_clean).encode()}, at("2026-10-22T15:00:00+00:00")),
+    ]
+    seen: set[str] = set()
+    for index, (files, when) in enumerate(scenarios):
+        run_dir = tmp_path / f"run-{index}"
+        (run_dir / "ledger").mkdir(parents=True)
+        for name, payload in files.items():
+            (run_dir / "ledger" / f"{name}.json").write_bytes(payload)
+        seen |= _reasons(portfolio_payload(run_dir, when))
+    assert seen <= {b.value for b in c.Blocker}
+    assert seen >= PORTFOLIO_LABEL_REASONS | {
+        "risk_snapshot_unavailable",
+        "reconciliation_stale",
+        "reconciliation_unavailable",
+        "account_mismatch",
+        "non_paper_account",
     }
 
 
