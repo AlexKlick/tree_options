@@ -29,6 +29,7 @@ import type {
 import { ResearchNavChart, type NavSeries } from './ResearchNavChart'
 import { ResearchOutlook } from './ResearchOutlook'
 import { ResearchScenarios } from './ResearchScenarios'
+import { TableScroll } from './TableScroll'
 
 const SERIES_COLORS = ['#4f9cf9', '#e8833a', '#3aa88f', '#a25bd6']
 
@@ -333,6 +334,7 @@ function ComparisonWorkspace(): JSX.Element {
 
               <section aria-label="numeric table">
                 <h2>Values by session</h2>
+                <TableScroll label="Values by session">
                 <table>
                   <thead>
                     <tr>
@@ -364,6 +366,7 @@ function ComparisonWorkspace(): JSX.Element {
                     ))}
                   </tbody>
                 </table>
+                </TableScroll>
               </section>
             </>
           )}
@@ -372,6 +375,7 @@ function ComparisonWorkspace(): JSX.Element {
 
       <section className="catalog">
         <h2>Candidates ({candidates.length})</h2>
+        <TableScroll label="Candidates">
         <table>
           <thead>
             <tr>
@@ -411,6 +415,7 @@ function ComparisonWorkspace(): JSX.Element {
             ))}
           </tbody>
         </table>
+        </TableScroll>
       </section>
 
       {evidenceFor && (
