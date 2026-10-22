@@ -20,9 +20,10 @@ ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.tr
 Restart=on-failure
 RestartSec=5
 # Read-only operator tool: only the trex state dirs under %h/.local/state
-# are read, plus three writable directories: the discovery spool (scan
+# are read, plus four writable directories: the discovery spool (scan
 # requests from the site), the research lane's own workspace (runstate
-# store for /api/research/*; RL-1) and the supervised desk's command queue.
+# store for /api/research/*; RL-1), the supervised desk's command queue and
+# the family command replay ledger (Wave 3 C3.1).
 # That is the WHOLE write surface: no uv cache (~/.cache/uv), no uv data
 # dir (~/.local/share/uv, uv's interpreters), no venv, no source tree.
 # All must EXIST before the unit starts (ReadWritePaths on a missing path
@@ -30,15 +31,24 @@ RestartSec=5
 #   mkdir -p ~/.local/state/trex-discovery/spool
 #   mkdir -p ~/.local/state/trex-research/run-anon
 #   mkdir -p ~/.local/state/trex/desk-paper/commands
+#   install -d -m 0700 ~/.local/state/trex/desk-paper/authority ~/.local/state/trex/desk-paper/authority/assertions
 #
 # Desk commands (Wave 2; coordinator decision 2026-10-21): the desk OWNER
 # (trex-desk) applies EVERY command, pause_entries and halt included. The web
-# only authenticates, validates and queues, so it may write ONLY
-# <desk run dir>/commands = ~/.local/state/trex/desk-paper/commands (each
-# command <key>.json, its <key>.result.json and the store's .lock). It never
-# writes the run dir itself (kill files PAUSE_ENTRIES/HALT/FLATTEN, specs,
-# ledger, proposals, automation.jsonl), the supervised authority dir, or
-# anything a broker reads. Routes, all behind the command authority:
+# only authenticates, validates and queues, so in the desk run dir it may
+# write ONLY
+#   <desk run dir>/commands = ~/.local/state/trex/desk-paper/commands (each
+#     command <key>.json, its <key>.result.json and the store's .lock), and
+#   <desk run dir>/authority/assertions (Wave 3: one owner-only
+#     <jti>.json per family command, written BEFORE the command is queued so
+#     a signed assertion is used once). Without this grant every command
+#     from the Family Apps portal, Pause and Emergency stop included, is
+#     refused (403 assertion_ledger_unavailable) and Today names
+#     assertion_ledger_unwritable. Only assertions/ is granted, never
+#     authority/ itself.
+# It never writes the run dir itself (kill files PAUSE_ENTRIES/HALT/FLATTEN,
+# specs, ledger, proposals, automation.jsonl), the supervised authority dir,
+# or anything a broker reads. Routes, all behind the command authority:
 #   POST /api/commands                     queue a trex-command/1 (202)
 #   POST /api/desk/supervised/{halt,flatten,resume}
 #                                          queue halt/flatten/resume_all (202)
@@ -52,7 +62,8 @@ RestartSec=5
 # in-process kill files and automation.jsonl audit) and
 # RestrictAddressFamilies=... AF_UNIX. Nothing in the web writes the run
 # dir any more: at the next cutover narrow that drop-in by deleting its
-# ReadWritePaths line (this unit already grants commands/), and
+# ReadWritePaths line (this unit already grants commands/ and
+# authority/assertions; create the ledger first, see above), and
 # remove its RestrictAddressFamilies line too. AF_UNIX reaches the user bus,
 # and a process on the user bus can start a transient unit (systemd-run
 # --user) with no sandbox at all, so the grant voids every line below.
@@ -65,12 +76,15 @@ RestartSec=5
 # forwarding header), and only when opted in with
 #   Environment=TREX_WORKSPACE_CONTROLS=1
 # (off by default). Requests through the family portal carry the public
-# Host/Origin and are refused (403) until the family-signed authority lands.
+# Host/Origin and an x-family-actor assertion: they are judged by the
+# family verifier only (Wave 3 C3.1; never the loopback rule), which needs
+# the replay ledger grant above and ~/.config/trex/web.env (release drop-in).
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/alexk/.local/state/trex-discovery/spool /home/alexk/.local/state/trex-research /home/alexk/.local/state/trex/desk-paper/commands
+ReadWritePaths=/home/alexk/.local/state/trex/desk-paper/authority/assertions
 RestrictAddressFamilies=AF_INET AF_INET6
 
 [Install]

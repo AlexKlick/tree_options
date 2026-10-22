@@ -10,6 +10,7 @@ the process's family ingress status (``family_commands_disabled``) because
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -104,6 +105,26 @@ def test_today_reports_family_ingress_from_the_process_environment(roots: Path) 
     assert found["scope"] == "commands"
     assert "key_file_missing" in found["message"] and "owners_missing" in found["message"]
     assert str(roots) not in found["message"]  # problem codes only, never a path or key
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_today_names_a_replay_ledger_the_web_cannot_write(roots: Path) -> None:
+    """``create_app`` probes the ledger under the run dir it resolves, so a
+    web that may not write ``<run dir>/authority/assertions`` (trex-web
+    without that grant) shows the cause on Today, which onboarding reads,
+    instead of a family ingress that only looks enabled."""
+    run_dir = roots / "desk-run"
+    run_dir.chmod(0o500)
+    try:
+        blockers = {b["code"]: b for b in get(make_client(roots), w.TODAY_PATH)["blockers"]}
+    finally:
+        run_dir.chmod(0o700)
+    found = blockers["family_commands_disabled"]
+    assert "assertion_ledger_unwritable" in found["message"]
+    assert "authority/assertions" in found["next_step"] and "ReadWritePaths" in found["next_step"]
+    assert str(roots) not in found["message"] + found["next_step"]
+    client = make_client(roots)
+    assert "assertion_ledger_unwritable" not in str(get(client, w.TODAY_PATH)["blockers"])
 
 
 def test_the_read_views_never_write(roots: Path) -> None:

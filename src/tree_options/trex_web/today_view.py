@@ -135,6 +135,7 @@ from tree_options.trex_web.command_store import (
     CommandStoreUnavailable,
 )
 from tree_options.trex_web.commands_view import proposals_payload
+from tree_options.trex_web.family_authority import IngressProblem
 from tree_options.trex_web.gateway_view import DEFAULT_GATEWAY_STATE, WATCH_STALE_AFTER_S
 from tree_options.trex_web.portfolio_view import portfolio_payload
 
@@ -196,7 +197,8 @@ TimerReader = Callable[[], Sequence[ScheduledEvent]]
 CalendarSource = Callable[[], SessionCalendar]
 PathSource = Callable[[], Path]
 #: Why family command ingress is disabled (empty: enabled); the coordinator
-#: wires ``family_authority.family_ingress_status().problems``.
+#: wires ``family_authority.family_ingress_status(run_dir=...).problems``
+#: (the configuration and the replay ledger's writability).
 FamilyIngress = Callable[[], Sequence[str]]
 
 
@@ -1093,6 +1095,29 @@ _PROFILE_WORDS: Final[Mapping[Blocker, str]] = {
         "The capital profile has no complete loss limits: new entries are refused at review."
     ),
 }
+_FAMILY_KEY_STEP = (
+    "Install the TREX family command key and set TREX_OWNER_EMAILS and "
+    "TREX_FAMILY_ORIGINS (WAVE3-CONTRACTS.md C3.1)."
+)
+#: the web cannot write its replay ledger: every family command is refused
+#: (assertion_ledger_unavailable) whatever the key and settings
+_FAMILY_LEDGER_STEP = (
+    "Let the web write its replay ledger: create <desk run dir>/authority/assertions "
+    "(install -d -m 0700) and grant it in trex-web's ReadWritePaths "
+    "(deploy/trex/trex-web.service), then restart trex-web."
+)
+
+
+def _family_step(problems: Sequence[str]) -> str:
+    """What to do for these family ingress problems: the key and settings
+    step only when one of them is wrong, the ledger step only for the ledger."""
+    ledger = IngressProblem.ASSERTION_LEDGER_UNWRITABLE.value
+    steps = []
+    if any(problem != ledger for problem in problems):
+        steps.append(_FAMILY_KEY_STEP)
+    if ledger in problems:
+        steps.append(_FAMILY_LEDGER_STEP)
+    return " ".join(steps)
 
 
 @dataclass(frozen=True)
@@ -1381,8 +1406,7 @@ def _blockers(page: _Page) -> tuple[HumanBlocker, ...]:
             "info",
             "Commands from Family Apps (the phone) are turned off "
             f"({', '.join(page.family)[:200]}). Commands on this host still work.",
-            "Install the TREX family command key and set TREX_OWNER_EMAILS and "
-            "TREX_FAMILY_ORIGINS (WAVE3-CONTRACTS.md C3.1).",
+            _family_step(page.family),
         )
 
     unique: dict[str, HumanBlocker] = {}

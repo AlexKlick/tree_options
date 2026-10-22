@@ -540,7 +540,8 @@ def create_app(
         supervised_dir=resolve_supervised_dir,
         clock=clock,
         gateway_state=lambda: gateway_state_path,
-        family_ingress=lambda: family_ingress_status().problems,
+        # the configuration AND the replay ledger under the resolved run dir
+        family_ingress=lambda: family_ingress_status(run_dir=resolve_run_dir()).problems,
     )
     attach_activity(app, run_dir=resolve_run_dir, clock=clock)
     attach_acceptance(app, clock=clock)

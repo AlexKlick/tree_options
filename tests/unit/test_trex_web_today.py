@@ -1344,6 +1344,38 @@ def test_family_ingress_status_is_a_blocker_only_when_wired_and_disabled(
 
 
 @pytest.mark.parametrize(
+    ("problems", "key_step", "ledger_step"),
+    [
+        (("key_file_missing",), True, False),
+        (("assertion_ledger_unwritable",), False, True),
+        (("owners_missing", "assertion_ledger_unwritable"), True, True),
+    ],
+)
+def test_the_family_blocker_next_step_follows_its_causes(
+    world: World, problems: tuple[str, ...], key_step: bool, ledger_step: bool
+) -> None:
+    """An installed key with an unwritable replay ledger (trex-web without
+    the ledger grant) must not tell the owner to install the key again."""
+    world.healthy()
+    app = FastAPI()
+    tv.attach(
+        app,
+        run_dir=lambda: world.run_dir,
+        supervised_dir=lambda: world.supervised,
+        clock=lambda: world.now,
+        gateway_state=lambda: world.gateway_path,
+        acceptance_dir=lambda: world.acceptance_dir,
+        lock_probe=world._probe,
+        family_ingress=lambda: problems,
+    )
+    found = blocker(TestClient(app).get("/api/today").json(), "family_commands_disabled")
+    step = found["next_step"]
+    assert ("family command key" in step) is key_step, step
+    assert ("authority/assertions" in step and "ReadWritePaths" in step) is ledger_step, step
+    assert ", ".join(problems) in found["message"]
+
+
+@pytest.mark.parametrize(
     ("halt", "lock", "says"),
     [
         (False, True, "Pausing never stops exits; they keep running."),

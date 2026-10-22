@@ -42,6 +42,7 @@ from tree_options.trex.contracts import (
     proposal_sha256,
     sha256_hex,
 )
+from tree_options.trex.contracts.wave3 import Wave3RunDir
 from tree_options.trex_web import automation
 from tree_options.trex_web.app import create_app
 from tree_options.trex_web.command_store import CommandStore, command_window_blocker
@@ -952,18 +953,24 @@ def test_default_app_authority_is_loopback_and_refuses_the_portal_shape(tmp_path
     assert actor.ingress == "loopback" and actor.sub == "loopback-operator"
 
 
-# -- the repo unit: the web may write only the desk's command queue -------------------
+# -- the repo unit: the web may write only the command queue and the replay ledger ----
 
 
 WEB_UNIT = REPO_ROOT / "deploy" / "trex" / "trex-web.service"
 UNIT_HOME = "/home/alexk"
 UNIT_RUN_DIR = f"{UNIT_HOME}/.local/state/trex/desk-paper"
+#: the desk's command queue and the family replay ledger (Wave 3 C3.1): the
+#: only run-dir paths the web writes, as the code names them
+UNIT_RUN_DIR_WRITABLE = (
+    str(Wave2RunDir(Path(UNIT_RUN_DIR)).commands()),
+    str(Wave3RunDir(Path(UNIT_RUN_DIR)).assertions()),
+)
 #: the whole write surface of the web: the discovery spool, the research
-#: lane's workspace and the desk's command queue (nothing else)
+#: lane's workspace, the desk's command queue and the replay ledger
 WEB_WRITABLE = {
     f"{UNIT_HOME}/.local/state/trex-discovery/spool",
     f"{UNIT_HOME}/.local/state/trex-research",
-    f"{UNIT_RUN_DIR}/commands",
+    *UNIT_RUN_DIR_WRITABLE,
 }
 #: what trex-desk runs or imports. uv HARDLINKS a venv's packages from its
 #: cache (one inode), so a writable cache is a writable desk venv; the data
@@ -997,16 +1004,25 @@ def _reaches(grant: str, target: str) -> bool:
     return grant == target or target.startswith(grant + "/") or grant.startswith(target + "/")
 
 
-def test_the_repo_web_unit_may_write_only_the_desk_command_queue():
+def test_the_repo_web_unit_may_write_only_the_command_queue_and_the_replay_ledger():
     text = WEB_UNIT.read_text()
     paths = _unit_list(text, "ReadWritePaths")
     # the write surface is exactly the allowlist: no cache, no data dir
     assert set(paths) == WEB_WRITABLE and len(paths) == len(WEB_WRITABLE)
-    # no grant covers the run dir itself (kill files, specs, ledger) ...
-    assert [p for p in paths if _reaches(p, UNIT_RUN_DIR) and p != f"{UNIT_RUN_DIR}/commands"] == []
-    # ... only its commands/ subdirectory, and nothing of the supervised dir
-    assert [p for p in paths if p.startswith(UNIT_RUN_DIR)] == [f"{UNIT_RUN_DIR}/commands"]
+    # no grant covers the run dir itself (kill files, specs, book, proposals) ...
+    covering = [p for p in paths if _reaches(p, UNIT_RUN_DIR) and p not in UNIT_RUN_DIR_WRITABLE]
+    assert covering == []
+    # ... only commands/ and authority/assertions (never authority/ itself),
+    # and nothing of the supervised dir
+    assert sorted(p for p in paths if p.startswith(UNIT_RUN_DIR)) == sorted(UNIT_RUN_DIR_WRITABLE)
+    assert f"{UNIT_RUN_DIR}/authority" not in paths
     assert not any("trex/supervised" in p for p in paths)
+    # a ReadWritePaths entry that does not exist fails the unit: the comment
+    # names the owner-only creation of the ledger the code creates 0700
+    assert (
+        "install -d -m 0700 ~/.local/state/trex/desk-paper/authority"
+        " ~/.local/state/trex/desk-paper/authority/assertions" in text
+    )
     assert "ProtectSystem=strict" in text and "ProtectHome=read-only" in text
     # the installed drop-in that still grants the whole run dir and the user
     # bus is called out, with both lines to remove

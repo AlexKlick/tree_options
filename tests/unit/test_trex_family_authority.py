@@ -17,6 +17,9 @@ import hmac
 import json
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -27,6 +30,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.unit.test_trex_web_commands import UNIT_RUN_DIR, WEB_UNIT, _unit_list
 from tests.unit.trex_fakes import (
     FAKE_COMMAND_PATH,
     FakeCommandAuthority,
@@ -430,6 +434,222 @@ def test_ledger_read_only_fails_closed(rig: Rig) -> None:
     finally:
         rig.ledger.chmod(0o700)
     assert rig.entries() == []
+
+
+# -- the ledger in the status (read-only probe) --------------------------------------------------
+
+
+def tree(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+@pytest.mark.parametrize("deepest", ["run_dir", "authority", "assertions"])
+def test_status_names_an_unwritable_ledger_without_writing(rig: Rig, deepest: str) -> None:
+    """trex-web runs with ProtectHome=read-only: without a write grant for
+    the ledger every family command is refused assertion_ledger_unavailable.
+    The status says so (never "enabled"), and asking writes nothing."""
+    (rig.run_dir / "commands").mkdir(parents=True)
+    if deepest in ("authority", "assertions"):
+        rig.ledger.parent.mkdir(mode=0o700)
+    if deepest == "assertions":
+        rig.ledger.mkdir(mode=0o700)
+    folder = {"run_dir": rig.run_dir, "authority": rig.ledger.parent, "assertions": rig.ledger}
+    folder[deepest].chmod(0o500)
+    try:
+        before = tree(rig.root)
+        status = family_ingress_status(rig.env, run_dir=rig.run_dir)
+        assert (status.enabled, status.problems) == (False, ("assertion_ledger_unwritable",))
+        assert rig.authority().status().problems == ("assertion_ledger_unwritable",)
+        assert tree(rig.root) == before
+        assert refusal(rig.authority(), raw()) == "assertion_ledger_unavailable"
+    finally:
+        folder[deepest].chmod(0o700)
+    status = family_ingress_status(rig.env, run_dir=rig.run_dir)
+    assert (status.enabled, status.problems) == (True, ())
+    assert rig.authority().verify(raw()).ingress == "family"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_writable_ledger_under_a_read_only_run_dir_is_enough(rig: Rig) -> None:
+    """The unit's grant: only authority/assertions (beside commands/) is
+    writable; the run dir and authority/ stay read-only."""
+    rig.ledger.mkdir(parents=True, mode=0o700)
+    read_only = (rig.ledger.parent, rig.run_dir)
+    for folder in read_only:
+        folder.chmod(0o500)
+    try:
+        assert family_ingress_status(rig.env, run_dir=rig.run_dir).problems == ()
+        assert rig.authority().verify(raw()).ingress == "family"
+    finally:
+        for folder in read_only:
+            folder.chmod(0o700)
+    assert rig.entries() == [f"{JTI}.json"]
+
+
+def make_authority_a_file(rig: Rig) -> None:
+    rig.run_dir.mkdir(parents=True)
+    rig.ledger.parent.write_text("not a directory")
+
+
+def make_assertions_a_symlink(rig: Rig) -> None:
+    elsewhere = rig.root / "elsewhere"
+    elsewhere.mkdir()
+    rig.ledger.parent.mkdir(parents=True)
+    rig.ledger.symlink_to(elsewhere)
+
+
+def make_authority_a_symlink(rig: Rig) -> None:
+    elsewhere = rig.root / "elsewhere"
+    (elsewhere / "assertions").mkdir(parents=True)
+    rig.run_dir.mkdir(parents=True)
+    rig.ledger.parent.symlink_to(elsewhere)
+
+
+@pytest.mark.parametrize(
+    "damage", [make_authority_a_file, make_assertions_a_symlink, make_authority_a_symlink]
+)
+def test_status_names_a_ledger_that_is_not_a_real_directory(
+    rig: Rig, damage: Callable[[Rig], None]
+) -> None:
+    damage(rig)
+    assert family_ingress_status(rig.env, run_dir=rig.run_dir).problems == (
+        "assertion_ledger_unwritable",
+    )
+    assert refusal(rig.authority(), raw()) == "assertion_ledger_unavailable"
+
+
+def test_status_of_a_missing_run_dir_is_its_nearest_existing_parent(rig: Rig) -> None:
+    """record_assertion creates a missing run dir (parents included)."""
+    status = family_ingress_status(rig.env, run_dir=rig.root / "no" / "such" / "run")
+    assert (status.enabled, status.problems) == (True, ())
+    assert not (rig.root / "no").exists()
+
+
+def test_status_lists_the_ledger_after_the_configuration_problems(rig: Rig) -> None:
+    rig.key_file.unlink()
+    make_authority_a_file(rig)
+    assert family_ingress_status(rig.env, run_dir=rig.run_dir).problems == (
+        "key_file_missing",
+        "assertion_ledger_unwritable",
+    )
+
+
+# -- the shipped unit on a real read-only mount ---------------------------------------------------
+
+SANDBOX_CHILD = """\
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from tree_options.trex_web.app import create_app
+from tree_options.trex_web.family_authority import family_ingress_status
+
+spec = json.loads(Path(sys.argv[1]).read_text())
+root = Path(spec["root"])
+app = create_app(
+    state_dir=str(root / "legacy"),
+    plans_dir=str(root / "plans"),
+    discovery_dir=str(root / "discovery"),
+    desk_state_dir=str(root / "desk-state"),
+    desk_store_dir=str(root / "desk-store"),
+    desk_run_dir=spec["run_dir"],
+    supervised_dir=str(root / "supervised"),
+    command_clock=lambda: datetime.fromtimestamp(spec["at_s"], UTC),
+)
+problems = family_ingress_status(run_dir=Path(spec["run_dir"])).problems
+client = TestClient(app, base_url="https://" + spec["host"], client=("127.0.0.1", 50000))
+response = client.post(
+    "/api/commands",
+    content=spec["body"].encode("utf-8"),
+    headers={
+        "origin": spec["origin"],
+        "content-type": "application/json",
+        "x-family-actor": spec["token"],
+    },
+)
+answer = {
+    "status": response.status_code,
+    "detail": response.json().get("detail"),
+    "problems": list(problems),
+}
+print(json.dumps(answer))
+"""
+
+
+def bwrap_available() -> bool:
+    if shutil.which("bwrap") is None:
+        return False
+    probe = subprocess.run(
+        ["bwrap", "--dev-bind", "/", "/", "true"], capture_output=True, check=False, timeout=60
+    )
+    return probe.returncode == 0
+
+
+def post_in_unit_sandbox(rig: Rig, writable: list[Path]) -> dict[str, Any]:
+    """POST the golden family command through ``create_app`` in a child whose
+    run dir is a READ-ONLY mount (trex-web's ``ProtectHome=read-only``) but
+    for ``writable`` (its ``ReadWritePaths``); the answer and the status."""
+    spec = rig.root / "sandbox.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "root": str(rig.root),
+                "run_dir": str(rig.run_dir),
+                "at_s": IAT,
+                "host": HOST,
+                "origin": ORIGIN,
+                "body": BODY.decode("utf-8"),
+                "token": TOKEN,
+            }
+        )
+    )
+    script = rig.root / "sandbox_child.py"
+    script.write_text(SANDBOX_CHILD)
+    argv = ["bwrap", "--dev-bind", "/", "/", "--ro-bind", str(rig.run_dir), str(rig.run_dir)]
+    for path in writable:
+        argv += ["--bind", str(path), str(path)]
+    argv += ["--", sys.executable, "-B", str(script), str(spec)]
+    env = {**os.environ, **rig.env, "PYTHONPATH": str(REPO / "src")}
+    env.pop("TREX_FAMILY_AUDIENCE", None)
+    done = subprocess.run(argv, env=env, capture_output=True, text=True, check=False, timeout=180)
+    assert done.returncode == 0, done.stderr[-4000:]
+    answer: dict[str, Any] = json.loads(done.stdout.strip().splitlines()[-1])
+    return answer
+
+
+def test_the_shipped_web_unit_lets_a_family_command_through_a_read_only_home(rig: Rig) -> None:
+    """deploy/trex/trex-web.service runs with ProtectHome=read-only, so only
+    its ReadWritePaths are writable. Replayed on a real read-only mount: with
+    commands/ alone every family command is refused
+    assertion_ledger_unavailable and the status names the cause; with the
+    unit's own run-dir grants (created first, as its comment says) the
+    golden command is accepted and its ledger entry written."""
+    if not bwrap_available():
+        pytest.skip("needs bwrap and unprivileged mount namespaces")
+    commands = rig.run_dir / "commands"
+    commands.mkdir(parents=True)
+    narrow = post_in_unit_sandbox(rig, [commands])
+    assert narrow == {
+        "status": 403,
+        "detail": "assertion_ledger_unavailable",
+        "problems": ["assertion_ledger_unwritable"],
+    }
+    assert rig.entries() == [] and not (commands / f"{IDEMPOTENCY_KEY}.json").exists()
+    grants = sorted(
+        rig.run_dir / Path(p).relative_to(UNIT_RUN_DIR)
+        for p in _unit_list(WEB_UNIT.read_text(), "ReadWritePaths")
+        if p.startswith(UNIT_RUN_DIR + "/")
+    )
+    for path in grants:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    granted = post_in_unit_sandbox(rig, grants)
+    assert (granted["status"], granted["problems"]) == (202, []), granted
+    assert rig.entries() == [f"{JTI}.json"]
+    assert (commands / f"{IDEMPOTENCY_KEY}.json").is_file()
 
 
 def test_prune_removes_only_entries_past_exp_plus_skew(rig: Rig) -> None:

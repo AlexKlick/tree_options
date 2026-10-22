@@ -30,6 +30,13 @@ here contacts a broker or applies a command.
   ``assertion_ledger_unavailable`` (fail closed). The actor is returned only
   after the entry is durable. ``prune_assertions`` removes entries once
   ``exp`` + 5 s has passed (the assertion is refused as expired by then).
+  The web must be able to write that directory: trex-web runs with
+  ``ProtectHome=read-only``, so ``deploy/trex/trex-web.service`` grants
+  ``<run dir>/authority/assertions`` (created 0700 before the unit starts).
+  ``family_ingress_status(run_dir=...)`` and ``FamilyCommandAuthority.status()``
+  probe it without writing and report ``assertion_ledger_unwritable``, so
+  Today and onboarding never read a family ingress as enabled that the
+  ledger would refuse.
 - Dispatch (``wave3.authority_for``): a request carrying ``x-family-actor``
   is judged by the family verifier ONLY, never falling back; any other
   request by the Wave 2 ``LoopbackCommandAuthority``, which refuses
@@ -55,7 +62,7 @@ import secrets
 import stat
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum, unique
 from pathlib import Path
@@ -104,6 +111,7 @@ __all__ = [
     "dispatching_authority",
     "family_ingress_status",
     "key_file_path",
+    "ledger_problem",
     "load_command_key",
     "prune_assertions",
     "record_assertion",
@@ -142,6 +150,11 @@ class IngressProblem(StrEnum):
     ORIGINS_MISSING = "origins_missing"
     ORIGINS_INVALID = "origins_invalid"
     AUDIENCE_INVALID = "audience_invalid"
+    #: ``<run dir>/authority/assertions`` cannot be written by this process
+    #: (e.g. trex-web's ``ProtectHome=read-only`` without that grant), so
+    #: every family command would be refused ``assertion_ledger_unavailable``.
+    #: Reported by the status only (``family_ingress_status(run_dir=...)``).
+    ASSERTION_LEDGER_UNWRITABLE = "assertion_ledger_unwritable"
 
 
 def _refused(detail: FamilyRefusal) -> CommandAuthorityRefused:
@@ -288,10 +301,49 @@ def _resolve(env: Mapping[str, str]) -> tuple[FamilyAuthorityConfig | None, Fami
     return config, status
 
 
-def family_ingress_status(env: Mapping[str, str] | None = None) -> FamilyIngressStatus:
+def ledger_problem(run_dir: Path) -> IngressProblem | None:
+    """``ASSERTION_LEDGER_UNWRITABLE`` when ``record_assertion`` could not
+    write ``<run dir>/authority/assertions``; judged WITHOUT writing.
+
+    ``authority`` and ``assertions`` must be real directories when present
+    (``_ledger_dir`` refuses anything else). The deepest existing directory
+    on the ledger's path must then be one this process may write and search:
+    ``access(2)`` answers no on a read-only mount too (``EROFS``), which is
+    how ``ProtectHome=read-only`` without a ``ReadWritePaths`` grant looks."""
+    folder = Wave3RunDir(run_dir).assertions()
+    try:
+        for path in (folder.parent, folder):
+            if os.path.lexists(path) and not _real_dir(path):
+                return IngressProblem.ASSERTION_LEDGER_UNWRITABLE
+        deepest = folder
+        # the nearest existing path: a missing run dir is created with its
+        # parents, so that one must be a directory (symlinks followed)
+        while not os.path.lexists(deepest) and deepest != deepest.parent:
+            deepest = deepest.parent
+        writable = deepest.is_dir() and os.access(deepest, os.W_OK | os.X_OK)
+    except OSError:
+        return IngressProblem.ASSERTION_LEDGER_UNWRITABLE
+    return None if writable else IngressProblem.ASSERTION_LEDGER_UNWRITABLE
+
+
+def _status(env: Mapping[str, str], run_dir: Path | None) -> FamilyIngressStatus:
+    status = _resolve(env)[1]
+    problem = None if run_dir is None else ledger_problem(run_dir)
+    if problem is None:
+        return status
+    return replace(status, enabled=False, problems=(*status.problems, problem.value))
+
+
+def family_ingress_status(
+    env: Mapping[str, str] | None = None, *, run_dir: Path | None = None
+) -> FamilyIngressStatus:
     """The family ingress status for ``env`` (default: the process
-    environment); read-only, for views (``family_commands_disabled``)."""
-    return _resolve(os.environ if env is None else env)[1]
+    environment); read-only, for views (``family_commands_disabled``).
+
+    With ``run_dir`` it also names a replay ledger this process cannot
+    write (``assertion_ledger_unwritable``, after the configuration
+    problems): the verifier refuses every command then, whatever the key."""
+    return _status(os.environ if env is None else env, run_dir)
 
 
 # -- the replay ledger -------------------------------------------------------------------------
@@ -427,7 +479,8 @@ class FamilyCommandAuthority:
         return os.environ if self._env is None else self._env
 
     def status(self) -> FamilyIngressStatus:
-        return _resolve(self._environment())[1]
+        """The configuration and this authority's replay ledger (read-only)."""
+        return _status(self._environment(), self._run_dir())
 
     def _report(self, status: FamilyIngressStatus) -> None:
         """Log each change of the enabled/disabled cause once."""
