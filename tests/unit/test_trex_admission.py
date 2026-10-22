@@ -257,6 +257,32 @@ def test_entry_send_blockers_are_the_kill_files_only(tmp_path):
     assert admission.entry_blockers(tmp_path, NOW) == admission.entry_send_blockers(tmp_path)
 
 
+def test_a_standing_flatten_blocks_every_entry_sender(tmp_path):
+    """W2c item 2: FLATTEN closes everything, so an entry approved while it
+    stands would be a BUY the runtime unwinds at once. It stops entries like
+    HALT does (a dangling link included), in the kill-file order PAUSE, HALT,
+    FLATTEN; lifting it (``resume``) admits again."""
+    (tmp_path / "FLATTEN").symlink_to(tmp_path / "missing")  # dangling: still a FLATTEN
+    assert admission.entry_send_blockers(tmp_path) == (Blocker.FLATTEN.value,)
+    assert admission.FLATTENING == Blocker.FLATTEN
+    healthy(tmp_path)
+    assert admission.entry_blockers(tmp_path, NOW) == (Blocker.FLATTEN.value,)
+    pause.pause_entries(tmp_path, actor="a", now=NOW)
+    (tmp_path / "HALT").touch()
+    assert admission.entry_send_blockers(tmp_path) == (
+        Blocker.ENTRIES_PAUSED.value,
+        admission.HALTED,
+        Blocker.FLATTEN.value,
+    )
+    (tmp_path / "FLATTEN").unlink()
+    (tmp_path / "HALT").unlink()
+    pause.resume_entries(tmp_path, actor="a", now=NOW)
+    assert admission.entry_send_blockers(tmp_path) == ()
+    # exits never read it as a blocker: FLATTEN forces them
+    (tmp_path / "FLATTEN").touch()
+    assert pause.exit_blockers(tmp_path) == ()
+
+
 def test_selection_rule_is_never_an_owner_fact(tmp_path):
     """Product entries are owner-approved: the sealed-rule activation gates
     AUTOMATIC admission only (desk.enter), never the owner's facts."""

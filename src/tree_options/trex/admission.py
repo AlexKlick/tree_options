@@ -28,8 +28,8 @@ account than the one being admitted is no fact either. Every one of these
 blocks ENTRIES only, never exits (the exit lane does not read them).
 
 ``entry_send_blockers`` is the kill-file part alone (``PAUSE_ENTRIES``,
-``HALT``): the live entry sender (``trex.supervised_desk``) checks it before
-it spends any authority and again after its screening.
+``HALT``, ``FLATTEN``): the live entry sender (``trex.supervised_desk``)
+checks it before it spends any authority and again after its screening.
 
 The sealed selection rule's activation is NOT an owner fact: it gates
 AUTOMATIC admission only (``desk.enter``); product entries are approved by
@@ -48,7 +48,7 @@ from typing import Any, Final, Literal
 
 from pydantic import ValidationError
 
-from tree_options.trex.contracts.layout import HALT, Wave2RunDir
+from tree_options.trex.contracts.layout import FLATTEN, HALT, Wave2RunDir
 from tree_options.trex.contracts.risk import (
     Reconciliation,
     RiskSnapshot,
@@ -61,6 +61,7 @@ from tree_options.trex.pause import HALTED, pause_blockers
 __all__ = [
     "EXIT_OWNER_HEALTH_MAX_AGE_S",
     "EXIT_OWNER_NOT_READY",
+    "FLATTENING",
     "HALTED",
     "MAX_FACT_BYTES",
     "MONITOR_FILE",
@@ -78,6 +79,8 @@ __all__ = [
 
 #: wire string for an exit owner whose health is absent, stale or failing
 EXIT_OWNER_NOT_READY: Final = "exit_owner_not_ready"
+#: wire string for a standing ``FLATTEN`` (``Blocker.FLATTEN``)
+FLATTENING: Final = "flatten"
 #: = ``desk_runtime.HEARTBEAT_MAX_AGE_S`` (pinned by a test; not imported:
 #: desk_runtime pulls in the broker adapter)
 EXIT_OWNER_HEALTH_MAX_AGE_S: Final = 30
@@ -230,14 +233,17 @@ def entry_send_blockers(run_dir: Path) -> tuple[str, ...]:
     """The kill files every entry SENDER checks before it spends authority
     (mandate, intent, permit, spec, broker order), and again just before
     the send: ``entries_paused`` while ``PAUSE_ENTRIES`` stands, ``halt``
-    while ``HALT`` stands (``lexists``: a dangling link still stops).
+    while ``HALT`` stands, ``flatten`` while ``FLATTEN`` stands (W2c: the
+    runtime would unwind the entry at once); ``lexists``, so a dangling
+    link still stops.
 
     No owner fact is read here, so a sender that predates the books lane
     keeps its own screening. Exits never call this (``pause.exit_blockers``).
     """
     root = Path(run_dir)
     kill = (HALTED,) if os.path.lexists(root / HALT) else ()
-    return (*pause_blockers(root), *kill)
+    closing = (FLATTENING,) if os.path.lexists(root / FLATTEN) else ()
+    return (*pause_blockers(root), *kill, *closing)
 
 
 def entry_blockers(

@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 from tests.unit.trex_fakes import CLOCK_START, SPY_CON_ID, FillStep, equity_effect
-from tests.unit.wave2_owner_rig import ACCOUNT, EQUITY_PROGRAM, OwnerRig
+from tests.unit.wave2_owner_rig import ACCOUNT, EQUITY_PROGRAM, PROFILE, OwnerRig
 
 from tree_options.action_graph.canary import equity_entry_window
 from tree_options.trex import supervised as supervised_core
@@ -439,6 +439,45 @@ def test_halt_blocks_entries_and_exits_as_before(rig):
     assert rig.step() == 0
     (sell,) = rig.orders("SELL")
     assert sell.order.totalQuantity == 2
+
+
+@pytest.fixture()
+def roomy(tmp_path: Path) -> Iterator[OwnerRig]:
+    """A rig whose open-loss cap fits two fixture entries ($268.60 + $134.30)."""
+    r = OwnerRig(tmp_path, profile={**PROFILE, "max_open_loss": "1000"})
+    assert r.step() == 0
+    yield r
+    r.close()
+
+
+def test_a_standing_flatten_refuses_compose_and_approve(roomy):
+    """W2c item 2: with FLATTEN standing an approval would send a BUY the
+    runtime unwinds at once. A proposal composed before the FLATTEN is
+    refused at approval (nothing granted, nothing sent), a new compose is
+    refused, and the open position is still flattened."""
+    rig = roomy
+    _open(rig)
+    second = rig.draft_equity(equity_effect(intent_id="eq-spy-2", quantity=1))
+    rig.quote()
+    composed = rig.compose(second.intent_id)
+    assert composed.status == "applied", composed
+    flattened = rig.run("flatten", {"reason": "close it all"})
+    assert flattened.status == "applied" and (rig.paths.root / "FLATTEN").exists()
+    rig.quote()
+    refused = rig.approve(composed)
+    assert (refused.status, refused.reason) == ("refused", Blocker.FLATTEN.value), refused
+    assert not rig.sup.entry_mandate("eq-spy-2").exists(), "a refused approval grants nothing"
+    assert len(rig.orders("BUY")) == 1, "only the first entry was ever sent"
+    rig.draft_equity(equity_effect(intent_id="eq-spy-3", quantity=1))
+    rig.quote()
+    again = rig.compose("eq-spy-3")
+    assert (again.status, again.reason) == ("refused", Blocker.FLATTEN.value), again
+    rig.quote()
+    assert rig.step() == 0
+    sells = rig.orders("SELL")
+    assert [(s.order.orderRef, s.order.totalQuantity) for s in sells] == [
+        ("trex:desk:eq-spy-001", 2)
+    ]
 
 
 def test_a_flatten_accepted_through_a_gateway_outage_is_applied_not_expired(rig):

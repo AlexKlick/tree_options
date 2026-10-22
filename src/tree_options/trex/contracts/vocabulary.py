@@ -135,6 +135,9 @@ class Blocker(StrEnum):
     ENTRY_WINDOW_CLOSED = "entry_window_closed"
     OUTSIDE_UNDEFINED_RISK = "outside_undefined_risk"
     EXIT_QUOTE_BLIND = "exit_quote_blind"
+    # --- amendment 2026-10-21 (W2c integration): additive ---------------
+    # a standing FLATTEN stops every entry sender (trex.admission)
+    FLATTEN = "flatten"
 
 
 @unique

@@ -8,7 +8,7 @@ PAPER ONLY: the effects bind IBKR paper accounts, the mandate is
 
 **Compose** (one candidate -> one ``trex-entry-proposal/1``):
 
-1. inside the regular session; no ``PAUSE_ENTRIES`` / ``HALT``
+1. inside the regular session; no ``PAUSE_ENTRIES`` / ``HALT`` / ``FLATTEN``
    (``admission.entry_send_blockers``); the operator profile reads;
 2. the candidate is a ``trex-entry-proposal-draft/1`` in
    ``proposal-drafts/<candidate_id>.json`` (lane A writes the miner's option

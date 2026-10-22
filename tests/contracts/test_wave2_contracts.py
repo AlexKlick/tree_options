@@ -1024,6 +1024,9 @@ AMENDED_BLOCKERS = frozenset(
 )
 #: Amendment 2026-10-21: reserved for the Wave 2b lanes (not yet emitted).
 RESERVED_BLOCKERS = frozenset({"entry_window_closed", "outside_undefined_risk", "exit_quote_blind"})
+#: Amendment 2026-10-21 (W2c integration): additive members, each spelled
+#: exactly as its producer emits it (``W2C_PRODUCERS``).
+W2C_BLOCKERS = frozenset({"flatten"})
 #: Built by the portfolio view as ``f"{label}_<state>"``, so never a literal.
 PORTFOLIO_LABEL_REASONS = frozenset(
     f"{label}_{state}"
@@ -1105,10 +1108,13 @@ def _member_name(value: str) -> str:
 
 
 def test_blocker_wire_strings_are_frozen() -> None:
-    assert {b.value for b in c.Blocker} == PLAN_BLOCKERS | AMENDED_BLOCKERS | RESERVED_BLOCKERS
-    # the amendment is additive: no plan value is re-added or renamed
-    assert not PLAN_BLOCKERS & (AMENDED_BLOCKERS | RESERVED_BLOCKERS)
-    assert not AMENDED_BLOCKERS & RESERVED_BLOCKERS
+    assert {b.value for b in c.Blocker} == (
+        PLAN_BLOCKERS | AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS
+    )
+    # the amendments are additive: no earlier value is re-added or renamed
+    assert not PLAN_BLOCKERS & (AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS)
+    assert not AMENDED_BLOCKERS & (RESERVED_BLOCKERS | W2C_BLOCKERS)
+    assert not RESERVED_BLOCKERS & W2C_BLOCKERS
     assert PORTFOLIO_LABEL_REASONS <= AMENDED_BLOCKERS
 
 
@@ -1169,6 +1175,7 @@ def test_producer_constants_are_vocabulary_members() -> None:
 
     assert pause.HALTED == c.Blocker.HALT
     assert admission.HALTED == c.Blocker.HALT
+    assert admission.FLATTENING == c.Blocker.FLATTEN
     assert admission.EXIT_OWNER_NOT_READY == c.Blocker.EXIT_OWNER_NOT_READY
     assert supervised_canary.CREDIT_OPEN_BLOCKER == c.Blocker.CREDIT_OPEN_NOT_SUPPORTED_V1
     assert supervised_ibkr.EQUITY_CON_ID_MISMATCH == c.Blocker.EQUITY_CON_ID_MISMATCH
@@ -1185,10 +1192,12 @@ def test_admission_blockers_are_vocabulary(tmp_path: Path) -> None:
 
     (tmp_path / "PAUSE_ENTRIES").write_text("{}")
     (tmp_path / "HALT").write_text("{}")
+    (tmp_path / "FLATTEN").write_text("{}")
     blockers = entry_blockers(tmp_path, at("2026-10-22T14:04:30+00:00"))
     assert set(blockers) == {
         c.Blocker.ENTRIES_PAUSED,
         c.Blocker.HALT,
+        c.Blocker.FLATTEN,
         c.Blocker.RISK_SNAPSHOT_STALE,
         c.Blocker.RECONCILIATION_REQUIRED,
         c.Blocker.EXIT_OWNER_NOT_READY,

@@ -787,7 +787,7 @@ class SupervisedDesk:
     def enter(self, request: EntryRequest, now: datetime) -> dict[str, Any]:
         """Kill files -> mandate -> preflight -> screening -> kill files ->
         intent -> permit -> register -> send. Every refusal happens before
-        the send. ``PAUSE_ENTRIES`` / ``HALT`` in the run dir refuse before
+        the send. ``PAUSE_ENTRIES`` / ``HALT`` / ``FLATTEN`` in the run dir refuse before
         any authority is spent, and again after the screening (a stop
         placed while it read the broker); exits never pass through here."""
         effect = request.effect
