@@ -7887,6 +7887,137 @@ MUTANTS.extend(
 )
 
 
+# Wave 2 (2026-10-21): registry-format mutants proposed by the execution lanes, each
+# verified killed by its lane; anchors re-checked unique on the merged tree.
+MUTANTS.extend(
+    [
+        {
+            "id": "e-auth-consume-once",
+            "owner": "e-authority",
+            "file": "src/tree_options/trex/supervised.py",
+            "anchor": "    _durable_rename(pending, consumed)\n",
+            "replacement": "    pass\n",
+            "selectors": ["tests/unit/test_supervised_entry_mandates.py"],
+            "invariant": "minting a per-trade permit consumes its mandate/2 exactly once; a second permit or re-grant refuses mandate_already_consumed",
+        },
+        {
+            "id": "e-auth-cash-boundary",
+            "owner": "e-authority",
+            "file": "src/tree_options/action_graph/canary.py",
+            "anchor": "notional > cash",
+            "replacement": "notional >= cash",
+            "selectors": ["tests/unit/test_entry_screening.py"],
+            "invariant": "cash-only equities: notional exactly equal to settled cash is allowed; one cent short gives insufficient_cash",
+        },
+        {
+            "id": "dbooks-m1-booked-chain-attribution",
+            "owner": "d-books",
+            "file": "src/tree_options/trex/ledger.py",
+            "anchor": "return cls(event.attribution, event.detail)",
+            "replacement": "break",
+            "selectors": [
+                "tests/unit/test_trex_ledger.py::test_a_booked_chain_keeps_its_attribution_when_the_index_changes"
+            ],
+            "invariant": "a correction or commission books under the attribution its fill was booked under",
+        },
+        {
+            "id": "B01-equity-realtime-gate",
+            "owner": "test_a_non_realtime_quote_blocks_the_entry",
+            "file": "src/tree_options/trex/supervised_ibkr.py",
+            "anchor": "elif not quote.realtime:",
+            "replacement": 'elif quote.market_data_type == "delayed":',
+            "selectors": ["tests/unit/test_supervised_ibkr.py"],
+            "invariant": "an equity entry needs a REALTIME quote; delayed, frozen or unknown gives equity_quote_not_realtime",
+        },
+        {
+            "id": "B02-cash-net-of-working-buys",
+            "owner": "test_working_stock_buys_commit_settled_cash",
+            "file": "src/tree_options/trex/supervised_ibkr.py",
+            "anchor": "if settled - committed < notional_cents:",
+            "replacement": "if settled < notional_cents:",
+            "selectors": ["tests/unit/test_supervised_ibkr.py"],
+            "invariant": "settled cash minus cash committed by working STK BUY orders must cover quantity x limit",
+        },
+        {
+            "id": "C-EQ-01-stop-tick-recounted",
+            "owner": "test_the_same_tick_seen_twice_counts_once",
+            "file": "src/tree_options/trex/equity_exits.py",
+            "anchor": "quote.at <= st.stop_tick_at",
+            "replacement": "quote.at < st.stop_tick_at",
+            "selectors": [
+                "tests/unit/test_trex_equity_exits.py",
+                "tests/unit/test_desk_runtime_equity.py",
+            ],
+            "invariant": "a stop confirms only over consecutive NEW real-time ticks; a stale print seen on several desk ticks counts once",
+        },
+        {
+            "id": "w2a-M1-future-exit-owner-health",
+            "owner": "a-pause-admission",
+            "file": "src/tree_options/trex/admission.py",
+            "anchor": "if age is None or not 0 <= age <= EXIT_OWNER_HEALTH_MAX_AGE_S:",
+            "replacement": "if age is None or not age <= EXIT_OWNER_HEALTH_MAX_AGE_S:",
+            "selectors": [
+                "tests/unit/test_trex_admission.py::test_an_unready_exit_owner_blocks_entries"
+            ],
+            "invariant": "a future-dated monitor.json is not exit-owner readiness: entries stay blocked",
+        },
+        {
+            "id": "w2a-M2-pause-gates-exits",
+            "owner": "a-pause-admission",
+            "file": "src/tree_options/trex/pause.py",
+            "anchor": "return (HALTED,) if os.path.lexists(Path(run_dir) / HALT) else ()",
+            "replacement": "return (HALTED,) if os.path.lexists(Path(run_dir) / HALT) or is_paused(run_dir) else ()",
+            "selectors": [
+                "tests/unit/test_trex_pause.py::test_a_pause_refuses_entries_and_leaves_every_exit_input_unchanged",
+                "tests/unit/test_trex_pause.py::test_halt_still_gates_exits_and_resume_entries_does_not_lift_it",
+            ],
+            "invariant": "PAUSE_ENTRIES never blocks exits: only HALT gates exit orders",
+        },
+        {
+            "id": "G01-command-body-mismatch",
+            "owner": "test_same_key_different_body_is_409_command_body_mismatch",
+            "file": "src/tree_options/trex_web/command_store.py",
+            "anchor": "if stored.command_body_sha256 != body_sha:",
+            "replacement": "if False:",
+            "selectors": [
+                "tests/unit/test_trex_web_commands.py::test_same_key_different_body_is_409_command_body_mismatch",
+                "tests/unit/test_trex_web_commands.py::test_another_principal_reusing_a_key_is_a_mismatch",
+            ],
+            "invariant": "a reused idempotency key with a different body or principal is refused, never answered as a duplicate",
+        },
+        {
+            "id": "C-EQ-03-excess-blocks-exit",
+            "owner": "test_outside_shares_never_block_a_stop_exit",
+            "file": "src/tree_options/trex/desk_runtime.py",
+            "anchor": "if held < want:",
+            "replacement": "if held != want:",
+            "selectors": ["tests/unit/test_desk_runtime_equity.py"],
+            "invariant": "outside shares on the position's conId never block a desk exit; only fewer shares than the book's do",
+        },
+        {
+            "id": "C-ISO-01-containment-reverted",
+            "owner": "test_a_broken_option_spec_never_starves_an_equity_exit",
+            "file": "src/tree_options/trex/desk_runtime.py",
+            "anchor": "failed.append(name)",
+            "replacement": "raise error",
+            "selectors": ["tests/unit/test_desk_runtime_equity.py"],
+            "invariant": "a failure confined to one structure or the option lane never aborts the tick; equity exits still run",
+        },
+        {
+            "id": "w2a-M3-no-recheck-after-screening",
+            "owner": "a-pause-admission",
+            "file": "src/tree_options/trex/supervised_desk.py",
+            "anchor": '            return {"status": "blocked", "blockers": list(stopped), **facts}',
+            "replacement": "            pass",
+            "selectors": [
+                "tests/unit/test_supervised_desk_entry_gate.py::test_a_stop_placed_during_screening_still_stops_the_send"
+            ],
+            "invariant": "a pause or HALT placed while screening reads the broker still prevents the send",
+        },
+    ]
+)
+
+
 # Parked with the derived-cost custody/governance suites (docs/desk/PARKED-DERIVED-COST.md).
 # Their guarded source or their owning test files never landed on main: the first group's
 # anchors occur 0x (MUTATION_DRIFT), the second group's selector files do not exist
