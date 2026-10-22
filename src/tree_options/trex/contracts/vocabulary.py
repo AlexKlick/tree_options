@@ -199,3 +199,8 @@ class DeskEvent(StrEnum):
     GATEWAY_CONNECTED = "gateway_connected"
     BOOKS_PROBLEM = "books_problem"
     BOOKS_FAILED = "books_failed"
+    # --- amendment 2026-10-21 (Wave 3/4 integration): additive -----------
+    # the desk runtime now records the equity close it could not price for
+    # 300 s (trex.equity_exits.ExitQuoteWatch); also a Blocker member, as
+    # reconciliation_required is both
+    EXIT_QUOTE_BLIND = "exit_quote_blind"

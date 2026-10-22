@@ -1132,6 +1132,8 @@ AMENDED_EVENTS = frozenset(
 )
 #: Amendment 2026-10-21 (W2c integration): additive event names.
 W2C_EVENTS = frozenset({"commands_failed", "gateway_connected", "books_problem", "books_failed"})
+#: Amendment 2026-10-21 (Wave 3/4 integration): the desk records exit_quote_blind.
+W34_EVENTS = frozenset({"exit_quote_blind"})
 #: The strings the coordinator and the lane handoffs named (2026-10-21).
 NAMED_LANE_CODES: list[tuple[type[c.Blocker] | type[c.DeskEvent], str]] = [
     (c.Blocker, "entry_mandate_already_granted"),
@@ -1189,9 +1191,23 @@ def test_blocker_wire_strings_are_frozen() -> None:
 
 
 def test_desk_event_wire_strings_are_frozen() -> None:
-    assert {e.value for e in c.DeskEvent} == PLAN_EVENTS | AMENDED_EVENTS | W2C_EVENTS
-    assert not PLAN_EVENTS & (AMENDED_EVENTS | W2C_EVENTS)
-    assert not AMENDED_EVENTS & W2C_EVENTS
+    assert {e.value for e in c.DeskEvent} == (
+        PLAN_EVENTS | AMENDED_EVENTS | W2C_EVENTS | W34_EVENTS
+    )
+    assert not PLAN_EVENTS & (AMENDED_EVENTS | W2C_EVENTS | W34_EVENTS)
+    assert not AMENDED_EVENTS & (W2C_EVENTS | W34_EVENTS)
+    assert not W2C_EVENTS & W34_EVENTS
+
+
+def test_w34_exit_quote_blind_is_the_desk_runtimes_event_name() -> None:
+    """Wave 3/4 integration: the event the desk runtime records and pushes is
+    the vocabulary member, equal to the reserved Blocker of the same name."""
+    from tree_options.trex import desk_runtime, equity_exits
+
+    assert c.DeskEvent("exit_quote_blind") == equity_exits.EXIT_QUOTE_BLIND
+    assert c.DeskEvent.EXIT_QUOTE_BLIND == c.Blocker.EXIT_QUOTE_BLIND
+    assert desk_runtime._NOTIFY_EVENTS[c.DeskEvent.EXIT_QUOTE_BLIND.value] == "urgent"
+    test_named_lane_codes_round_trip(c.DeskEvent, "exit_quote_blind")
 
 
 @pytest.mark.parametrize("vocabulary", [c.Blocker, c.DeskEvent], ids=["Blocker", "DeskEvent"])

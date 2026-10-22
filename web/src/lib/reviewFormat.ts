@@ -154,6 +154,7 @@ export const REASON_TEXT: Readonly<Record<string, string>> = {
   acceptance_invalid: 'The acceptance document is invalid',
   acceptance_calendar_mismatch: 'The acceptance document was judged against another calendar',
   acceptance_window_mismatch: 'The acceptance document covers the wrong sessions',
+  acceptance_owners_mismatch: 'The acceptance document names other owners than this desk',
   schedule_unavailable: 'The schedule could not be computed',
   activity_source_unreadable: 'An activity source could not be read',
   actor_not_recorded: 'Who did this was not recorded',

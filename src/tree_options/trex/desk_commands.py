@@ -32,7 +32,10 @@ then the entry kinds in ``issued_at`` order. Per command:
    ``halt`` / ``flatten`` / ``resume_all`` as the existing kill files
    (``resume_all`` also lifts the pause; approvals are not revived);
    ``backup_state`` drops ``BACKUP-REQUEST`` (taken by the owner's next beat
-   outside the session, ``trex.desk_backup``).
+   outside the session, ``trex.desk_backup``); ``seal_registration`` seals a
+   pilot registration for the verified actor
+   (``research.pilot.seal.apply_seal_command``: the actor must be in
+   ``TREX_OWNER_EMAILS``; written once under ``TREX_PILOT_DIR``).
 4. **Answer**: ``applied`` / ``refused`` / ``failed`` (a reason for the
    latter two) with the facts, written atomically under the web store's lock
    (``commands/.lock``), plus a ``command_applied`` / ``command_refused``
@@ -120,6 +123,7 @@ from tree_options.trex.contracts.commands import (
     RejectEntryCommand,
     ResumeAllCommand,
     ResumeEntriesCommand,
+    SealRegistrationCommand,
     command_body_sha256,
     parse_command,
 )
@@ -174,10 +178,18 @@ _CLAIMED = re.compile(rf"^(?P<key>{_KEY}){re.escape(CLAIMED_SUFFIX)}$")
 _DUPLICATE = re.compile(rf"^(?P<key>{_KEY})\.duplicate-\d+\.json$")
 _INTAKE_STATUSES = frozenset({"accepted", "applied"})
 #: the kinds applied by file operations alone (kill files, the pause record,
-#: the backup request): never a broker call, so applicable with the gateway
-#: down (``process(kinds=FILE_KINDS)``)
+#: the backup request, a pilot seal): never a broker call, so applicable with
+#: the gateway down (``process(kinds=FILE_KINDS)``)
 FILE_KINDS = frozenset(
-    {"pause_entries", "resume_entries", "halt", "flatten", "resume_all", "backup_state"}
+    {
+        "pause_entries",
+        "resume_entries",
+        "halt",
+        "flatten",
+        "resume_all",
+        "backup_state",
+        "seal_registration",
+    }
 )
 #: the safety direction (W2b review P1): once the web accepted one inside its
 #: window it never expires in the queue, and a claim a dead owner never
@@ -762,6 +774,13 @@ class CommandQueue:
                 changed=placed,
                 label=command.args.label,
             )
+        if isinstance(command, SealRegistrationCommand):
+            from tree_options.research.pilot.seal import apply_seal_command
+
+            sealed = apply_seal_command(command.args, command.issued_by, now)
+            if sealed.status == "applied":
+                return applied(sealed.detail, **sealed.facts)
+            return refused(sealed.reason or "command_invalid", sealed.detail, **sealed.facts)
         raise ValueError(f"unknown command kind {command.kind}")  # pragma: no cover
 
     # -- answers ------------------------------------------------------------------------

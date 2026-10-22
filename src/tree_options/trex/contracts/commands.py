@@ -62,6 +62,8 @@ __all__ = [
     "RejectEntryCommand",
     "ResumeAllCommand",
     "ResumeEntriesCommand",
+    "SealRegistrationArgs",
+    "SealRegistrationCommand",
     "TrexCommand",
     "actor_binds_request",
     "command_body_sha256",
@@ -81,6 +83,8 @@ CommandKind = Literal[
     "flatten",
     "resume_all",
     "backup_state",
+    # Wave 4 amendment (lane I, C3.5): the owner seals a pilot registration
+    "seal_registration",
 ]
 
 
@@ -178,6 +182,15 @@ class BackupStateArgs(StrictModel):
     label: PathSafeId | None = None
 
 
+class SealRegistrationArgs(StrictModel):
+    """Args of ``seal_registration`` (WAVE3-CONTRACTS.md C3.5): the pilot
+    program to seal and the registration body hash the owner reviewed.
+    ``contracts.wave3`` re-exports this class unchanged."""
+
+    program_id: PathSafeId
+    registration_sha256: Sha256Hex
+
+
 # -- commands --------------------------------------------------------------
 
 
@@ -243,6 +256,11 @@ class BackupStateCommand(_CommandBase):
     args: BackupStateArgs
 
 
+class SealRegistrationCommand(_CommandBase):
+    kind: Literal["seal_registration"]
+    args: SealRegistrationArgs
+
+
 AnyCommand = (
     ComposeEntryCommand
     | ApproveEntryCommand
@@ -253,6 +271,7 @@ AnyCommand = (
     | FlattenCommand
     | ResumeAllCommand
     | BackupStateCommand
+    | SealRegistrationCommand
 )
 #: Discriminated on ``kind``; an unknown kind refuses.
 TrexCommand = Annotated[AnyCommand, Field(discriminator="kind")]

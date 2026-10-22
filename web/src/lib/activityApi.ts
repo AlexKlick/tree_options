@@ -97,6 +97,7 @@ export const REASON_WORDS: Record<string, string> = {
   acceptance_invalid: 'The acceptance record fails its own checks',
   acceptance_calendar_mismatch: 'The acceptance record was judged against another calendar',
   acceptance_window_mismatch: 'The acceptance record leaves sessions out',
+  acceptance_owners_mismatch: 'The acceptance record names other owners than this desk',
   schedule_unavailable: 'The schedule could not be worked out',
   activity_source_unreadable: 'This activity source could not be read',
   actor_not_recorded: 'This older record does not say who acted',

@@ -76,10 +76,13 @@ from tree_options.trex.contracts.commands import (
     CommandAuthorityRefused,
     CommandKind,
     RawCommandRequest,
+    SealRegistrationArgs,
 )
 from tree_options.trex.contracts.vocabulary import Blocker
 
 __all__ = [
+    "ACCEPTANCE_DIR_DEFAULT",
+    "ACCEPTANCE_DIR_ENV",
     "ACCEPTANCE_PATH",
     "ACTIVITY_PATH",
     "ACTIVITY_SCHEMA",
@@ -106,7 +109,9 @@ __all__ = [
     "PORTAL_COMMAND_MAX_BYTES",
     "PORTAL_KEY_CONFIG_FIELD",
     "PORTAL_KEY_FILE_DEFAULT",
+    "PORTAL_REFUSAL_REASONS",
     "PORTAL_ROUTES",
+    "PORTAL_STAGING_KEY_CONFIG_FIELD",
     "PORTAL_STAGING_KEY_FILE_DEFAULT",
     "PORTFOLIO_PATH",
     "PRIMARY_CONTROL",
@@ -160,6 +165,8 @@ __all__ = [
     "TodayView",
     "Wave3Reason",
     "Wave3RunDir",
+    "acceptance_dir_from_env",
+    "acceptance_owners_problem",
     "assertion_seen_record",
     "authority_for",
     "decode_family_command",
@@ -214,6 +221,8 @@ class Wave3Reason(StrEnum):
     EXIT_UNGUARDED = "exit_unguarded"
     CALENDAR_HORIZON_NEAR = "calendar_horizon_near"
     FAMILY_COMMANDS_DISABLED = "family_commands_disabled"
+    # -- Wave 3/4 integration amendment (additive; see WAVE3-CONTRACTS.md) ------
+    ACCEPTANCE_OWNERS_MISMATCH = "acceptance_owners_mismatch"
 
 
 #: Any machine reason a Wave 3 view may show: a Wave 2 ``Blocker`` (including
@@ -290,6 +299,23 @@ PORTAL_KEY_FILE_DEFAULT: Final = "~/.config/family-apps/trex-command.key"
 PORTAL_STAGING_KEY_FILE_DEFAULT: Final = "~/.config/family-apps/trex-staging-command.key"
 #: The portal refuses a bigger command body (413); equals trex_web's limit.
 PORTAL_COMMAND_MAX_BYTES: Final = 64 * 1024
+#: Integration amendment (lane A): one portal process serves both prefixes,
+#: so staging has its own config field (default PORTAL_STAGING_KEY_FILE_DEFAULT).
+PORTAL_STAGING_KEY_CONFIG_FIELD: Final = "trexStagingCommandKeyPath"
+#: Integration amendment (lane A): the ``reason`` of the portal's own JSON
+#: refusals ``{"error": <plain words>, "reason": <code>}`` (Cache-Control:
+#: private, no-store), in the order the portal checks: 405 (``Allow``),
+#: 403 wrong Origin, 413, 503 no key, 400 bad body, 403 owner-only
+#: (defensive; the operator gate answers first). A non-operator or
+#: signed-out caller gets the portal's HTML 403 page before any of these.
+PORTAL_REFUSAL_REASONS: Final = (
+    "trex-method-not-allowed",
+    "trex-wrong-origin",
+    "trex-command-too-large",
+    "trex-commands-not-configured",
+    "trex-bad-request",
+    "trex-owner-only",
+)
 
 #: TREX side: the same key bytes, its own file.
 TREX_KEY_FILE_ENV: Final = "TREX_FAMILY_COMMAND_KEY_FILE"
@@ -1352,12 +1378,9 @@ def seal_registration(
     return PilotRegistration.model_validate(document)
 
 
-class SealRegistrationArgs(StrictModel):
-    """Args of the ``seal_registration`` command kind the pilot lane adds to
-    ``trex-command/1`` (additive member; WAVE3-CONTRACTS.md C3.5)."""
-
-    program_id: PathSafeId
-    registration_sha256: Sha256Hex
+# ``SealRegistrationArgs`` (the ``seal_registration`` command's args) lives in
+# ``contracts.commands`` beside the kind since the Wave 4 amendment and is
+# re-exported here unchanged (imported above).
 
 
 class BudgetUsage(StrictModel):
@@ -1461,6 +1484,41 @@ class AcceptanceDir:
     def document(self) -> Path:
         """The latest computed ``trex-acceptance/1``."""
         return self.root / "acceptance.json"
+
+
+#: C3.7 (Wave 3/4 integration amendment): the one resolver every acceptance
+#: reader and writer shares (Today, Activity, ``GET /api/acceptance``, the
+#: publisher, the alert sweep), so none can drift to another root.
+ACCEPTANCE_DIR_ENV: Final = "TREX_ACCEPTANCE_DIR"
+ACCEPTANCE_DIR_DEFAULT: Final = "~/.local/state/trex/acceptance"
+
+
+def acceptance_dir_from_env(env: Mapping[str, str]) -> Path:
+    """``TREX_ACCEPTANCE_DIR`` (trimmed; blank means unset), else the C3.7
+    default, ``~`` expanded."""
+    raw = env.get(ACCEPTANCE_DIR_ENV, "").strip()
+    return Path(raw or ACCEPTANCE_DIR_DEFAULT).expanduser()
+
+
+def acceptance_owners_problem(
+    document_owners: Iterable[str], env: Mapping[str, str]
+) -> Wave3Reason | None:
+    """Integration amendment (review P2): a reader serves an acceptance
+    document only when its ``owners`` are exactly the configured
+    ``TREX_OWNER_EMAILS``; otherwise drills "attested by an owner" were
+    judged against a list the document chose itself. None when they match
+    or when no owner list is configured (nothing to compare with); a
+    malformed list cannot vouch for any document."""
+    raw = env.get(TREX_OWNER_EMAILS_ENV, "")
+    try:
+        configured = parse_owner_emails(raw)
+    except ValueError:
+        return Wave3Reason.ACCEPTANCE_OWNERS_MISMATCH
+    if not configured:
+        return None
+    if frozenset(document_owners) != configured:
+        return Wave3Reason.ACCEPTANCE_OWNERS_MISMATCH
+    return None
 
 
 @dataclass(frozen=True)

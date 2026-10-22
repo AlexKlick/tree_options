@@ -54,6 +54,8 @@ export const WAVE3_REASONS = [
   'exit_unguarded',
   'calendar_horizon_near',
   'family_commands_disabled',
+  // Wave 3/4 integration amendment (additive)
+  'acceptance_owners_mismatch',
 ] as const
 export type Wave3Reason = (typeof WAVE3_REASONS)[number]
 /** A Wave 2 `Blocker` value (contracts/vocabulary.py; includes view reasons
@@ -522,6 +524,8 @@ export interface CommandArgs {
   flatten: { reason?: string }
   resume_all: { reason?: string }
   backup_state: { label?: string | null }
+  /** Wave 4 amendment (C3.5): seal a pilot registration; the hash the owner reviewed. */
+  seal_registration: { program_id: string; registration_sha256: Sha256Hex }
 }
 export type CommandKind = keyof CommandArgs
 /** The POST /api/commands body (`trex-command/1` without `issued_by`, which

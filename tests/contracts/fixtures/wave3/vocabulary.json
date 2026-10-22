@@ -119,6 +119,7 @@
     "gateway_down",
     "exit_unguarded",
     "calendar_horizon_near",
-    "family_commands_disabled"
+    "family_commands_disabled",
+    "acceptance_owners_mismatch"
   ]
 }
