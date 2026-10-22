@@ -1,0 +1,142 @@
+/* Wave 3 shell (lane E): destinations nav, phone tab bar, advanced menus,
+   desk control bar. Tokens from styles.css. */
+
+.shell-head { min-width: 0; }
+
+.paper-only {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  letter-spacing: 0.08em;
+}
+
+.nav-destinations { gap: 4px 18px; margin-top: 8px; }
+.nav-destinations a { font-size: 0.95rem; }
+.nav a[aria-current='true'] {
+  color: var(--ink);
+  border-bottom-color: var(--border);
+}
+
+/* ---- advanced menu (pre-Wave-3 views under their destination) ---- */
+
+.advanced-nav { margin-top: 8px; font-size: 0.86rem; }
+.advanced-nav summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+  width: max-content;
+  padding: 2px 0;
+}
+.advanced-nav summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.advanced-nav ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.advanced-nav a { color: var(--muted); text-decoration: none; font-weight: 600; }
+.advanced-nav a:hover { color: var(--ink); }
+.advanced-nav a[aria-current='page'] { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.advanced-nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.route-fallback { margin: 0 0 14px; font-size: 0.9rem; }
+
+/* ---- desk control bar ---- */
+
+.control-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 18px;
+  align-items: center;
+  margin: -8px 0 22px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--inset);
+}
+.control-state { min-width: 0; }
+.control-line { margin: 0; font-size: 0.88rem; overflow-wrap: anywhere; }
+.control-line:first-child { font-weight: 600; }
+.control-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.control-hint { grid-column: 1 / -1; margin: 0; font-size: 0.78rem; }
+
+.control-button {
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.control-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.control-button:disabled { opacity: 0.55; cursor: default; }
+.control-primary { background: var(--accent); border-color: var(--accent); color: #0b1322; }
+.control-danger { border-color: var(--neg); color: var(--neg); background: transparent; }
+.control-secondary { background: transparent; }
+
+.control-confirm,
+.control-message {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+}
+.control-confirm p,
+.control-message p { margin: 0; flex: 1 1 280px; font-size: 0.88rem; }
+.control-confirm .control-actions { justify-content: flex-start; }
+.control-ok p { color: var(--pos); }
+.control-warn p, .control-error p { color: var(--neg); }
+
+/* ---- phone: bottom tab bar ---- */
+
+.tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.tabbar a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 6px 2px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.tabbar-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabbar-dot { width: 22px; height: 3px; border-radius: 2px; background: transparent; }
+.tabbar a[aria-current] { color: var(--accent); }
+.tabbar a[aria-current] .tabbar-dot { background: var(--accent); }
+.tabbar a:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+
+/* .shell.shell-phone outranks styles.css's narrow `.shell` padding, which the
+   bundle loads after this file */
+.shell.shell-phone { padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+.shell-phone .control-bar { grid-template-columns: minmax(0, 1fr); margin-top: -10px; padding: 10px 12px; }
+.shell-phone .control-actions { justify-content: flex-start; }
+.shell-phone .control-actions .control-primary { flex: 1 1 100%; }
+.shell-phone .control-actions .control-button { flex-grow: 1; }
