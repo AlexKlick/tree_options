@@ -8376,6 +8376,18 @@ MUTANTS.extend(
             ],
             "invariant": "an order lifecycle with a missing commission report has fee None (incomplete), never 0",
         },
+        {
+            "id": "cash-tag-m1-total-cash-wins",
+            "owner": "settled_cash_wins_over_total_cash_value",
+            "file": "src/tree_options/trex/risk_snapshot.py",
+            "anchor": "CASH_TAGS: Final[tuple[CashSource, ...]] = (SETTLED_CASH_TAG, TOTAL_CASH_TAG)",
+            "replacement": "CASH_TAGS: Final[tuple[CashSource, ...]] = (TOTAL_CASH_TAG, SETTLED_CASH_TAG)",
+            "selectors": [
+                "tests/unit/test_trex_risk_snapshot.py::test_settled_cash_wins_over_total_cash_value",
+                "tests/unit/test_supervised_ibkr.py::test_preflight_settled_cash_wins_over_total_cash_value",
+            ],
+            "invariant": "SettledCash wins whenever the account reports it, for the books and the equity preflight alike: TotalCashValue (which shows unsettled sale proceeds at once) is only the fallback of a margin-type account, so cash is never overstated",
+        },
     ]
 )
 

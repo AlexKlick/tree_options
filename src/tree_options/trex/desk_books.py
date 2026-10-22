@@ -73,7 +73,11 @@ from tree_options.trex.ledger import (
     write_holdings,
 )
 from tree_options.trex.reconcile import reconcile_ledger, reconciliation_event, write_reconciliation
-from tree_options.trex.risk_snapshot import build_risk_snapshot, write_risk_snapshot
+from tree_options.trex.risk_snapshot import (
+    SETTLED_CASH_TAG,
+    build_risk_snapshot,
+    write_risk_snapshot,
+)
 from tree_options.trex.supervised import SupervisedPaths
 
 log = logging.getLogger("trex.desk_books")
@@ -311,8 +315,8 @@ class DeskBooks:
             problems.append(f"positions_unavailable:{portfolio.error}")
         elif portfolio.unrepresentable:
             problems.extend(f"position_{code}" for code in portfolio.unrepresentable)
-        try:
-            cash = self.ib.settled_cash_cents(account)
+        try:  # SettledCash, else TotalCashValue (the preflight's rule)
+            cash = self.ib.account_cash(account)
         except Exception as error:  # unreadable account values prove nothing
             if not self._session_up():
                 raise
@@ -357,7 +361,8 @@ class DeskBooks:
                     fold=fold,
                     specs=specs,
                     broker_rows=rows,
-                    settled_cash_cents=cash,
+                    settled_cash_cents=None if cash is None else cash.cents,
+                    cash_source=SETTLED_CASH_TAG if cash is None else cash.source,
                 )
                 snapshot = build.snapshot
                 problems.extend(f"risk:{p}" for p in build.problems if p)

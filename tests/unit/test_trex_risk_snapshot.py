@@ -37,6 +37,7 @@ from tree_options.trex.pause import exit_blockers
 from tree_options.trex.risk_snapshot import (
     OUTSIDE_UNDEFINED_RISK,
     UndefinedRisk,
+    account_cash,
     build_risk_snapshot,
     equity_open_loss_cents,
     option_open_loss_cents,
@@ -104,7 +105,11 @@ def snapshot(**kw: Any) -> Any:
 def test_reproduces_the_fixture_snapshot() -> None:
     build = snapshot()
     assert build.problems == ()
-    assert c.model_document(build.snapshot) == contract_fixture("risk_snapshot.json")
+    # plus the additive optional ``cash_source`` (2026-10-21 cash tag fix)
+    assert c.model_document(build.snapshot) == {
+        **contract_fixture("risk_snapshot.json"),
+        "cash_source": "SettledCash",
+    }
 
 
 # ------------------------------------------- W2c item 8: unsettled stock cash
@@ -657,6 +662,121 @@ def test_settled_cash_from_the_gateway_account_values() -> None:
 )
 def test_settled_cash_parsing(rows: list[Any], expected: int | None) -> None:
     assert settled_cash_cents(rows, account_id=ACCOUNT) == expected
+
+
+# ------------------------------------- the cash tag (2026-10-21 paper account)
+
+
+def test_cash_falls_back_to_total_cash_value_without_settled_cash() -> None:
+    """The IBKR paper account is margin-type: its accountValues carry no
+    SettledCash, only TotalCashValue. That is the cash, and it says so."""
+    rows = [value("NetLiquidation", "50000.00"), value("TotalCashValue", "48657.04")]
+    cash = account_cash(rows, account_id=ACCOUNT)
+    assert cash is not None
+    assert (cash.cents, cash.source) == (4_865_704, "TotalCashValue")
+    assert settled_cash_cents(rows, account_id=ACCOUNT) == 4_865_704
+
+
+def test_settled_cash_wins_over_total_cash_value() -> None:
+    rows = [value("TotalCashValue", "48657.04"), value("SettledCash", "40000.00")]
+    cash = account_cash(rows, account_id=ACCOUNT)
+    assert cash is not None
+    assert (cash.cents, cash.source) == (4_000_000, "SettledCash")
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        # neither tag: unavailable, exactly as before
+        ([value("NetLiquidation", "5.00")], None),
+        ([], None),
+        # USD first, else BASE, for either tag
+        ([value("SettledCash", "7.00", currency="BASE")], (700, "SettledCash")),
+        (
+            [value("SettledCash", "7.00", currency="BASE"), value("SettledCash", "6.00")],
+            (600, "SettledCash"),
+        ),
+        ([value("TotalCashValue", "8.00", currency="BASE")], (800, "TotalCashValue")),
+        (
+            [value("TotalCashValue", "8.00", currency="BASE"), value("TotalCashValue", "9.00")],
+            (900, "TotalCashValue"),
+        ),
+        ([value("TotalCashValue", "10.019")], (1_001, "TotalCashValue")),  # floored
+        # the tag decides first: a BASE SettledCash beats a USD TotalCashValue
+        (
+            [value("TotalCashValue", "9.00"), value("SettledCash", "7.00", currency="BASE")],
+            (700, "SettledCash"),
+        ),
+        # a SettledCash in neither currency, or another account's, is absent
+        (
+            [value("SettledCash", "5.00", currency="EUR"), value("TotalCashValue", "9.00")],
+            (900, "TotalCashValue"),
+        ),
+        (
+            [value("SettledCash", "5.00", account="DU0000002"), value("TotalCashValue", "9.00")],
+            (900, "TotalCashValue"),
+        ),
+        ([value("TotalCashValue", "9.00", currency="EUR")], None),
+        ([value("TotalCashValue", "9.00", account="DU0000002")], None),
+        # a present SettledCash that is junk or ambiguous is unreadable: it is
+        # never replaced by the other currency or by TotalCashValue
+        ([value("SettledCash", "n/a"), value("TotalCashValue", "9.00")], None),
+        ([value("SettledCash", "junk"), value("SettledCash", "7.00", currency="BASE")], None),
+        (
+            [
+                value("SettledCash", "5.00"),
+                value("SettledCash", "6.00"),
+                value("TotalCashValue", "9.00"),
+            ],
+            None,
+        ),
+        ([value("TotalCashValue", "NaN")], None),
+        ([value("TotalCashValue", "5.00"), value("TotalCashValue", "6.00")], None),
+    ],
+)
+def test_the_cash_tag_and_currency_rule(rows: list[Any], expected: tuple[int, str] | None) -> None:
+    cash = account_cash(rows, account_id=ACCOUNT)
+    assert (None if cash is None else (cash.cents, cash.source)) == expected
+
+
+def test_the_snapshot_records_which_tag_its_cash_came_from() -> None:
+    settled = snapshot().snapshot
+    assert settled.cash_source == "SettledCash"
+    total = snapshot(cash_source="TotalCashValue").snapshot
+    assert total.cash_source == "TotalCashValue"
+    assert c.model_document(total)["cash_source"] == "TotalCashValue"
+    # the fixture fold sold nothing: the same conservative figure either way
+    assert total.cash_cents == settled.cash_cents == FIXTURE_CASH
+    unavailable = snapshot(settled_cash_cents=None, cash_source="TotalCashValue")
+    assert unavailable.problems == ("settled cash unreadable",)
+    assert unavailable.snapshot.cash_source is None
+    assert "cash_source" not in c.model_document(unavailable.snapshot)
+
+
+def test_total_cash_value_shows_a_same_day_sale_so_its_proceeds_come_back_out() -> None:
+    """TotalCashValue books a sale's proceeds on the trade date, settled cash
+    only from the settlement session (T+1). Proceeds are never added early
+    (W2c), so from a TotalCashValue figure the snapshot takes the unsettled
+    proceeds (2 x 672.00) back out beside the sale's commission; from the
+    settlement session on nothing is taken."""
+    yesterday = execution(time="2026-10-21T14:03:05Z")
+    today = execution(
+        exec_id="0000e0d5.6576d6b0.01.01",
+        side="SLD",
+        price_micros=672_000_000,
+        time="2026-10-22T14:03:30Z",
+        order_ref="trex:desk:eq-spy-001",
+        perm_id=1234567891,
+    )
+    fold = fold_of([yesterday, today])
+    kw: dict[str, Any] = {"fold": fold, "broker_rows": [nvda()], "settled_cash_cents": 0}
+    total = snapshot(cash_source="TotalCashValue", **kw)
+    assert total.problems == ()
+    assert total.snapshot.cash_cents == -(100 + 2 * 67_200)
+    # the same fold read from SettledCash: only the commission (unchanged)
+    assert snapshot(**kw).snapshot.cash_cents == -100
+    settled = snapshot(cash_source="TotalCashValue", as_of=at("2026-10-23T13:31:00+00:00"), **kw)
+    assert settled.snapshot.cash_cents == 0
 
 
 # ---------------------------------------------------------- against the fake

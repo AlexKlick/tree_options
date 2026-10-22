@@ -830,6 +830,37 @@ def test_risk_snapshot_refusals(path: str, value: Any) -> None:
         c.RiskSnapshot.model_validate(put(load("risk_snapshot.json"), path, value))
 
 
+def test_risk_snapshot_cash_source_is_an_additive_optional_field() -> None:
+    """Amendment 2026-10-21 (cash tag): ``cash_source`` names the IBKR
+    account-value tag ``cash_cents`` was read from. Optional: a document
+    without it (every earlier one, the frozen fixture) reads and writes
+    unchanged; only a complete snapshot carries it."""
+    document = load("risk_snapshot.json")
+    assert "cash_source" not in document
+    plain = c.RiskSnapshot.model_validate(document)
+    assert plain.cash_source is None
+    assert c.model_document(plain) == document
+    for source in ("SettledCash", "TotalCashValue"):
+        tagged = {**document, "cash_source": source}
+        snapshot = c.RiskSnapshot.model_validate(tagged)
+        assert snapshot.cash_source == source
+        assert c.model_document(snapshot) == tagged
+    with pytest.raises(ValidationError):
+        c.RiskSnapshot.model_validate({**document, "cash_source": "NetLiquidation"})
+    unavailable = {
+        **document,
+        "status": "unavailable",
+        "open_loss_cents": None,
+        "day_realized_loss_cents": None,
+        "cash_cents": None,
+        "equity_gross_cents": None,
+        "outside_positions": [],
+    }
+    assert c.RiskSnapshot.model_validate(unavailable).cash_source is None
+    with pytest.raises(ValidationError):
+        c.RiskSnapshot.model_validate({**unavailable, "cash_source": "TotalCashValue"})
+
+
 @pytest.mark.parametrize(
     ("local", "broker", "kind", "ok"),
     [

@@ -19,9 +19,17 @@ every rounding toward MORE risk:
     value| (stocks may use |quantity| x mark);
 - ``day_realized_loss_cents``: the ledger's realized losses on the ET
   session date of ``as_of`` (``LedgerFold.day_realized_loss_micros``);
-- ``cash_cents``: IBKR ``SettledCash`` (``settled_cash_cents``) minus the
-  stock cash the broker figure does not show yet (W2c,
-  ``unsettled_stock_cents``). Settled cash moves only when a trade settles
+- ``cash_cents``: the broker's cash (``account_cash``) minus the stock
+  cash the broker figure does not show yet (W2c,
+  ``unsettled_stock_cents``). The broker figure is one shared rule, read
+  the same way by the books and the equity preflight
+  (``IbkrTrex.account_cash``; fix of 2026-10-21, when the margin-type
+  IBKR paper account reported no ``SettledCash`` and every entry failed
+  closed): the account's ``SettledCash`` when it reports one (USD, else
+  BASE), else its ``TotalCashValue`` (the same currency rule), else
+  unreadable. A ``SettledCash`` reported but junk or ambiguous is
+  unreadable, never replaced. The snapshot records the tag
+  (``cash_source``). Settled cash moves only when a trade settles
   (US stocks: T+1, the next session), so a same-day purchase is not in it
   and a second same-day entry would spend the same cash twice. The rule,
   conservative by construction: every booked stock execution whose
@@ -32,7 +40,13 @@ every rounding toward MORE risk:
   settlement session on the broker figure includes the trade and nothing
   is subtracted. Should a broker figure ever already include an unsettled
   purchase, the double count UNDERSTATES cash: it can only refuse an
-  entry (``insufficient_cash``), never admit one, and exits never read it;
+  entry (``insufficient_cash``), never admit one, and exits never read it.
+  ``TotalCashValue`` is such a figure: it books every trade on its trade
+  date, purchases (double counted: understated) and proceeds alike, so
+  from it the snapshot also takes every booked execution's unsettled
+  proceeds back out (``unsettled_proceeds_cents``, stock or option, the
+  same settlement rule); the result never exceeds the ``SettledCash``
+  figure of the same books;
 - ``equity_gross_cents``: market value of every long stock row;
 - ``outside_positions``: broker rows in contracts the ledger never touched.
 
@@ -93,28 +107,47 @@ from tree_options.trex.contracts.canonical import model_bytes
 from tree_options.trex.contracts.defaults import EQUITY_GAP_RESERVE_BPS
 from tree_options.trex.contracts.desk_spec_v2 import EquityDeskSpecV2
 from tree_options.trex.contracts.layout import Wave2RunDir
-from tree_options.trex.contracts.risk import RiskSnapshot, risk_snapshot_blockers
-from tree_options.trex.ledger import AnyDeskSpec, LedgerFold, Lot, write_atomic
+from tree_options.trex.contracts.risk import CashSource, RiskSnapshot, risk_snapshot_blockers
+from tree_options.trex.ledger import (
+    AnyDeskSpec,
+    CashIn,
+    LedgerFold,
+    Lot,
+    StockCashOut,
+    write_atomic,
+)
 from tree_options.trex.plan import LegStructure
 from tree_options.trex.reconcile import broker_positions, outside_positions
 
 __all__ = [
+    "CASH_CURRENCIES",
+    "CASH_TAGS",
     "MICROS_PER_CENT",
     "OUTSIDE_UNDEFINED_RISK",
+    "SETTLED_CASH_TAG",
+    "TOTAL_CASH_TAG",
+    "AccountCash",
     "RiskSnapshotBuild",
     "UndefinedRisk",
+    "account_cash",
     "build_risk_snapshot",
     "equity_open_loss_cents",
     "equity_settlement_date",
     "option_open_loss_cents",
     "read_risk_snapshot",
     "settled_cash_cents",
+    "unsettled_proceeds_cents",
     "unsettled_stock_cents",
     "write_risk_snapshot",
 ]
 
 MICROS_PER_CENT = 10_000
-SETTLED_CASH_TAG = "SettledCash"
+SETTLED_CASH_TAG: Final = "SettledCash"
+TOTAL_CASH_TAG: Final = "TotalCashValue"
+#: the account-value tags cash is read from, in preference order
+CASH_TAGS: Final[tuple[CashSource, ...]] = (SETTLED_CASH_TAG, TOTAL_CASH_TAG)
+#: the currencies a cash tag is read in, in preference order
+CASH_CURRENCIES: Final = ("USD", "BASE")
 #: entry blocker: the account holds a position whose loss has no bound
 #: (wire string; ``Blocker.OUTSIDE_UNDEFINED_RISK`` once the vocabulary
 #: lane adds it, equal by ``StrEnum`` value)
@@ -160,25 +193,67 @@ def option_open_loss_cents(structure: LegStructure, remaining_packages: int) -> 
     return int((dollars * 100).to_integral_value(rounding=ROUND_CEILING))
 
 
+@dataclass(frozen=True)
+class AccountCash:
+    """The account's cash in whole cents (floored) and the tag it came from."""
+
+    cents: int
+    source: CashSource
+
+
+#: ib_async's UNSET_DOUBLE (sys.float_info.max) marks "no value"
+_UNSET_AMOUNT = Decimal("1e300")
+
+
+def _amount(raw: object) -> Decimal | None:
+    """A finite broker number; None for None, booleans, junk, NaN, the
+    infinities and ib_async's UNSET sentinel."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        amount = Decimal(str(raw).strip())
+    except InvalidOperation:
+        return None
+    return amount if amount.is_finite() and abs(amount) < _UNSET_AMOUNT else None
+
+
+def account_cash(rows: Iterable[Any], *, account_id: str | None = None) -> AccountCash | None:
+    """The cash rule shared by the books and the equity preflight, over
+    IBKR account-value rows (``account_id``'s only, when given).
+
+    The first tag of ``CASH_TAGS`` the account reports, in the first
+    currency of ``CASH_CURRENCIES`` it reports that tag in: ``SettledCash``
+    (USD, else BASE), else ``TotalCashValue`` (USD, else BASE). A cash-type
+    account reports ``SettledCash``; a margin-type one (the IBKR paper
+    account) may report only ``TotalCashValue``. None when neither is
+    reported, and when the chosen rows are junk or disagree: a garbled
+    figure is unreadable, never replaced by the next currency or tag."""
+    mine = [
+        row for row in rows if account_id is None or str(getattr(row, "account", "")) == account_id
+    ]
+    for tag in CASH_TAGS:
+        for currency in CASH_CURRENCIES:
+            amounts = {
+                _amount(getattr(row, "value", None))
+                for row in mine
+                if getattr(row, "tag", None) == tag and getattr(row, "currency", None) == currency
+            }
+            if not amounts:
+                continue
+            if len(amounts) != 1 or None in amounts:
+                return None
+            (amount,) = amounts
+            assert amount is not None
+            cents = int((amount * 100).to_integral_value(rounding=ROUND_FLOOR))
+            return AccountCash(cents=cents, source=tag)
+    return None
+
+
 def settled_cash_cents(rows: Iterable[Any], *, account_id: str | None = None) -> int | None:
-    """IBKR ``SettledCash`` in USD cents (sub-cent rounds down); None when
-    absent, unparseable or reported twice with two values."""
-    found: set[int] = set()
-    for row in rows:
-        if getattr(row, "tag", None) != SETTLED_CASH_TAG:
-            continue
-        if getattr(row, "currency", None) != "USD":
-            continue
-        if account_id is not None and getattr(row, "account", None) != account_id:
-            continue
-        try:
-            amount = Decimal(str(getattr(row, "value", "")))
-        except InvalidOperation:
-            return None
-        if not amount.is_finite():
-            return None
-        found.add(int((amount * 100).to_integral_value(rounding=ROUND_FLOOR)))
-    return found.pop() if len(found) == 1 else None
+    """``account_cash`` in cents alone (sub-cent rounds down); None when
+    unreadable."""
+    cash = account_cash(rows, account_id=account_id)
+    return None if cash is None else cash.cents
 
 
 @dataclass(frozen=True)
@@ -400,14 +475,37 @@ def unsettled_stock_cents(
     broker's settled cash does not show yet, in cents rounded up: every
     ``LedgerFold.stock_cash_out`` whose settlement session (from its ET
     trade date) is after the ET date of ``as_of``, or cannot be placed."""
+    return _unsettled_cents(fold.stock_cash_out, account_id, as_of, settlement_date)
+
+
+def unsettled_proceeds_cents(
+    fold: LedgerFold,
+    account_id: str,
+    as_of: datetime,
+    *,
+    settlement_date: Callable[[date], date | None] = equity_settlement_date,
+) -> int:
+    """The proceeds of the account's booked executions (stock or option,
+    ``LedgerFold.cash_in``) a ``TotalCashValue`` already shows but settled
+    cash does not yet, in cents rounded up; the same settlement rule as
+    ``unsettled_stock_cents`` (US options settle T+1 like stocks)."""
+    return _unsettled_cents(fold.cash_in, account_id, as_of, settlement_date)
+
+
+def _unsettled_cents(
+    flows: Iterable[StockCashOut | CashIn],
+    account_id: str,
+    as_of: datetime,
+    settlement_date: Callable[[date], date | None],
+) -> int:
     day = as_of.astimezone(SESSION_TIMEZONE).date()
     micros = 0
-    for out in fold.stock_cash_out:
-        if out.account_id != account_id:
+    for flow in flows:
+        if flow.account_id != account_id:
             continue
-        settles = settlement_date(out.at.astimezone(SESSION_TIMEZONE).date())
+        settles = settlement_date(flow.at.astimezone(SESSION_TIMEZONE).date())
         if settles is None or day < settles:
-            micros += out.micros
+            micros += flow.micros
     return _ceil_div(micros, MICROS_PER_CENT)
 
 
@@ -427,13 +525,18 @@ def build_risk_snapshot(
     specs: Iterable[AnyDeskSpec],
     broker_rows: Sequence[BrokerPortfolioItem] | None,
     settled_cash_cents: int | None,
+    cash_source: CashSource = SETTLED_CASH_TAG,
     session_day: date | None = None,
     gap_reserve_bps: int = EQUITY_GAP_RESERVE_BPS,
     settlement_date: Callable[[date], date | None] = equity_settlement_date,
 ) -> RiskSnapshotBuild:
     """The account's risk from one broker session read at ``as_of``.
-    ``cash_cents`` is ``settled_cash_cents`` minus the ledger's unsettled
-    stock cash (``unsettled_stock_cents``; module docstring)."""
+    ``settled_cash_cents`` is the broker cash ``account_cash`` read and
+    ``cash_source`` the tag it came from (recorded in the snapshot).
+    ``cash_cents`` is that figure minus the ledger's unsettled stock cash
+    (``unsettled_stock_cents``) and, from ``TotalCashValue``, minus the
+    unsettled proceeds it already shows (``unsettled_proceeds_cents``;
+    module docstring)."""
     problems = []
     if broker_rows is None:
         problems.append("broker positions unreadable")
@@ -472,16 +575,21 @@ def build_risk_snapshot(
         return _unavailable(account_id, as_of, problems, undefined)
     day = session_day or as_of.astimezone(SESSION_TIMEZONE).date()
     day_loss_micros = fold.day_realized_loss_micros(account_id, day)
+    unsettled = unsettled_stock_cents(fold, account_id, as_of, settlement_date=settlement_date)
+    if cash_source != SETTLED_CASH_TAG:  # only settled cash leaves proceeds out
+        unsettled += unsettled_proceeds_cents(
+            fold, account_id, as_of, settlement_date=settlement_date
+        )
     snapshot = RiskSnapshot(
         account_id=account_id,
         as_of=as_of,
         status="complete",
         open_loss_cents=open_loss,
         day_realized_loss_cents=_ceil_div(day_loss_micros, MICROS_PER_CENT),
-        cash_cents=settled_cash_cents
-        - unsettled_stock_cents(fold, account_id, as_of, settlement_date=settlement_date),
+        cash_cents=settled_cash_cents - unsettled,
         equity_gross_cents=equity_gross,
         outside_positions=outside,
+        cash_source=cash_source,
     )
     return RiskSnapshotBuild(snapshot=snapshot)
 

@@ -483,6 +483,42 @@ def test_a_same_day_buy_counts_against_cash_before_it_settles(roomy):
     assert len(rig.orders("BUY")) == 1
 
 
+def test_a_margin_type_account_without_settled_cash_still_admits_entries(roomy):
+    """2026-10-21 21:52 ET, IBKR paper: the account is margin-type, its
+    accountValues carry TotalCashValue but no SettledCash, and the books
+    published ``risk:settled cash unreadable``, failing every entry closed.
+    The books and the equity preflight now read TotalCashValue by one rule;
+    the snapshot names it, and the W2c rule still takes the same-day buy out
+    (TotalCashValue already shows it: the double count only understates),
+    so a second purchase the conservative figure cannot cover is refused."""
+    rig = roomy
+    rig.gw.account_values.pop("SettledCash")
+    rig.gw.account_values["TotalCashValue"] = "2000.00"
+    rig.desk.books.request_refresh()
+    assert rig.step() == 0
+    risk = _risk(rig)
+    assert (risk.status, risk.cash_cents, risk.cash_source) == (
+        "complete",
+        200_000,
+        "TotalCashValue",
+    )
+    _open(rig)
+    assert len(rig.orders("BUY")) == 1
+    rig.gw.deliver_commissions()
+    rig.clock.advance(61)
+    assert rig.step() == 0
+    risk = _risk(rig)
+    assert risk.cash_source == "TotalCashValue"
+    assert risk.cash_cents == 200_000 - (2 * 67_150 + 100)
+    rig.draft_equity(equity_effect(intent_id="eq-spy-2", quantity=1))
+    rig.quote()
+    composed = rig.compose("eq-spy-2")
+    assert (composed.status, composed.reason) == ("refused", Blocker.INSUFFICIENT_CASH.value), (
+        composed
+    )
+    assert len(rig.orders("BUY")) == 1
+
+
 def test_a_standing_flatten_refuses_compose_and_approve(roomy):
     """W2c item 2: with FLATTEN standing an approval would send a BUY the
     runtime unwinds at once. A proposal composed before the FLATTEN is
