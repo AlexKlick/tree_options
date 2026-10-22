@@ -370,6 +370,77 @@ def test_our_short_legs_outside_a_whole_defined_risk_package_are_undefined_risk(
     )
 
 
+# ------------------------------- W2c item 5: v1 canary coexistence (no proposal)
+
+V1_ID = "v1-canary-001"
+
+
+def _v1_spec() -> Any:
+    from tree_options.trex.desk_spec import DeskSpec
+    from tree_options.trex.plan import LegStructure
+
+    assert isinstance(OPTION_SPEC, OptionDeskSpecV2)
+    return DeskSpec(
+        intent_id=V1_ID,
+        account_id=ACCOUNT,
+        structure=LegStructure.model_validate(
+            {**OPTION_SPEC.structure.model_dump(mode="json"), "id": V1_ID}
+        ),
+        entry_order_ref=f"trex:sup:{V1_ID}",
+        registered_at=AS_OF,
+    )
+
+
+V1_SPEC = _v1_spec()
+V1_SPECS = [*SPECS, V1_SPEC]
+V1_INDEX = AttributionIndex.build(proposals=[entry_proposal(), option_proposal()], specs=V1_SPECS)
+V1_LONG = leg("0000e0d5.7000000a.01.01", 700021, "BOT", 3_000_000, order_ref=f"trex:sup:{V1_ID}")
+V1_SHORT = leg("0000e0d5.7000000b.01.01", 700022, "SLD", 1_900_000, order_ref=f"trex:sup:{V1_ID}")
+V1_LONG_CLOSED = leg(
+    "0000e0d5.7000000c.01.01", 700021, "SLD", 3_200_000, order_ref=f"trex:desk:{V1_ID}", perm_id=91
+)
+V1_SHORT_CLOSED = leg(
+    "0000e0d5.7000000d.01.01", 700022, "BOT", 1_000_000, order_ref=f"trex:desk:{V1_ID}", perm_id=91
+)
+V1_ROWS = [opt_row(700021, 1, 29_000), opt_row(700022, -1, -18_500)]
+
+
+def v1_snapshot(executions: list[c.BrokerExecution], rows: list[Any]) -> Any:
+    events = fill_events(fold_executions([execution(), *executions]), V1_INDEX, recorded_at=AS_OF)
+    return snapshot(fold=fold_ledger(events), specs=V1_SPECS, broker_rows=[portfolio_item(), *rows])
+
+
+def test_a_v1_canary_spread_is_a_desk_owned_defined_risk_structure() -> None:
+    """W2c item 5: a v1 inbox debit spread (a desk spec, no Wave 2 proposal)
+    used to book OUTSIDE and fail the snapshot closed on its short leg,
+    blocking every Wave 2 entry. It is ours now, reserved at the desk
+    spec's defined max loss (once per structure), and blocks nothing."""
+    build = v1_snapshot([V1_LONG, V1_SHORT], V1_ROWS)
+    assert (build.problems, build.blockers, build.undefined_risk) == ((), (), ())
+    assert build.snapshot.status == "complete"
+    defined = option_open_loss_cents(V1_SPEC.structure, 1)
+    assert build.snapshot.open_loss_cents == 26_860 + defined
+    assert build.entry_blockers(AS_OF) == ()
+    # its desk exit closes it under the same attribution: flat, nothing held
+    closed = v1_snapshot([V1_LONG, V1_SHORT, V1_LONG_CLOSED, V1_SHORT_CLOSED], [])
+    assert (closed.blockers, closed.snapshot.open_loss_cents) == ((), 26_860)
+
+
+def test_a_broken_v1_package_or_a_genuine_outside_short_still_blocks() -> None:
+    # the desk sold the long leg only: the short leg is no defined package
+    broken = v1_snapshot(
+        [V1_LONG, V1_SHORT, V1_LONG_CLOSED], [opt_row(700021, 0, 0), opt_row(700022, -1, -18_500)]
+    )
+    assert broken.undefined_risk == (UndefinedRisk(700022, "OPT", -1, "short_option_lot", V1_ID),)
+    # beside a whole v1 spread, an outside short call still fails closed
+    outside = v1_snapshot(
+        [V1_LONG, V1_SHORT], [*V1_ROWS, nvda(position=-1, market_value_cents=-20_500)]
+    )
+    assert outside.blockers == (OUTSIDE_UNDEFINED_RISK,)
+    assert outside.undefined_risk == (UndefinedRisk(NVDA_OPT, "OPT", -1, "outside_short_option"),)
+    assert outside.snapshot.status == "unavailable"
+
+
 def test_a_broker_short_beyond_our_defined_short_leg_is_undefined_risk() -> None:
     fold = fold_of([LONG_LEG, SHORT_LEG])
     rows = [opt_row(700001, 1, 29_000), opt_row(700002, -2, -37_000)]

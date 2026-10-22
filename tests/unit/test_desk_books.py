@@ -264,6 +264,79 @@ def test_a_fill_whose_proposal_cannot_be_read_waits_for_it(rig):
     assert rig.reconciliation().status == "clean"
 
 
+def test_a_v1_inbox_spread_is_the_desks_and_keeps_entries_admissible(rig):
+    """W2c item 5: the v1 entry inbox registers a desk spec and sends
+    ``trex:sup:<iid>`` with no Wave 2 proposal. Its legs book as the desk's
+    (not OUTSIDE ``unattributed:``), so its short leg is part of a defined
+    package and the risk snapshot stays complete; an outside short beside
+    it still fails the snapshot closed."""
+    from tree_options.trex.desk_spec import DeskSpec
+    from tree_options.trex.ledger import V1_DESK_PROGRAM
+    from tree_options.trex.plan import LegStructure
+
+    iid = "v1-canary-001"
+    structure = LegStructure.model_validate(
+        {
+            "id": iid,
+            "underlying": "QQQ",
+            "kind": "debit_vertical",
+            "legs": [
+                {"right": "P", "action": "BUY", "strike": "500", "expiry": "2026-11-20"},
+                {"right": "P", "action": "SELL", "strike": "495", "expiry": "2026-11-20"},
+            ],
+            "quantity": 1,
+            "entry_date": "2026-10-22",
+            "exit_deadline": "2026-10-23",
+            "limit": "1.00",
+            "exits": {"touch": False, "breach": False},
+        }
+    )
+    rig.specs.append(
+        DeskSpec(
+            intent_id=iid,
+            account_id=ACCOUNT,
+            structure=structure,
+            entry_order_ref=f"trex:sup:{iid}",
+            registered_at=rig.clock(),
+        )
+    )
+    for n, (con_id, side, price) in enumerate([(9500, "BOT", 2.05), (9495, "SLD", 1.15)]):
+        rig.gw.fill_rows.append(
+            SimpleNamespace(
+                contract=SimpleNamespace(
+                    conId=con_id, secType="OPT", symbol="QQQ", multiplier="100"
+                ),
+                execution=SimpleNamespace(
+                    execId=f"0000e0d5.7a00000{n}.01.01",
+                    acctNumber=ACCOUNT,
+                    side=side,
+                    shares=1.0,
+                    price=price,
+                    permId=4242,
+                    orderRef=f"trex:sup:{iid}",
+                    time=rig.clock.utc(),
+                ),
+                commissionReport=SimpleNamespace(execId="", commission=0.0),
+                time=rig.clock.utc(),
+            )
+        )
+        rig.gw.add_broker_position("QQQ", 1 if side == "BOT" else -1, con_id=con_id, sec_type="OPT")
+    step = rig.books.step()
+    fills = [e for e in rig.ledger() if e.kind == "fill"]
+    assert {(e.attribution.intent_id, e.attribution.program_id) for e in fills} == {
+        (iid, V1_DESK_PROGRAM)
+    }
+    assert not fold_ledger(rig.ledger()).unattributed
+    assert step.risk_snapshot == "complete", step.problems
+    assert rig.risk().open_loss_cents == 10_000, "the spec's defined max loss: 1.00 x 100"
+    assert not any("outside_undefined_risk" in p for p in step.problems)
+    # a genuine outside short option beside it still fails closed
+    rig.gw.add_broker_position("NVDA", -1, con_id=712345678, sec_type="OPT")
+    blocked = rig.books.step(force=True)
+    assert blocked.risk_snapshot == "unavailable"
+    assert any("outside_short_option" in p for p in blocked.problems), blocked.problems
+
+
 def test_without_one_bound_account_nothing_is_written(rig):
     rig.gw.accounts = ["DU0000001", "DU0000002"]
     step = rig.books.step()

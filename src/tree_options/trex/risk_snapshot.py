@@ -33,7 +33,10 @@ of the frozen contract fails closed (``risk_snapshot_stale``) until the
 position is gone. The only short option exempt is one of OUR desk-spec'd
 structures whose open lots still form whole packages (as many contracts as
 the structure has legs, one quantity, the legs' long/short signs): the
-spec's defined max loss bounds it. Nothing else can be proven defined
+spec's defined max loss bounds it. A v1-inbox structure (a desk spec with
+no Wave 2 proposal) is ours too: the ledger attributes its fills to the
+desk (``ledger.v1_desk_attribution``, W2c), so a v1 canary spread no
+longer blocks every Wave 2 entry. Nothing else can be proven defined
 risk from these rows: neither a broker position row nor a ledger lot
 carries a strike, right or expiry, so an outside spread is not
 recognizable and always blocks. The rules, per contract:
