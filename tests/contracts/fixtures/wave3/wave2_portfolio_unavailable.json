@@ -1,0 +1,57 @@
+{
+  "account_ids": [],
+  "cash": {
+    "age_s": null,
+    "as_of": null,
+    "reason": "risk_snapshot_missing",
+    "settled_cash_cents": null,
+    "status": "unavailable"
+  },
+  "entry_blockers": [
+    "reconciliation_required",
+    "risk_snapshot_stale"
+  ],
+  "execution_enabled": false,
+  "exits_blocked": false,
+  "holdings": {
+    "account_id": null,
+    "age_s": null,
+    "as_of": null,
+    "ledger_cash_micros": null,
+    "reason": "holdings_missing",
+    "rows": null,
+    "status": "unavailable"
+  },
+  "kill_files": {
+    "FLATTEN": false,
+    "HALT": false,
+    "PAUSE_ENTRIES": false
+  },
+  "now": "2026-10-22T14:02:00Z",
+  "outside_positions": {
+    "reason": "risk_snapshot_missing",
+    "rows": null,
+    "status": "unavailable"
+  },
+  "problems": [],
+  "reconciliation": {
+    "age_s": null,
+    "as_of": null,
+    "fresh": false,
+    "mismatches": null,
+    "reason": "reconciliation_missing",
+    "status": "unavailable"
+  },
+  "risk": {
+    "account_id": null,
+    "age_s": null,
+    "as_of": null,
+    "day_realized_loss_cents": null,
+    "equity_gross_cents": null,
+    "open_loss_cents": null,
+    "reason": "risk_snapshot_missing",
+    "stale_after_s": null,
+    "status": "unavailable"
+  },
+  "schema": "trex-portfolio/1"
+}

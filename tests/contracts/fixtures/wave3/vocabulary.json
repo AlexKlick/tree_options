@@ -1,0 +1,124 @@
+{
+  "acceptance_thresholds": {
+    "heartbeat_min_percent": 99,
+    "lifecycles_per_kind": 10,
+    "max_exit_unguarded_s": 300,
+    "open_check_window_s": 900,
+    "streak_sessions": 10
+  },
+  "activity_sources": [
+    "command",
+    "desk_event",
+    "audit",
+    "drill"
+  ],
+  "api_paths": {
+    "acceptance": "/api/acceptance",
+    "activity": "/api/activity",
+    "commands": "/api/commands",
+    "portfolio": "/api/portfolio",
+    "proposals": "/api/proposals",
+    "today": "/api/today"
+  },
+  "drill_ids": [
+    "relogin",
+    "restart_mid_position",
+    "gateway_outage",
+    "duplicate_command",
+    "backup_restore",
+    "notification",
+    "unassisted_use"
+  ],
+  "drill_reasons": [
+    "attester_not_owner",
+    "drill_failed",
+    "drill_not_run"
+  ],
+  "family_refusals": [
+    "family_ingress_disabled",
+    "wrong_peer",
+    "assertion_missing",
+    "assertion_malformed",
+    "assertion_bad_signature",
+    "assertion_claims_invalid",
+    "assertion_wrong_audience",
+    "assertion_not_yet_valid",
+    "assertion_expired",
+    "assertion_method_mismatch",
+    "assertion_path_mismatch",
+    "assertion_origin_not_allowed",
+    "assertion_origin_mismatch",
+    "assertion_host_mismatch",
+    "assertion_body_mismatch",
+    "assertion_request_id_mismatch",
+    "assertion_sub_not_owner",
+    "assertion_replayed",
+    "assertion_ledger_unavailable"
+  ],
+  "lifecycle_reasons": [
+    "broker_not_flat",
+    "commissions_missing",
+    "commissions_unknown",
+    "exit_not_by_policy",
+    "not_exited",
+    "not_filled",
+    "not_reconciled"
+  ],
+  "pilot_budget_ceilings": {
+    "compute_minutes_per_day": 120,
+    "requests_per_day": 5000,
+    "storage_mb": 2048
+  },
+  "pilot_roles": [
+    "observation",
+    "baseline",
+    "challenger"
+  ],
+  "session_reasons": [
+    "exit_guard_unavailable",
+    "exit_unguarded_over_5min",
+    "heartbeat_below_99pct",
+    "heartbeat_minutes_exceed_session",
+    "heartbeat_unavailable",
+    "reconciliation_not_clean_at_close",
+    "reconciliation_open_unresolved",
+    "reconciliation_unavailable",
+    "reconciliation_unresolved_in_session",
+    "session_not_recorded",
+    "unowned_orders_present",
+    "unowned_orders_unavailable"
+  ],
+  "verdict_reasons": [
+    "drill_not_passed",
+    "equity_lifecycles_short",
+    "option_lifecycles_short",
+    "streak_short"
+  ],
+  "wave3_reasons": [
+    "calendar_unreadable",
+    "calendar_exhausted",
+    "heartbeat_absent",
+    "runtime_lock_unknown",
+    "gateway_watch_not_reporting",
+    "gateway_watch_stale",
+    "kill_file_unreadable",
+    "proposals_dir_unreadable",
+    "acceptance_missing",
+    "acceptance_invalid",
+    "acceptance_calendar_mismatch",
+    "acceptance_window_mismatch",
+    "schedule_unavailable",
+    "activity_source_unreadable",
+    "actor_not_recorded",
+    "desk_owner_stopped",
+    "desk_owner_stale",
+    "gateway_needs_login",
+    "gateway_needs_2fa",
+    "gateway_starting",
+    "gateway_api_down",
+    "gateway_down",
+    "exit_unguarded",
+    "calendar_horizon_near",
+    "family_commands_disabled"
+  ]
+}

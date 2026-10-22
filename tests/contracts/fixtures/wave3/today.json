@@ -1,0 +1,168 @@
+{
+  "acceptance": {
+    "computed_at": "2026-10-21T21:00:00Z",
+    "drills_passed": 1,
+    "drills_required": 7,
+    "equity_lifecycles": 0,
+    "lifecycles_required": 10,
+    "live_authorized": false,
+    "option_lifecycles": 1,
+    "status": "ok",
+    "streak_required": 10,
+    "streak_sessions": 2,
+    "unavailable_reason": null,
+    "verdict": "not_met"
+  },
+  "approvals": {
+    "items": [
+      {
+        "approve_args": {
+          "effect_sha256": "712eec9ac375251048e6622c7d76f18c85444fe10a704c4d007bdccde6fd9a8b",
+          "owner_epoch": "owner-20261022T133000Z-4242",
+          "profile_digest": "d11e81bc8942960c211bce52582136c6852e1131625828cefe5c9b5412062d07",
+          "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48",
+          "proposal_sha256": "6e40adefc7ee40b33b77bb9eb389eb4c7a145f3fe6d6fc7f16900a60ff921ea7"
+        },
+        "asset_kind": "equity",
+        "intent_id": "eq-spy-001",
+        "max_loss_cents": 26860,
+        "notional_cents": 134300,
+        "precheck_blockers": [],
+        "program_id": "prog-equity-pilot",
+        "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48",
+        "proposal_sha256": "6e40adefc7ee40b33b77bb9eb389eb4c7a145f3fe6d6fc7f16900a60ff921ea7",
+        "proposed_at": "2026-10-22T14:00:00Z",
+        "seconds_to_deadline": 480,
+        "send_deadline": "2026-10-22T14:10:00Z",
+        "summary": "Buy 2 SPY at a 671.50 limit; stop 665.00, target 680.00"
+      }
+    ],
+    "problem_count": 0,
+    "status": "ok",
+    "unavailable_reason": null
+  },
+  "blockers": [
+    {
+      "code": "equity_quote_not_realtime",
+      "message": "Equity quotes are delayed, so new equity entries are refused.",
+      "next_step": "Check the market data subscription in IBKR.",
+      "scope": "entries",
+      "severity": "warning"
+    }
+  ],
+  "controls": {
+    "flatten": {
+      "name": "FLATTEN",
+      "reason": null,
+      "since": null,
+      "status": "clear",
+      "unavailable_reason": null
+    },
+    "halt": {
+      "name": "HALT",
+      "reason": null,
+      "since": null,
+      "status": "clear",
+      "unavailable_reason": null
+    },
+    "pause_entries": {
+      "name": "PAUSE_ENTRIES",
+      "reason": null,
+      "since": null,
+      "status": "clear",
+      "unavailable_reason": null
+    },
+    "queued": {
+      "items": [
+        {
+          "expires_at": "2026-10-22T14:05:00Z",
+          "idempotency_key": "5f0c2a8e-1b3d-4c6e-9a7b-2d4e6f8a0b1c",
+          "issued_at": "2026-10-22T14:00:00Z",
+          "issued_by_sub": "owner@example.com",
+          "kind": "pause_entries"
+        }
+      ],
+      "status": "ok",
+      "unavailable_reason": null
+    }
+  },
+  "desk_owner": {
+    "exit_owner_ready": true,
+    "heartbeat_age_s": 10,
+    "heartbeat_at": "2026-10-22T14:01:50Z",
+    "lock_held": true,
+    "stale_after_s": 120,
+    "status": "healthy",
+    "unavailable_reason": null
+  },
+  "execution_enabled": false,
+  "gateway": {
+    "age_s": 30,
+    "checked_at": "2026-10-22T14:01:30Z",
+    "detail": "API answering",
+    "status": "ok",
+    "unavailable_reason": null
+  },
+  "next_events": {
+    "items": [
+      {
+        "at": "2026-10-22T14:10:00Z",
+        "kind": "approval_deadline",
+        "label": "Approve SPY by 10:10 ET or it expires",
+        "subject": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48"
+      },
+      {
+        "at": "2026-10-22T15:00:00Z",
+        "kind": "entry_window_close",
+        "label": "Entry window closes (11:00 ET)",
+        "subject": null
+      },
+      {
+        "at": "2026-10-22T20:00:00Z",
+        "kind": "session_close",
+        "label": "Market closes (16:00 ET)",
+        "subject": null
+      },
+      {
+        "at": "2026-10-23T12:30:00Z",
+        "kind": "premarket_run",
+        "label": "Premarket research run (08:30 ET)",
+        "subject": null
+      }
+    ],
+    "status": "ok",
+    "unavailable_reason": null
+  },
+  "now": "2026-10-22T14:02:00Z",
+  "positions": {
+    "holdings": {
+      "age_s": 60,
+      "as_of": "2026-10-22T14:01:00Z",
+      "equity_positions": 0,
+      "option_positions": 1,
+      "status": "ok",
+      "unavailable_reason": null
+    },
+    "risk": {
+      "age_s": 30,
+      "as_of": "2026-10-22T14:01:30Z",
+      "day_realized_loss_cents": 0,
+      "open_loss_cents": 4700,
+      "outside_positions": 0,
+      "settled_cash_cents": 2500000,
+      "status": "fresh",
+      "unavailable_reason": null
+    }
+  },
+  "schema": "trex-today/1",
+  "session": {
+    "calendar_sessions_left": 550,
+    "closes_at": "2026-10-22T20:00:00Z",
+    "early_close": false,
+    "et_date": "2026-10-22",
+    "opens_at": "2026-10-22T13:30:00Z",
+    "session": "2026-10-22",
+    "status": "open",
+    "unavailable_reason": null
+  }
+}

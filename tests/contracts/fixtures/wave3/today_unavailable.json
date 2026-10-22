@@ -1,0 +1,120 @@
+{
+  "acceptance": {
+    "computed_at": null,
+    "drills_passed": null,
+    "drills_required": 7,
+    "equity_lifecycles": null,
+    "lifecycles_required": 10,
+    "live_authorized": false,
+    "option_lifecycles": null,
+    "status": "unavailable",
+    "streak_required": 10,
+    "streak_sessions": null,
+    "unavailable_reason": "acceptance_missing",
+    "verdict": null
+  },
+  "approvals": {
+    "items": null,
+    "problem_count": null,
+    "status": "unavailable",
+    "unavailable_reason": "proposals_dir_unreadable"
+  },
+  "blockers": [
+    {
+      "code": "exit_owner_not_ready",
+      "message": "Nobody is watching open positions: the desk owner's heartbeat is missing.",
+      "next_step": "Check the desk service on the host.",
+      "scope": "exits",
+      "severity": "critical"
+    },
+    {
+      "code": "gateway_watch_not_reporting",
+      "message": "The IB Gateway watch is not reporting, so gateway health is unknown.",
+      "next_step": "",
+      "scope": "display",
+      "severity": "warning"
+    }
+  ],
+  "controls": {
+    "flatten": {
+      "name": "FLATTEN",
+      "reason": null,
+      "since": null,
+      "status": "unavailable",
+      "unavailable_reason": "kill_file_unreadable"
+    },
+    "halt": {
+      "name": "HALT",
+      "reason": null,
+      "since": null,
+      "status": "unavailable",
+      "unavailable_reason": "kill_file_unreadable"
+    },
+    "pause_entries": {
+      "name": "PAUSE_ENTRIES",
+      "reason": null,
+      "since": null,
+      "status": "unavailable",
+      "unavailable_reason": "kill_file_unreadable"
+    },
+    "queued": {
+      "items": null,
+      "status": "unavailable",
+      "unavailable_reason": "command_store_unavailable"
+    }
+  },
+  "desk_owner": {
+    "exit_owner_ready": null,
+    "heartbeat_age_s": null,
+    "heartbeat_at": null,
+    "lock_held": null,
+    "stale_after_s": 120,
+    "status": "unavailable",
+    "unavailable_reason": "heartbeat_absent"
+  },
+  "execution_enabled": false,
+  "gateway": {
+    "age_s": null,
+    "checked_at": null,
+    "detail": null,
+    "status": "unavailable",
+    "unavailable_reason": "gateway_watch_not_reporting"
+  },
+  "next_events": {
+    "items": null,
+    "status": "unavailable",
+    "unavailable_reason": "schedule_unavailable"
+  },
+  "now": "2026-10-22T14:02:00Z",
+  "positions": {
+    "holdings": {
+      "age_s": null,
+      "as_of": null,
+      "equity_positions": null,
+      "option_positions": null,
+      "status": "unavailable",
+      "unavailable_reason": "holdings_missing"
+    },
+    "risk": {
+      "age_s": null,
+      "as_of": null,
+      "day_realized_loss_cents": null,
+      "open_loss_cents": null,
+      "outside_positions": null,
+      "settled_cash_cents": null,
+      "status": "unavailable",
+      "unavailable_reason": "risk_snapshot_missing"
+    }
+  },
+  "schema": "trex-today/1",
+  "session": {
+    "calendar_sessions_left": null,
+    "closes_at": null,
+    "early_close": null,
+    "et_date": null,
+    "opens_at": null,
+    "session": null,
+    "status": "unavailable",
+    "unavailable_reason": "calendar_unreadable"
+  }
+}
