@@ -700,3 +700,29 @@ a draft file stem under `proposal-drafts/` (listed by `GET /api/ideas`,
   idempotency per key). TypeScript: `CommandArgs.compose_entry` gains
   `manual_equity_ticket?`, with `ManualEquityTicket` and
   `manualCandidateId` in `web/src/lib/contracts.ts`.
+
+### 2026-10-21: the desk's manual ticket rules, tightened (Wave 5 review)
+
+No schema or vocabulary change (one new constant). The desk now refuses,
+for a manual ticket only (`trex.desk_entries`):
+
+- a `program_id` other than `owner-manual` (`contracts.ideas.MANUAL_PROGRAM_ID`,
+  the program `GET /api/ideas` advertises): `candidate_program_mismatch`,
+  before any broker call; the proposal binds that program;
+- an exit deadline more than `MANUAL_MAX_HOLD_SESSIONS` (20, new in
+  `contracts.commands`) NYSE sessions after the entry session, counted on
+  the repo calendar: `manual_ticket_invalid` with detail
+  `deadline_beyond_max_hold` (`desk_entries.DEADLINE_BEYOND_MAX_HOLD`) and
+  the facts `max_hold_sessions`, `max_exit_deadline_session`, before any
+  broker call;
+- beside the earlier stop-below-limit and target-above-limit rules, a stop
+  at or above the live bid (`the stop is not below the bid`) and a target at
+  or below the live ask (`the target is not above the ask`):
+  `manual_ticket_invalid`.
+
+Qualifying the stock now maps errors as `IbkrSupervisedBroker.preflight`
+does: while the session is up, `StockNotQualified` is
+`equity_symbol_not_qualified` and any other ValueError or RuntimeError
+`order_unbuildable:<error class>` (never the provider text); once the
+session reads disconnected the error propagates (`gateway_lost`, exit 6).
+Tests: `tests/unit/test_desk_manual_ticket.py`.

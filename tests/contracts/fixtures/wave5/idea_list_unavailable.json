@@ -21,6 +21,8 @@
       "limit_cents"
     ],
     "max_entries_per_session": 3,
+    "max_exit_deadline_session": null,
+    "max_hold_sessions": 20,
     "program_id": "owner-manual",
     "strategy_version": "owner-manual/1",
     "symbols": [

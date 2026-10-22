@@ -36,8 +36,8 @@ import {
   type IdeaRow,
   type IdeasView,
   type LimitPolicy,
-  type ManualEquityTerms,
   type ManualEquityTicket,
+  type ManualTicketTerms,
   type QuoteFacts,
   type TicketErrors,
   type TicketField,
@@ -335,7 +335,7 @@ function describeTicket(t: ManualEquityTicket): string {
   const p = t.limit_policy
   const entry =
     typeof p === 'object' ? `with a limit of ${formatCents(p.limit_cents)}` : p === 'ask' ? 'at the real-time ask' : 'at the real-time midpoint'
-  const target = t.target_price_cents === null ? 'no target' : `target ${formatCents(t.target_price_cents)}`
+  const target = t.target_price_cents == null ? 'no target' : `target ${formatCents(t.target_price_cents)}`
   return `Buy ${t.quantity} ${t.symbol} ${entry}; stop ${formatCents(t.stop_price_cents)}; ${target}; exit by the end of the ${t.exit_deadline_session} session.`
 }
 
@@ -360,7 +360,7 @@ function EntryHint({ policy, hint, quote }: { policy: LimitPolicy; hint: number 
   )
 }
 
-function WindowLine({ terms, deskNowMs }: { terms: ManualEquityTerms | null; deskNowMs: number | null }) {
+function WindowLine({ terms, deskNowMs }: { terms: ManualTicketTerms | null; deskNowMs: number | null }) {
   if (terms === null || deskNowMs === null) {
     return <>Entries are prepared and sent only during regular market hours; the desk refuses outside its entry window.</>
   }
@@ -429,6 +429,9 @@ export function ManualTicketSection({
   const policies = terms?.limit_policies ?? [...LIMIT_POLICIES]
   const sessions = view ? deadlineSessions(view) : null
   const quote = terms?.quote ?? null
+  // the hold cap: the latest exit deadline the desk accepts today
+  const maxDeadline = terms?.max_exit_deadline_session ?? null
+  const maxHoldSessions = terms?.max_hold_sessions ?? null
   const idle = runner.phase.name === 'idle'
 
   const deskNowMs = (clientNow: number): number | null =>
@@ -441,7 +444,7 @@ export function ManualTicketSection({
   const check =
     clock === null || symbol === null
       ? null
-      : validateTicket(form, { now: deskNowIso(nowMs) ?? clock.now, symbol, sessions, quote })
+      : validateTicket(form, { now: deskNowIso(nowMs) ?? clock.now, symbol, sessions, quote, maxDeadline, maxHoldSessions })
   const errors: TicketErrors = tried && check !== null && !check.ok ? check.errors : {}
   const canSend = idle && clock !== null && symbol !== null && policies.includes(form.limitPolicy)
 
@@ -452,7 +455,14 @@ export function ManualTicketSection({
     if (!canSend || clock === null || symbol === null) return
     setTried(true)
     const clientNow = Date.now()
-    const result = validateTicket(form, { now: deskNowIso(clientNow) ?? clock.now, symbol, sessions, quote })
+    const result = validateTicket(form, {
+      now: deskNowIso(clientNow) ?? clock.now,
+      symbol,
+      sessions,
+      quote,
+      maxDeadline,
+      maxHoldSessions,
+    })
     if (!result.ok) return
     const key = newIdempotencyKey()
     const args = composeArgsForTicket(result.ticket, key, terms?.program_id ?? MANUAL_PROGRAM_ID)
@@ -594,6 +604,7 @@ export function ManualTicketSection({
                 id={ids.deadline}
                 type="date"
                 min={today ?? undefined}
+                max={maxDeadline ?? undefined}
                 value={form.deadline}
                 onChange={(e) => set('deadline')(e.target.value)}
                 {...invalid('deadline')}
@@ -602,6 +613,12 @@ export function ManualTicketSection({
           </Field>
           {sessions === null && (
             <p className="field-hint">Pick a weekday the market is open; the desk refuses a date that is not a market session.</p>
+          )}
+          {maxDeadline !== null && (
+            <p className="field-hint">
+              Hold it at most {maxHoldSessions ?? 'the allowed number of'} market sessions after today: {maxDeadline} at the
+              latest.
+            </p>
           )}
         </fieldset>
         {idle && check?.ok && <p className="ticket-preview">{describeTicket(check.ticket)}</p>}

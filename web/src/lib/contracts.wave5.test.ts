@@ -3,6 +3,8 @@ import {
   IDEAS_PATH,
   KEYS,
   MANUAL_CANDIDATE_PREFIX,
+  MANUAL_MAX_HOLD_SESSIONS,
+  MANUAL_PROGRAM_ID,
   buildCommandBody,
   isKnown,
   manualCandidateId,
@@ -81,8 +83,18 @@ describe('Wave 5 constants and helpers', () => {
     const list = fixture('idea_list.json') as unknown as IdeaList
     expect(IDEAS_PATH).toBe('/api/ideas')
     expect(MANUAL_CANDIDATE_PREFIX).toBe(list.manual_equity.candidate_prefix)
+    expect(MANUAL_PROGRAM_ID).toBe(list.manual_equity.program_id)
+    expect(MANUAL_MAX_HOLD_SESSIONS).toBe(list.manual_equity.max_hold_sessions)
     expect(list.schema).toBe('trex-idea-list/1')
     expect(list.execution_enabled).toBe(false)
+  })
+
+  it('the latest exit deadline is set exactly on a session day (review amendment)', () => {
+    const open = fixture('idea_list.json') as unknown as IdeaList
+    expect(open.manual_equity.window_status).toBe('open')
+    expect(open.manual_equity.max_exit_deadline_session).toBe('2026-11-19')
+    const off = fixture('idea_list_unavailable.json') as unknown as IdeaList
+    expect(off.manual_equity.max_exit_deadline_session).toBeNull()
   })
 
   it('manualCandidateId takes a lower-case UUID only', () => {

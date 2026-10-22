@@ -16,7 +16,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { secondsLeft, type CommandKind, type CommandResult, type Instant, type PendingApproval } from '../lib/contracts'
 import { approvalTtlS, prepareCommand, serverNowMs, useCommand, type CommandPhase } from '../lib/commandsApi'
 import { etTime } from '../lib/format'
-import { formatCents, formatCountdown, reasonText } from '../lib/reviewFormat'
+import { detailWords, formatCents, formatCountdown, reasonText } from '../lib/reviewFormat'
 import './today-review.css'
 
 /** This device's clock, ticking every `intervalMs` (drives countdowns only). */
@@ -124,10 +124,23 @@ function StatusBody({ phase }: { phase: CommandPhase }) {
       }
       const reason = result.reason ?? 'apply_error'
       const others = resultStrings(result, 'blockers').filter((b) => b !== reason)
+      // a detail that is itself a known code (a manual ticket past its hold
+      // cap) reads as words with its code; free text as sent
+      const detail = result.detail ? detailWords(result.detail) : null
       return (
         <>
           {result.status === 'refused' ? 'Refused' : 'Failed while applying'}: {reasonText(reason)}{' '}
-          <ReasonCode code={reason} />.{result.detail ? ` ${result.detail}.` : ''}
+          <ReasonCode code={reason} />.
+          {detail !== null ? (
+            <>
+              {' '}
+              {detail} <ReasonCode code={result.detail} />.
+            </>
+          ) : result.detail ? (
+            ` ${result.detail}.`
+          ) : (
+            ''
+          )}
           {others.length > 0 && (
             <ul className="status-blockers">
               {others.map((code) => (

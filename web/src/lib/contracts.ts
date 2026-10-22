@@ -710,6 +710,13 @@ export interface PortfolioView {
 export const IDEAS_PATH = '/api/ideas' as const
 /** A manual ticket's candidate id is this prefix plus a lower-case UUID. */
 export const MANUAL_CANDIDATE_PREFIX = 'manual:' as const
+/** The program of every manual ticket: the desk refuses any other
+ * (`candidate_program_mismatch`). Python: `contracts.ideas.MANUAL_PROGRAM_ID`. */
+export const MANUAL_PROGRAM_ID = 'owner-manual' as const
+/** Review amendment: a manual ticket's exit deadline is at most this many
+ * NYSE sessions after its entry session (`manual_ticket_invalid`, detail
+ * `deadline_beyond_max_hold`). Python: `MANUAL_MAX_HOLD_SESSIONS`. */
+export const MANUAL_MAX_HOLD_SESSIONS = 20 as const
 export type ManualLimitPolicy = 'ask' | 'mid' | { limit_cents: number }
 
 /** The owner's own whole-share, long-only stock ticket. Money in integer
@@ -795,6 +802,10 @@ export type DraftIdeas = Block<
   'ok',
   { items: Idea[]; blocked: BlockedIdea[]; problems: IdeaProblem[]; truncated: boolean }
 >
+/** Review amendment (additive): `max_hold_sessions` (the hold cap) and
+ * `max_exit_deadline_session` (the latest exit deadline the desk accepts for
+ * a ticket entered today; null when today is not a session). A document
+ * served before the amendment has neither; the parser reads them as null. */
 export type ManualEquityTerms = {
   candidate_prefix: typeof MANUAL_CANDIDATE_PREFIX
   program_id: string
@@ -803,9 +814,22 @@ export type ManualEquityTerms = {
   limit_policies: ('ask' | 'mid' | 'limit_cents')[]
   max_entries_per_session: number
   hints: ReasonCode[]
+  max_hold_sessions: number
 } & (
-  | { window_status: 'no_session'; window_session: null; window_opens_at: null; window_closes_at: null }
-  | { window_status: 'open' | 'closed'; window_session: IsoDate; window_opens_at: Instant; window_closes_at: Instant }
+  | {
+      window_status: 'no_session'
+      window_session: null
+      window_opens_at: null
+      window_closes_at: null
+      max_exit_deadline_session: null
+    }
+  | {
+      window_status: 'open' | 'closed'
+      window_session: IsoDate
+      window_opens_at: Instant
+      window_closes_at: Instant
+      max_exit_deadline_session: IsoDate
+    }
 )
 /** `GET /api/ideas` (`trex-idea-list/1`). */
 export interface IdeaList {
@@ -1137,6 +1161,8 @@ export const KEYS = {
     'window_opens_at',
     'window_closes_at',
     'hints',
+    'max_hold_sessions',
+    'max_exit_deadline_session',
   ]),
   ManualEquityTicket: keys<ManualEquityTicket>()([
     'symbol',

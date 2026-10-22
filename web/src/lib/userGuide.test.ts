@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACCEPTANCE_THRESHOLDS, CONTROL_LABELS, DRILL_IDS } from './contracts'
+import { ACCEPTANCE_THRESHOLDS, CONTROL_LABELS, DRILL_IDS, MANUAL_MAX_HOLD_SESSIONS } from './contracts'
 import { DRILL_LABELS } from './activityApi'
 
 // docs/product/USER-GUIDE.md and the Portfolio, Activity & settings and
@@ -33,6 +33,7 @@ describe('USER-GUIDE.md', () => {
   })
 
   const sections = [
+    'Start a trade',
     'Approve a trade from your phone',
     'Pause new entries or stop everything',
     'Sunday 2FA',
@@ -41,6 +42,15 @@ describe('USER-GUIDE.md', () => {
   ]
   it.each(sections)('has the section %s', (title) => {
     expect(guide).toMatch(new RegExp(`^## ${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
+  })
+
+  it('explains starting a trade in one section (ideas and the manual ticket together)', () => {
+    expect(guide.match(/^## Start a trade/gm)).toHaveLength(1)
+    const start = guide.slice(guide.indexOf('## Start a trade'), guide.indexOf('## Approve a trade'))
+    const hold = `${MANUAL_MAX_HOLD_SESSIONS} market sessions`
+    for (const words of ['**Ideas**', '**New SPY trade**', '**Prepare proposal**', 'Try again (same request)', hold]) {
+      expect(start).toContain(words)
+    }
   })
 
   it('names every control by its on-screen label', () => {

@@ -14,7 +14,8 @@ The owner initiates every entry. This view lists what they may compose:
 - **manual_equity**: the terms of a manual ticket (``compose_entry`` with
   ``manual_equity_ticket``): the candidate prefix, the program and strategy,
   the allowlist, the limit policies, the session cap, today's equity entry
-  window, and the hints that would refuse a ticket now.
+  window, the hold cap and the latest exit deadline it allows today, and
+  the hints that would refuse a ticket now.
 
 Hints are what the web can see without a broker: the stops
 (``entries_paused``, ``halt``, ``flatten``), the owner's facts (risk
@@ -52,7 +53,7 @@ from tree_options.action_graph.canary import (
     equity_entry_window_blockers,
 )
 from tree_options.trex.admission import entry_send_blockers, owner_fact_blockers
-from tree_options.trex.clock import ET, session_calendar
+from tree_options.trex.clock import ET, last_session_within, session_calendar
 from tree_options.trex.contracts.acceptance import AssetKind
 from tree_options.trex.contracts.canonical import model_document
 from tree_options.trex.contracts.commands import ComposeEntryArgs
@@ -69,6 +70,7 @@ from tree_options.trex.contracts.ideas import (
     LIMIT_POLICIES,
     LIVE_PROPOSAL_STATUSES,
     MANUAL_CANDIDATE_PREFIX,
+    MANUAL_MAX_HOLD_SESSIONS,
     MANUAL_PROGRAM_ID,
     MANUAL_STRATEGY_VERSION,
     BlockedIdea,
@@ -517,9 +519,12 @@ def _manual_terms(facts: _Facts, now: datetime) -> ManualEquityTerms:
     session: date | None = None
     opens: datetime | None = None
     closes: datetime | None = None
+    latest: date | None = None
     if window is not None:
         session, opens, closes = window
         status = "open" if facts.window_open(now) else "closed"
+        # the same calendar count the desk refuses past (desk_entries)
+        latest = last_session_within(session, MANUAL_MAX_HOLD_SESSIONS)
     return ManualEquityTerms(
         candidate_prefix=MANUAL_CANDIDATE_PREFIX,
         program_id=MANUAL_PROGRAM_ID,
@@ -532,6 +537,8 @@ def _manual_terms(facts: _Facts, now: datetime) -> ManualEquityTerms:
         window_opens_at=opens,
         window_closes_at=closes,
         hints=_reasons(hints),
+        max_hold_sessions=MANUAL_MAX_HOLD_SESSIONS,
+        max_exit_deadline_session=latest,
     )
 
 

@@ -57,6 +57,17 @@ def calendar_last_session() -> date:
     return session_calendar().sessions()[-1]
 
 
+def last_session_within(session: date, sessions: int) -> date:
+    """The session ``sessions`` sessions after ``session`` (itself a session,
+    else ``NotASessionError``), or the calendar's last session when the
+    calendar ends sooner (no later session can be named at all)."""
+    if sessions < 0:
+        raise ValueError(f"sessions must be >= 0, got {sessions}")
+    calendar = session_calendar()
+    known = calendar.sessions()
+    return known[min(calendar.ordinal(session) + sessions, len(known) - 1)]
+
+
 def calendar_sessions_left(d: date) -> int:
     """Sessions strictly after ``d`` that the calendar still covers."""
     sessions = session_calendar().sessions()

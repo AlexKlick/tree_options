@@ -20,6 +20,8 @@ whole-share SPY ticket, composed by the desk from the ticket and a live
 quote. Its candidate id is ``manual:<lower-case uuid>`` and no draft file
 stands behind it. An absent ticket is absent from the document, so every
 earlier ``compose_entry`` keeps its bytes and its ``command_body_sha256``.
+The review amendment adds one constant, ``MANUAL_MAX_HOLD_SESSIONS`` (no
+schema change).
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ __all__ = [
     "COMMAND_RESULT_SCHEMA",
     "COMMAND_SCHEMA",
     "MANUAL_CANDIDATE_PREFIX",
+    "MANUAL_MAX_HOLD_SESSIONS",
     "MANUAL_STRATEGY_VERSION",
     "Actor",
     "AnyCommand",
@@ -175,6 +178,10 @@ def actor_binds_request(actor: Actor, raw_request: RawCommandRequest) -> bool:
 MANUAL_CANDIDATE_PREFIX: Final = "manual:"
 #: Wave 5: the ``strategy_version`` the desk binds to every manual ticket.
 MANUAL_STRATEGY_VERSION: Final = "owner-manual/1"
+#: Wave 5 review amendment (additive): a manual ticket's
+#: ``exit_deadline_session`` is at most this many NYSE sessions after its
+#: entry session (the desk refuses a later one; the repo calendar counts).
+MANUAL_MAX_HOLD_SESSIONS: Final = 20
 _MANUAL_CANDIDATE = re.compile(
     r"^manual:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
 )
@@ -203,8 +210,10 @@ class ManualEquityTicket(StrictModel):
     (``ask``; ``mid`` = (bid + ask) / 2 rounded up to the cent; or an
     explicit ``limit_cents``), the exit policy exactly as given
     (``stop_confirm_ticks`` and ``forced_exit_et`` at their defaults). The
-    allowlist, cash, entry window and session cap are the desk's screening,
-    never this schema's: a ticket is only well formed here."""
+    allowlist, cash, entry window, session cap, the hold cap
+    (``MANUAL_MAX_HOLD_SESSIONS``) and the stop and target against the live
+    bid and ask are the desk's screening, never this schema's: a ticket is
+    only well formed here."""
 
     symbol: Symbol
     quantity: int = Field(strict=True, ge=1)

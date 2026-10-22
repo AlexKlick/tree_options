@@ -604,3 +604,28 @@ pinned) and `idea_list_unavailable.json`. Tests:
 `tests/unit/test_trex_web_entry_ideas.py`,
 `tests/desk_safety/test_enter_supervised.py` (the writer's drafts are exactly
 what the view lists) and `web/src/lib/contracts.wave5.test.ts`.
+
+### 2026-10-21: `trex-idea-list/1` manual terms state the hold cap (Wave 5 review)
+
+Additive: two new optional fields on `manual_equity` (`ManualEquityTerms`),
+nothing renamed or removed. `max_hold_sessions` is the hold cap
+(`MANUAL_MAX_HOLD_SESSIONS` = 20, `contracts.commands`, re-exported by
+`contracts.ideas`): a manual ticket's exit deadline is at most that many NYSE
+sessions after its entry session, and the desk refuses a later one
+(`manual_ticket_invalid`, detail `deadline_beyond_max_hold`; WAVE2-CONTRACTS.md
+amendment log). `max_exit_deadline_session` is the latest deadline the desk
+accepts for a ticket entered today (`trex.clock.last_session_within`, the
+desk's own count; the calendar's last session if it ends sooner), null
+exactly when today is not a session; when set it is on or after
+`window_session` and comes with `max_hold_sessions`. The view always sets
+both; a document served before this entry has neither (both parse as
+None). The web caps the ticket's date picker (`max`) at it and refuses a
+later date before sending. TypeScript: `MANUAL_MAX_HOLD_SESSIONS`,
+`MANUAL_PROGRAM_ID`, the two fields on `ManualEquityTerms` and its `KEYS`.
+Fixtures: both `wave5/idea_list*.json` carry the fields (hand counted: the
+20th session after Thursday 2026-10-22 is Thursday 2026-11-19). Tests:
+`tests/contracts/test_wave5_contracts.py` (an older document still parses;
+the rules above), `tests/unit/test_trex_web_entry_ideas.py`,
+`web/src/lib/contracts.wave5.test.ts`, `web/src/lib/ideasApi.test.ts` (the
+shared fixtures through the page's parser) and
+`web/src/components/TradeIdeas.test.tsx`.

@@ -21,60 +21,46 @@
 // - Hints are advisory: they are shown in words, never used to refuse here;
 //   the desk screens everything again with its live quote.
 //
-// CONTRACT NOTE (for the integration coordinator): `GET /api/ideas`
-// (`trex-idea-list/1`) and `compose_entry`'s `manual_equity_ticket` are the
-// backend lane's additive amendment (`contracts/ideas.py`,
-// `contracts/commands.py` on w5/backend). Its TypeScript mirror was not on
-// this lane's base, so the shapes below mirror the backend lane's Python
-// models as read on 2026-10-21 (`IdeaListDoc` and friends, `ManualEquityTicket`,
-// `ComposeEntryArgs`); swap them for the contracts.ts types when both lanes
-// merge. `parseIdeas` reads the document defensively: a field it does not find
-// shows as "not stated", never as a guess.
+// Wire shapes: `GET /api/ideas` (`trex-idea-list/1`) and `compose_entry`'s
+// `manual_equity_ticket` are the KEYS-pinned types of contracts.ts (`IdeaList`,
+// `Idea`, `ManualEquityTerms`, `ManualEquityTicket`, ...), which
+// contracts.wave5.test.ts checks against the shared Wave 5 fixtures. This
+// module keeps only its READ model (what the page shows), each field typed
+// from those contract types, and `parseIdeas` reads the document defensively:
+// a field it does not find shows as "not stated", never as a guess
+// (ideasApi.test.ts reads the shared fixtures through it).
 
 import { fetchJson } from './api'
 import {
   COMMAND_MAX_TTL_S,
-  type AssetKind,
+  IDEAS_PATH,
+  MANUAL_CANDIDATE_PREFIX,
+  MANUAL_PROGRAM_ID,
+  type BlockedIdea,
   type CommandArgs,
+  type Idea,
+  type IdeaList,
+  type IdeaProblem,
   type IdempotencyKey,
   type Instant,
   type IsoDate,
-  type Sha256Hex,
+  type ManualEquityTerms,
+  type ManualEquityTicket,
+  type ManualLimitPolicy,
 } from './contracts'
 import { newIdempotencyKey, prepareCommand, relativeUrl, type PreparedCommand } from './commandsApi'
 
-// ---------------------------------------------------------------- wire shapes (backend lane mirror)
+// ---------------------------------------------------------------- wire shapes (contracts.ts)
 
-export const IDEAS_PATH = '/api/ideas'
+export { IDEAS_PATH, MANUAL_CANDIDATE_PREFIX, MANUAL_PROGRAM_ID }
+export type { ManualEquityTicket, ManualLimitPolicy }
 export const IDEAS_URL = relativeUrl(IDEAS_PATH)
-export const IDEA_LIST_SCHEMA = 'trex-idea-list/1'
-/** A manual ticket's candidate id is `manual:<lower-case uuid>`. */
-export const MANUAL_CANDIDATE_PREFIX = 'manual:'
-/** The program the form uses when the terms name none (the backend's default). */
-export const MANUAL_PROGRAM_ID = 'owner-manual'
+export const IDEA_LIST_SCHEMA: IdeaList['schema'] = 'trex-idea-list/1'
 /** contracts.defaults `EQUITY_SYMBOL_ALLOWLIST` (SPY only); the terms may narrow it. */
 export const DEFAULT_EQUITY_SYMBOLS: readonly string[] = ['SPY']
 
-/** `limit_policy` on the wire: the live ask, the live midpoint (rounded up),
- * or an explicit DAY limit in integer cents. */
-export type WireLimitPolicy = 'ask' | 'mid' | { limit_cents: number }
-
-/** `compose_entry`'s `manual_equity_ticket` (`ManualEquityTicket`). */
-export interface ManualEquityTicket {
-  symbol: string
-  /** Whole shares, at least 1. */
-  quantity: number
-  stop_price_cents: number
-  target_price_cents: number | null
-  /** The last ET session the position may be held (an ISO date). */
-  exit_deadline_session: IsoDate
-  limit_policy: WireLimitPolicy
-}
-
 /** `compose_entry` args: Wave 2's plus the optional manual ticket. */
-export type ComposeEntryArgs = CommandArgs['compose_entry'] & {
-  manual_equity_ticket?: ManualEquityTicket | null
-}
+export type ComposeEntryArgs = CommandArgs['compose_entry']
 
 // ---------------------------------------------------------------- what this page reads
 
@@ -89,53 +75,55 @@ export interface QuoteFacts {
   as_of: Instant
 }
 
-/** One drafted idea. `status`: `available` (preparable), `proposed` (a live
- * proposal names it: `proposal_id`), `used`, `expired`. */
+/** One drafted idea (`Idea`) as this page reads it. `status`: `available`
+ * (preparable), `proposed` (a live proposal names it: `proposal_id`), `used`,
+ * `expired`; an unknown value shows as its own words. Null: not stated. */
 export interface IdeaRow {
-  candidate_id: string
-  program_id: string
-  asset_kind: AssetKind
-  summary: string | null
-  status: string
-  proposal_status: string | null
-  proposal_id: Sha256Hex | null
-  max_loss_cents: number | null
-  notional_cents: number | null
-  valid_until: Instant | null
+  candidate_id: Idea['candidate_id']
+  program_id: Idea['program_id']
+  asset_kind: Idea['asset_kind']
+  summary: Idea['summary'] | null
+  status: Idea['status'] | (string & {})
+  proposal_status: Idea['proposal_status'] | (string & {}) | null
+  proposal_id: Idea['proposal_id']
+  max_loss_cents: Idea['max_loss_cents'] | null
+  notional_cents: Idea['notional_cents'] | null
+  valid_until: Idea['valid_until'] | null
   /** The server's whole seconds to `valid_until` at `now` (null: not stated). */
-  seconds_to_expiry: number | null
+  seconds_to_expiry: Idea['seconds_to_expiry'] | null
   /** Advisory blockers the web can see (the desk is authoritative). */
   hints: string[]
   /** The exact args the compose command repeats (null: not stated). */
   compose_args: ComposeEntryArgs | null
 }
 
-/** A deal the miner could not draft (`<candidate>.BLOCKED.json`). */
-export interface BlockedIdeaRow {
-  candidate_id: string
-  kind: string
-  reason: string
-}
+/** A deal the miner could not draft (`BlockedIdea`, a `<candidate>.BLOCKED.json`). */
+export type BlockedIdeaRow = Pick<BlockedIdea, 'candidate_id' | 'kind' | 'reason'>
 
-/** What the manual ticket form needs (`ManualEquityTerms`). */
-export interface ManualEquityTerms {
-  program_id: string | null
-  symbols: string[]
+/** What the manual ticket form needs (`ManualEquityTerms`), as this page
+ * reads it. Null: not stated (`max_hold_sessions` and
+ * `max_exit_deadline_session` are absent from a document served before the
+ * review amendment). */
+export interface ManualTicketTerms {
+  program_id: ManualEquityTerms['program_id'] | null
+  symbols: ManualEquityTerms['symbols']
   limit_policies: LimitPolicy[]
-  max_entries_per_session: number | null
-  window_status: 'open' | 'closed' | 'no_session' | null
+  max_entries_per_session: ManualEquityTerms['max_entries_per_session'] | null
+  window_status: ManualEquityTerms['window_status'] | null
   window_session: IsoDate | null
   window_opens_at: Instant | null
   window_closes_at: Instant | null
   hints: string[]
-  /** Read when the server adds them (not in `trex-idea-list/1` today). */
+  max_hold_sessions: ManualEquityTerms['max_hold_sessions'] | null
+  max_exit_deadline_session: IsoDate | null
+  /** Not in `trex-idea-list/1` (null) unless a later amendment adds them. */
   sessions: IsoDate[] | null
   quote: QuoteFacts | null
 }
 
-/** `GET /api/ideas`, as this page reads it. */
+/** `GET /api/ideas` (`IdeaList`), as this page reads it. */
 export interface IdeasView {
-  schema: string
+  schema: IdeaList['schema']
   now: Instant
   /** The drafts block: `unavailable` with `unavailable_reason` when the desk
    * could not list the drafts (then no idea is known). */
@@ -143,11 +131,11 @@ export interface IdeasView {
   unavailable_reason: string | null
   ideas: IdeaRow[]
   blocked: BlockedIdeaRow[]
-  problems: { file: string; reason: string }[]
+  problems: Pick<IdeaProblem, 'file' | 'reason'>[]
   /** Items this page could not read (counted, never silently dropped). */
   unreadable: number
   truncated: boolean
-  manual_equity: ManualEquityTerms | null
+  manual_equity: ManualTicketTerms | null
 }
 
 // ---------------------------------------------------------------- parsing
@@ -227,12 +215,13 @@ function blockedOf(v: unknown): BlockedIdeaRow | null {
   return { candidate_id: v.candidate_id, kind: isStr(v.kind) ? v.kind : 'unknown', reason: v.reason }
 }
 
-function termsOf(v: unknown): ManualEquityTerms | null {
+function termsOf(v: unknown): ManualTicketTerms | null {
   if (!isRec(v)) return null
   const policies = strings(v.limit_policies)
     .map((p) => (p === 'limit_cents' ? 'limit' : p))
     .filter((p): p is LimitPolicy => (LIMIT_POLICIES as readonly string[]).includes(p))
   const status = v.window_status
+  const hold = intOrNull(v.max_hold_sessions)
   return {
     program_id: strOrNull(v.program_id),
     symbols: Array.isArray(v.symbols) ? strings(v.symbols) : [...DEFAULT_EQUITY_SYMBOLS],
@@ -243,6 +232,8 @@ function termsOf(v: unknown): ManualEquityTerms | null {
     window_opens_at: instantOrNull(v.window_opens_at),
     window_closes_at: instantOrNull(v.window_closes_at),
     hints: strings(v.hints),
+    max_hold_sessions: hold !== null && hold >= 1 ? hold : null,
+    max_exit_deadline_session: dateOrNull(v.max_exit_deadline_session),
     sessions: sessionsOf(v.sessions),
     quote: quoteOf(v.quote),
   }
@@ -293,7 +284,7 @@ export function deadlineSessions(view: IdeasView): IsoDate[] | null {
 /** Where the equity entry window stands at `deskNowMs` (the desk's clock):
  * computed from the server's window so it moves while the page is open. */
 export function entryWindowState(
-  terms: ManualEquityTerms | null,
+  terms: ManualTicketTerms | null,
   deskNowMs: number,
 ): 'open' | 'not_yet' | 'closed' | 'no_session' | 'unknown' {
   if (terms === null) return 'unknown'
@@ -395,6 +386,11 @@ export interface TicketContext {
   sessions: IsoDate[] | null
   /** A real-time quote, when the server gives one (drives the hint). */
   quote: QuoteFacts | null
+  /** The latest exit deadline the desk accepts today (the terms'
+   * `max_exit_deadline_session`), or null/absent (the desk alone judges). */
+  maxDeadline?: IsoDate | null
+  /** The hold cap behind it (`max_hold_sessions`), for the words. */
+  maxHoldSessions?: number | null
 }
 
 export type TicketCheck =
@@ -476,9 +472,13 @@ export function validateTicket(form: TicketForm, ctx: TicketContext): TicketChec
   } else if (ctx.sessions !== null && !ctx.sessions.includes(deadline)) {
     errors.deadline = 'Choose one of the upcoming market sessions.'
   } else if (deadline < etDate(ctx.now)) errors.deadline = 'The deadline cannot be before today.'
+  else if (ctx.maxDeadline != null && deadline > ctx.maxDeadline) {
+    const cap = ctx.maxHoldSessions != null ? `at most ${ctx.maxHoldSessions} market sessions` : 'within the hold limit'
+    errors.deadline = `Choose a session ${cap} after today: ${ctx.maxDeadline} at the latest.`
+  }
 
   if (Object.keys(errors).length > 0) return { ok: false, errors, entryHintCents: hint }
-  const policy: WireLimitPolicy =
+  const policy: ManualLimitPolicy =
     form.limitPolicy === 'limit' ? { limit_cents: limitCents as number } : form.limitPolicy
   return {
     ok: true,

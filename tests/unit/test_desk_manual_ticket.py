@@ -6,7 +6,8 @@ desk's ``run_loop`` applies).
 Oracles are hand-computed from the ticket and the scripted NBBO (2 SPY at
 the 671.52 ask, stop 665.00, target 680.00: notional 1,343.04 USD, max loss
 its 20% gap reserve, ceil(134304 x 0.2) = 26861 cents), the broker wire
-(orders placed) and the files on disk (proposals, mandates, outbox).
+(orders placed), the files on disk (proposals, mandates, outbox) and the
+NYSE sessions counted by hand (the 20-session hold cap).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Any
 import pytest
 
 from tests.unit.trex_fakes import SPY_CON_ID
-from tests.unit.wave2_owner_rig import ACCOUNT, OwnerRig
+from tests.unit.wave2_owner_rig import ACCOUNT, EQUITY_PROGRAM, OwnerRig
 from tree_options.time.sessions import shift_instant
 from tree_options.trex.contracts import (
     Blocker,
@@ -33,12 +34,17 @@ from tree_options.trex.contracts import (
 )
 from tree_options.trex.contracts.commands import ManualLimit
 from tree_options.trex.contracts.effects import EquityExitPolicy
+from tree_options.trex.contracts.ideas import MANUAL_PROGRAM_ID
 from tree_options.trex.desk_entries import manual_limit_cents
+from tree_options.trex.ibkr import StockNotQualified
+from tree_options.trex.supervised_desk import EXIT_DISCONNECTED
 
 pytest.importorskip("ib_async")
 
 BID, ASK = 67148, 67152
 PROGRAM = "owner-manual"
+#: a provider message that can carry account details: never in a result
+SECRET = "acct DU1234567 provider detail"
 
 
 @pytest.fixture()
@@ -242,6 +248,153 @@ def test_a_ticket_the_live_price_cannot_bound_is_refused(rig, changes, detail):
     refused = _compose(rig, _ticket(rig, **changes))
     assert (refused.status, refused.reason) == ("refused", "manual_ticket_invalid")
     assert detail in refused.detail
+    assert _proposals(rig) == []
+
+
+# the scripted NBBO is 671.48 x 671.52: the ask policy prices at 671.52, the
+# mid at 671.50, so each stop or target below sits on the RIGHT side of the
+# limit but on the wrong side of the live quote
+@pytest.mark.parametrize(
+    ("changes", "detail"),
+    [
+        pytest.param({"stop_price_cents": BID}, "the stop is not below the bid", id="stop-at-bid"),
+        pytest.param(
+            {"stop_price_cents": BID + 2}, "the stop is not below the bid", id="stop-inside-spread"
+        ),
+        pytest.param(
+            {"limit_policy": "mid", "target_price_cents": ASK},
+            "the target is not above the ask",
+            id="target-at-ask",
+        ),
+        pytest.param(
+            {"limit_policy": "mid", "target_price_cents": ASK - 1},
+            "the target is not above the ask",
+            id="target-inside-spread",
+        ),
+        pytest.param(
+            {
+                "limit_policy": {"limit_cents": 67100},
+                "stop_price_cents": 67000,
+                "target_price_cents": 67120,
+            },
+            "the target is not above the ask",
+            id="explicit-limit-under-the-bid",
+        ),
+    ],
+)
+def test_a_stop_at_or_above_the_bid_or_a_target_at_or_below_the_ask_is_refused(
+    rig, changes, detail
+):
+    refused = _compose(rig, _ticket(rig, **changes))
+    assert (refused.status, refused.reason) == ("refused", "manual_ticket_invalid")
+    assert detail in refused.detail
+    facts = refused.result or {}
+    assert (facts["bid_cents"], facts["ask_cents"]) == (BID, ASK)
+    assert _proposals(rig) == [] and rig.orders() == []
+
+
+def test_a_stop_a_cent_under_the_bid_and_a_target_a_cent_over_the_ask_compose(rig):
+    composed = _compose(rig, _ticket(rig, stop_price_cents=BID - 1, target_price_cents=ASK + 1))
+    assert composed.status == "applied", composed
+    (proposal,) = _proposals(rig)
+    assert isinstance(proposal.effect, SupervisedEquityEffect)
+    policy = proposal.effect.exit_policy
+    assert (policy.stop_price_cents, policy.target_price_cents) == (BID - 1, ASK + 1)
+
+
+def test_a_manual_ticket_binds_only_the_manual_program(rig):
+    """The ideas payload advertises ``owner-manual``; a manual ticket naming
+    any other program (a pilot's, say) is refused before any broker call."""
+    assert PROGRAM == MANUAL_PROGRAM_ID
+    stocks_before = set(rig.ib._stocks)
+    rig.quote(BID, ASK)
+    args = {**_args(str(uuid.uuid4()), _ticket(rig)), "program_id": EQUITY_PROGRAM}
+    refused = rig.run("compose_entry", args)
+    assert (refused.status, refused.reason) == ("refused", "candidate_program_mismatch")
+    assert MANUAL_PROGRAM_ID in refused.detail
+    assert set(rig.ib._stocks) == stocks_before, "refused before any broker call"
+    assert _proposals(rig) == []
+
+
+def test_the_exit_deadline_is_at_most_20_sessions_after_the_entry_session(rig):
+    """Hand counted on the NYSE calendar: the 20th session after Thursday
+    2026-10-22 is Thursday 2026-11-19 (Veterans Day trades; Thanksgiving is
+    later), the 21st Friday 2026-11-20."""
+    assert rig.clock.today().isoformat() == "2026-10-22"
+    stocks_before = set(rig.ib._stocks)
+    refused = _compose(rig, _ticket(rig, exit_deadline_session="2026-11-20"))
+    assert (refused.status, refused.reason, refused.detail) == (
+        "refused",
+        "manual_ticket_invalid",
+        "deadline_beyond_max_hold",
+    )
+    facts = refused.result or {}
+    assert (facts["max_hold_sessions"], facts["max_exit_deadline_session"]) == (20, "2026-11-19")
+    assert set(rig.ib._stocks) == stocks_before, "refused before any broker call"
+    assert _proposals(rig) == []
+    composed = _compose(rig, _ticket(rig, exit_deadline_session="2026-11-19"))
+    assert composed.status == "applied", composed
+    (proposal,) = _proposals(rig)
+    assert isinstance(proposal.effect, SupervisedEquityEffect)
+    assert proposal.effect.exit_policy.exit_deadline_session.isoformat() == "2026-11-19"
+
+
+# ------------------------------------------------------------- broker errors
+
+
+@pytest.mark.parametrize("error", [ValueError, RuntimeError, TypeError])
+def test_a_broker_error_qualifying_the_stock_refuses_by_its_class_only(rig, monkeypatch, error):
+    """As ``IbkrSupervisedBroker.preflight``: while the session is up, a
+    ValueError or RuntimeError is ``order_unbuildable:<class>`` (never the
+    provider text); any other error stays the command's own failure."""
+
+    def broken(symbol: str, con_id: int | None = None, **_: Any) -> int:
+        raise error(SECRET)
+
+    monkeypatch.setattr(rig.ib, "prepare_stock", broken)
+    answered = _compose(rig, _ticket(rig))
+    if error is TypeError:
+        assert (answered.status, answered.reason) == ("failed", "apply_error")
+    else:
+        assert (answered.status, answered.reason) == (
+            "refused",
+            f"order_unbuildable:{error.__name__}",
+        )
+    assert SECRET not in json.dumps(model_document(answered))
+    assert _proposals(rig) == [] and rig.orders() == []
+
+
+def test_a_stock_the_broker_cannot_qualify_is_not_qualified(rig, monkeypatch):
+    def unqualified(symbol: str, con_id: int | None = None, **_: Any) -> int:
+        raise StockNotQualified(SECRET)
+
+    monkeypatch.setattr(rig.ib, "prepare_stock", unqualified)
+    refused = _compose(rig, _ticket(rig))
+    assert (refused.status, refused.reason) == (
+        "refused",
+        Blocker.EQUITY_SYMBOL_NOT_QUALIFIED.value,
+    )
+    assert SECRET not in json.dumps(model_document(refused))
+
+
+@pytest.mark.parametrize("error", [ValueError, RuntimeError])
+def test_a_session_lost_while_qualifying_the_stock_still_exits_6(rig, monkeypatch, error):
+    """A disconnect is never mapped to a refusal: it reaches the loop, which
+    records ``gateway_lost`` (the class only) and exits 6."""
+
+    def lost(symbol: str, con_id: int | None = None, **_: Any) -> int:
+        rig.gw.is_connected = False
+        raise error(SECRET)
+
+    monkeypatch.setattr(rig.ib, "prepare_stock", lost)
+    rig.quote(BID, ASK)
+    key = rig.submit("compose_entry", _args(str(uuid.uuid4()), _ticket(rig)))
+    assert rig.step() == EXIT_DISCONNECTED
+    (gone,) = [e for e in rig.events() if e["event"] == "gateway_lost"]
+    assert (gone["stage"], gone["error"]) == ("commands", error.__name__)
+    answer = rig.store.read_result(key)
+    assert answer is not None and answer.status == "accepted", "answered at the next start"
+    assert SECRET not in rig.paths.events().read_text()
     assert _proposals(rig) == []
 
 

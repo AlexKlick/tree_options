@@ -15,8 +15,8 @@ import {
 
 // Every expectation derives from the frozen Wave 2 fixtures (the option and
 // equity proposals, the equity effect) or from the idea list built here from
-// them, in the backend lane's `trex-idea-list/1` shape (see ideasApi.ts,
-// CONTRACT NOTE; replace with the backend fixture when the lanes merge).
+// them in the `trex-idea-list/1` shape (contracts.ts; the shared Wave 5
+// fixtures themselves are read through the parser in ideasApi.test.ts).
 
 const wave2 = import.meta.glob('../../../tests/contracts/fixtures/*.json', { eager: true, import: 'default' })
 function fixture<T>(name: string): T {
@@ -107,6 +107,9 @@ function ideasDoc() {
       window_opens_at: '2026-10-22T13:50:00Z',
       window_closes_at: '2026-10-22T15:30:00Z',
       hints: [] as string[],
+      // the hold cap: 20 NYSE sessions after Thursday 2026-10-22, hand counted
+      max_hold_sessions: 20,
+      max_exit_deadline_session: '2026-11-19' as string | null,
     },
     execution_enabled: false,
   }
@@ -395,6 +398,37 @@ describe('New SPY trade: the manual ticket', () => {
     await flush()
     expect(ticketRegion().textContent).toMatch(/cannot be before today/)
     expect(posts(calls)).toHaveLength(0)
+  })
+
+  it('the date picker stops at the latest deadline the desk allows (its hold cap); past it nothing is sent', async () => {
+    const calls = await mount()
+    const picker = within(ticketRegion()).getByLabelText('Exit by the end of') as HTMLInputElement
+    expect(picker.max).toBe('2026-11-19')
+    expect(ticketRegion().textContent).toMatch(/Hold it at most 20 market sessions after today: 2026-11-19 at the latest/)
+    fillTicket({ deadline: '2026-11-20' })
+    fireEvent.click(within(ticketRegion()).getByRole('button', { name: 'Prepare proposal' }))
+    await flush()
+    expect(ticketRegion().textContent).toMatch(/Choose a session at most 20 market sessions after today: 2026-11-19 at the latest/)
+    expect(posts(calls)).toHaveLength(0)
+    fillTicket({ deadline: '2026-11-19' })
+    fireEvent.click(within(ticketRegion()).getByRole('button', { name: 'Prepare proposal' }))
+    await flush()
+    expect(posts(calls)).toHaveLength(1)
+  })
+
+  it('a desk refusal names its reason and its detail code in words', async () => {
+    await mount({
+      answer: (body) => resultFor(body, 'refused', { reason: 'manual_ticket_invalid', detail: 'deadline_beyond_max_hold' }),
+    })
+    fillTicket()
+    fireEvent.click(within(ticketRegion()).getByRole('button', { name: 'Prepare proposal' }))
+    await flush()
+    await flush(2000)
+    const status = within(ticketRegion()).getByRole('status').textContent ?? ''
+    expect(status).toMatch(/^Refused: /)
+    expect(status).toContain('manual_ticket_invalid')
+    expect(status).toMatch(/more than 20 market sessions/)
+    expect(status).toContain('deadline_beyond_max_hold')
   })
 
   it('when the desk lists upcoming sessions, the picker offers exactly those', async () => {

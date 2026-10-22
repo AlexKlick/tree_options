@@ -8752,6 +8752,50 @@ MUTANTS.extend(
 )
 
 
+# Wave 5 review fixes: the manual ticket's stop and target against the live
+# quote, and its 20-session hold cap (desk refusal and the ideas payload).
+MUTANTS.extend(
+    [
+        {
+            "id": "W5R-M1-manual-stop-at-bid-admitted",
+            "owner": "test_a_stop_at_or_above_the_bid_or_a_target_at_or_below_the_ask_is_refused",
+            "file": "src/tree_options/trex/desk_entries.py",
+            "anchor": "        if ticket.stop_price_cents >= held.bid_cents:",
+            "replacement": "        if ticket.stop_price_cents > held.bid_cents:",
+            "selectors": ["tests/unit/test_desk_manual_ticket.py"],
+            "invariant": "a manual ticket's stop at the live bid is refused (it would fire at once)",
+        },
+        {
+            "id": "W5R-M2-manual-target-at-ask-admitted",
+            "owner": "test_a_stop_at_or_above_the_bid_or_a_target_at_or_below_the_ask_is_refused",
+            "file": "src/tree_options/trex/desk_entries.py",
+            "anchor": "        if target is not None and target <= held.ask_cents:",
+            "replacement": "        if target is not None and target < held.ask_cents:",
+            "selectors": ["tests/unit/test_desk_manual_ticket.py"],
+            "invariant": "a manual ticket's target at the live ask is refused (already reached)",
+        },
+        {
+            "id": "W5R-M3-manual-hold-cap-off-by-one",
+            "owner": "test_the_exit_deadline_is_at_most_20_sessions_after_the_entry_session",
+            "file": "src/tree_options/trex/desk_entries.py",
+            "anchor": "        latest = last_session_within(session, MANUAL_MAX_HOLD_SESSIONS)",
+            "replacement": "        latest = last_session_within(session, MANUAL_MAX_HOLD_SESSIONS + 1)",
+            "selectors": ["tests/unit/test_desk_manual_ticket.py"],
+            "invariant": "a manual ticket's exit deadline is at most 20 NYSE sessions after entry",
+        },
+        {
+            "id": "W5R-M4-ideas-latest-deadline-unstated",
+            "owner": "test_the_manual_terms_name_the_allowlist_and_todays_window",
+            "file": "src/tree_options/trex_web/entry_ideas_view.py",
+            "anchor": "        max_exit_deadline_session=latest,",
+            "replacement": "        max_exit_deadline_session=None,",
+            "selectors": ["tests/unit/test_trex_web_entry_ideas.py"],
+            "invariant": "GET /api/ideas states the latest exit deadline the desk accepts today",
+        },
+    ]
+)
+
+
 # Parked with the derived-cost custody/governance suites (docs/desk/PARKED-DERIVED-COST.md).
 # Their guarded source or their owning test files never landed on main: the first group's
 # anchors occur 0x (MUTATION_DRIFT), the second group's selector files do not exist

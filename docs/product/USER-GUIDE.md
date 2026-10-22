@@ -53,34 +53,46 @@ not show that fact; the step says why. Unknown is never counted as done.
 
 ## Start a trade
 
-You start every trade, in one of two ways. Both only ask the desk for a
-proposal: composing never approves anything and never sends an order. The
-proposal then waits for you in Trade review (see the next section).
+You start every trade yourself, on Trade review (the Review tab), in one of
+two ways. Both only ask the desk to prepare a proposal: preparing never
+approves anything and never sends an order. The proposal then waits for your
+approval (see the next section).
 
-- **A qualified idea.** On a session day the miner drafts option ideas
-  between 09:50 and 11:30 ET (debit structures only; a credit structure is
-  listed as blocked, never as an idea). TREX lists every draft with its
-  structure, the most it can lose, its age, the time left before it expires,
-  whether a proposal already names it, and advisory warnings. Starting the
-  idea sends one command naming it.
-- **A manual stock ticket.** You give the symbol (SPY only, the one symbol
-  with real-time paper data), the number of whole shares, the stop, an
-  optional target, the last session you are willing to hold it (the exit
-  deadline), and how to set the limit: the live ask, the live mid (rounded
-  up to the cent), or a limit you type. Each ticket has its own id; keep it
-  for retries.
+- **Ideas** lists the qualified candidates. On a session day the miner
+  drafts option ideas between 09:50 and 11:30 ET (debit structures only; a
+  credit structure is listed as blocked, never as an idea). Each idea shows
+  its structure, the most it can lose, its notional, its age, the time left
+  before it expires, and whether a proposal already names it.
+  **Prepare proposal** sends one request naming it; a blocked, expired or
+  already used idea says why and has no button, and an idea that already has
+  a waiting proposal links to it.
+- **New SPY trade** is a manual ticket for whole SPY shares (SPY is the one
+  symbol with real-time paper data): the number of shares, how the entry
+  limit is set (pay the live ask, the live midpoint rounded up to the cent,
+  or your own limit), a stop below the entry price, an optional target above
+  it, and the last market session to hold the position (the exit deadline:
+  at most 20 market sessions after today; the date picker stops there). The
+  ticket is paper only and cash only (no margin, no short selling). The page
+  checks it before it sends; the desk checks everything again with its
+  real-time quote.
+
+Warnings such as "New entries are paused" or a closed entry window are
+advisory: the page shows them in words, and the desk decides when it
+prepares the proposal.
 
 What the desk does with your request, in order:
 
 1. It checks the stops (Pause new entries, Emergency stop, Close all desk
    positions), that the market is in its regular session, your capital
    profile and the paper account.
-2. For a manual ticket, before it asks the broker anything: the symbol is
-   allowed, the time is inside the stock entry window (09:35 to 15:30 ET,
-   09:35 to 12:30 ET on an early close), and the exit deadline is a trading
-   session on or after today. Then it reads a real-time quote, sets the
-   limit, and checks that the stop is below the limit and the target above
-   it.
+2. For a manual ticket, before it asks the broker anything: the ticket names
+   the manual program (`owner-manual`, which the page always uses), the
+   symbol is allowed, the time is inside the stock entry window (09:35 to
+   15:30 ET, 09:35 to 12:30 ET on an early close), and the exit deadline is a
+   trading session on or after today and at most 20 sessions after it. Then
+   it reads a real-time quote (never a delayed or frozen one), sets the
+   limit, and checks that the stop is below both the limit and the bid, and
+   the target above both the limit and the ask.
 3. It screens the entry like every other one: fresh books and a clean
    reconciliation, enough settled cash (no margin), your per-trade, open and
    daily loss limits, and at most 3 entries per session (options and stocks
@@ -89,18 +101,27 @@ What the desk does with your request, in order:
    approved for at most 10 minutes, never past the idea's expiry (for a
    manual ticket: the end of the stock entry window) or the close.
 
+Once the desk has prepared it, **Review and approve the proposal** opens the
+proposal; approve it there before its countdown runs out. If a request was
+not confirmed, **Try again (same request)** re-sends the very same request,
+so one press can never prepare two proposals.
+
 Once a position is open the desk enforces exactly the exit policy you gave
 it: the stop (confirmed over 3 quote ticks), the target, the exit deadline,
 and the forced exit before the close.
 
-When the desk refuses to start a trade:
+When the desk refuses to start a trade, the page shows the reason in words
+beside its code:
 
 | You see | Why | What to do |
 | --- | --- | --- |
 | `equity_symbol_not_qualified` | the symbol is not one TREX trades as a stock | use SPY |
 | `entry_window_closed` | outside the stock entry window | try again between 09:35 and 15:30 ET |
-| `manual_ticket_invalid` | at the live price the stop is not below the limit or the target not above it, or the exit deadline is not a session on or after today | change the stop, target, limit or deadline |
+| `manual_ticket_invalid` | at the live quote the stop is not below the limit and the bid, or the target not above the limit and the ask; or the exit deadline is not a session on or after today | change the stop, target, limit or deadline |
+| `manual_ticket_invalid` with `deadline_beyond_max_hold` | the exit deadline is more than 20 market sessions after today | pick an earlier deadline |
+| `candidate_program_mismatch` | a ticket named a program other than `owner-manual` (only another client can do that) | send the ticket from this page |
 | `equity_quote_not_realtime` or `quote_unavailable` | no live real-time quote to price the ticket | wait for the quote; check the gateway on Today |
+| `order_unbuildable:` and an error name | the broker could not set up the stock contract | try again; check the gateway on Today |
 | `session_entry_limit_reached` | 3 entries were already sent this session | wait for the next session |
 | `candidate_expired` | the idea's time ran out | pick a newer idea |
 | `intent_already_used` | this idea or ticket was already sent once | start a new ticket |
@@ -133,32 +154,6 @@ When an approval does not go through:
 | The command expired before the desk applied it (`command_expired`) | the desk did not apply it within 300 seconds | check the desk owner heartbeat on Today |
 | Duplicate (first outcome kept) | you sent the same approval twice | nothing: sending twice is safe |
 | The command was not authorized (`command_unauthorized`), or the portal answers `trex-commands-not-configured` | the command key is missing, or differs, on the Family Apps portal or on TREX | on the host, install the same key file on both sides (`~/.config/family-apps/trex-command.key` for the portal, `~/.config/trex/family-command.key` for TREX); see Getting started, step 4 |
-
-## Start a trade yourself
-
-Trade review (the Review tab) also lets you start an entry. Starting one only
-asks the desk to prepare a proposal: nothing is approved or sent until you
-approve that proposal as above.
-
-- **Ideas** lists the candidates the desk qualified, each with its max loss,
-  notional and the time left to use it. **Prepare proposal** sends one
-  request; a blocked, expired or already used idea says why and has no
-  button, and an idea that already has a waiting proposal links to it.
-- Warnings such as "New entries are paused" or a closed entry window are
-  advisory: the page shows them in words, and the desk decides when it
-  prepares the proposal (a refusal shows its reason).
-- **New SPY trade** is a manual ticket for whole SPY shares: the number of
-  shares, how the entry limit is set (pay the ask, the midpoint, or your own
-  limit), a stop below the entry price, an optional target above it, and the
-  last market session to hold the position. The page checks these before it
-  sends; the desk checks everything again with its real-time quote.
-- The ticket is paper only and cash only (no margin, no short selling); the
-  desk refuses an SPY entry on a delayed quote and prepares entries only
-  during regular market hours.
-- When the desk has prepared the proposal, **Review and approve the proposal**
-  opens it; approve it there before its countdown runs out. If the request was
-  not confirmed, **Try again (same request)** re-sends the same request, so it
-  can never prepare two proposals from one press.
 
 ## Pause new entries or stop everything
 

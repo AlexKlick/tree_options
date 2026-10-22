@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { WAVE3_REASONS } from './contracts'
-import { CLIENT_REASONS, REASON_TEXT, formatCents, formatCountdown, reasonText } from './reviewFormat'
+import { MANUAL_MAX_HOLD_SESSIONS, WAVE3_REASONS } from './contracts'
+import { CLIENT_REASONS, REASON_TEXT, detailWords, formatCents, formatCountdown, reasonText } from './reviewFormat'
 import { todayUnavailableFixture, vocabularyFixture } from './reviewTestKit'
 
 // The Python sources that spell the server's reason codes: the Wave 2
 // `Blocker` enum, the loopback authority's refusal details, the command
-// store's unavailable reasons and the desk owner's plain refusal strings.
+// store's unavailable reasons, the desk owner's plain refusal strings and
+// the manual ticket's detail codes (desk_entries.py).
 const sources = import.meta.glob(
   [
     '../../../src/tree_options/trex/contracts/vocabulary.py',
     '../../../src/tree_options/trex_web/commands_view.py',
     '../../../src/tree_options/trex_web/command_store.py',
     '../../../src/tree_options/trex/desk_commands.py',
+    '../../../src/tree_options/trex/desk_entries.py',
   ],
   { eager: true, query: '?raw', import: 'default' },
 ) as Record<string, string>
@@ -32,6 +34,7 @@ function serverVocabulary(): Set<string> {
   for (const m of view.matchAll(/"detail": "([a-z_]+)"/g)) vocab.add(m[1])
   for (const m of source('command_store.py').matchAll(/CommandStoreUnavailable\(\s*"([a-z_]+)"/g)) vocab.add(m[1])
   for (const m of source('desk_commands.py').matchAll(/^GATEWAY_UNAVAILABLE = "([a-z_]+)"$/gm)) vocab.add(m[1])
+  for (const m of source('desk_entries.py').matchAll(/^DEADLINE_BEYOND_MAX_HOLD = "([a-z_]+)"$/gm)) vocab.add(m[1])
   for (const reason of WAVE3_REASONS) vocab.add(reason)
   for (const refusal of vocabularyFixture().family_refusals as string[]) vocab.add(refusal)
   return vocab
@@ -99,5 +102,22 @@ describe('reason words come from the vocabulary', () => {
   it('an unknown code still reads as words and keeps the code visible', () => {
     expect(reasonText('approval_epoch_mismatch')).toBe(REASON_TEXT.approval_epoch_mismatch)
     expect(reasonText('some_new_code')).toBe('some new code')
+  })
+
+  it('every Wave 5 refusal, view reason and manual ticket detail has plain words', () => {
+    const wave5 = ['manual_ticket_invalid', 'drafts_dir_unreadable', 'draft_unreadable', 'deadline_beyond_max_hold']
+    for (const code of wave5) {
+      expect(vocab.has(code), code).toBe(true)
+      expect(REASON_TEXT[code], code).toBeTruthy()
+      expect(reasonText(code), code).not.toBe(code.replace(/_/g, ' '))
+    }
+    expect(REASON_TEXT.deadline_beyond_max_hold).toContain(`${MANUAL_MAX_HOLD_SESSIONS} market sessions`)
+  })
+
+  it('a detail that is a known code reads as words; free text stays as sent', () => {
+    expect(detailWords('deadline_beyond_max_hold')).toBe(REASON_TEXT.deadline_beyond_max_hold)
+    expect(detailWords('the stop is not below the bid')).toBeNull()
+    expect(detailWords('order_unbuildable:RuntimeError')).toBeNull()
+    expect(detailWords('')).toBeNull()
   })
 })

@@ -37,6 +37,7 @@ from tree_options.trex.contracts.acceptance import AssetKind, FalseLiteral
 from tree_options.trex.contracts.canonical import PathSafeId, Sha256Hex, Symbol, UTCInstant
 from tree_options.trex.contracts.commands import (
     MANUAL_CANDIDATE_PREFIX,
+    MANUAL_MAX_HOLD_SESSIONS,
     MANUAL_STRATEGY_VERSION,
     ComposeEntryArgs,
     ManualEquityTicket,
@@ -51,6 +52,7 @@ __all__ = [
     "LIMIT_POLICIES",
     "LIVE_PROPOSAL_STATUSES",
     "MANUAL_CANDIDATE_PREFIX",
+    "MANUAL_MAX_HOLD_SESSIONS",
     "MANUAL_PROGRAM_ID",
     "MANUAL_STRATEGY_VERSION",
     "BlockedIdea",
@@ -71,8 +73,8 @@ __all__ = [
 
 IDEA_LIST_SCHEMA: Final = "trex-idea-list/1"
 IDEAS_PATH: Final = "/api/ideas"
-#: The program id the ticket form suggests for a manual ticket (attribution
-#: only: the desk binds whatever program the command names).
+#: The program of every manual ticket: the desk binds exactly this one and
+#: refuses a manual ticket naming any other (``candidate_program_mismatch``).
 MANUAL_PROGRAM_ID: Final = "owner-manual"
 #: ``limit_policy`` choices of a manual ticket (``limit_cents`` = an
 #: explicit ``{"limit_cents": n}``).
@@ -243,7 +245,15 @@ class ManualEquityTerms(StrictModel):
     hints the web can see now (advisory).
 
     ``window_status``: ``no_session`` when today is not a session (then the
-    window fields are null), else ``open`` / ``closed`` at ``now``."""
+    window fields are null), else ``open`` / ``closed`` at ``now``.
+
+    Review amendment (additive, 2026-10-21): ``max_hold_sessions`` is the
+    hold cap (``MANUAL_MAX_HOLD_SESSIONS``) and ``max_exit_deadline_session``
+    the latest exit deadline the desk accepts for a ticket entered today
+    (that many sessions after ``window_session`` on the repo calendar, or its
+    last session when it ends sooner): null when today is not a session.
+    The view always states the cap; a document served before the amendment
+    has neither field (both parse as None)."""
 
     candidate_prefix: Literal["manual:"]
     program_id: IdStr
@@ -256,6 +266,8 @@ class ManualEquityTerms(StrictModel):
     window_opens_at: UTCInstant | None
     window_closes_at: UTCInstant | None
     hints: tuple[UnavailableReason, ...]
+    max_hold_sessions: PositiveInt | None = None
+    max_exit_deadline_session: date | None = None
 
     @model_validator(mode="after")
     def _window(self) -> ManualEquityTerms:
@@ -267,6 +279,12 @@ class ManualEquityTerms(StrictModel):
         if self.window_opens_at is not None and self.window_closes_at is not None:
             if self.window_opens_at >= self.window_closes_at:
                 raise ValueError("the window opens before it closes")
+        latest = self.max_exit_deadline_session
+        if latest is not None:
+            if self.max_hold_sessions is None:
+                raise ValueError("the latest exit deadline comes with its hold cap")
+            if self.window_session is None or latest < self.window_session:
+                raise ValueError("the latest exit deadline is a session on or after today's")
         return self
 
 

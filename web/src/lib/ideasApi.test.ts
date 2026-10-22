@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { COMMAND_MAX_TTL_S, KEYS, type EntryProposalDoc } from './contracts'
+import {
+  COMMAND_MAX_TTL_S,
+  KEYS,
+  MANUAL_MAX_HOLD_SESSIONS,
+  type CommandBody,
+  type EntryProposalDoc,
+  type IdeaList,
+} from './contracts'
 import {
   EMPTY_TICKET,
   IDEAS_URL,
@@ -189,6 +196,17 @@ describe('validateTicket', () => {
     expect(validateTicket(fixtureForm({ deadline: etDate(listNow()) }), ctx({ sessions: null })).ok).toBe(true)
   })
 
+  it('a deadline past the latest one the desk allows (the hold cap) is refused here too', () => {
+    const max = { sessions: null, maxDeadline: '2026-11-19', maxHoldSessions: MANUAL_MAX_HOLD_SESSIONS }
+    let check = validateTicket(fixtureForm({ deadline: '2026-11-20' }), ctx(max))
+    expect(check.ok).toBe(false)
+    if (!check.ok) expect(check.errors.deadline).toMatch(/at most 20 market sessions .*2026-11-19/)
+    check = validateTicket(fixtureForm({ deadline: '2026-11-19' }), ctx(max))
+    expect(check.ok).toBe(true)
+    // no stated maximum (an older desk): the desk alone judges the cap
+    expect(validateTicket(fixtureForm({ deadline: '2026-12-31' }), ctx({ sessions: null })).ok).toBe(true)
+  })
+
   it('reads today in New York, not on this device', () => {
     expect(etDate('2026-10-23T03:30:00Z')).toBe('2026-10-22')
     expect(etDate('2026-10-22T14:02:00Z')).toBe('2026-10-22')
@@ -366,6 +384,99 @@ describe('the equity entry window, live at the desk clock', () => {
     const none = { ...terms()!, window_status: 'no_session' as const, window_opens_at: null, window_closes_at: null }
     expect(entryWindowState(none, Date.parse(listNow()))).toBe('no_session')
     expect(entryWindowState(null, Date.parse(listNow()))).toBe('unknown')
+  })
+})
+
+// The shared Wave 5 fixtures (tests/contracts/test_wave5_contracts.py
+// round-trips the same files through the Python models; idea_list.json is the
+// document tests/unit/test_trex_web_entry_ideas.py serves), read through this
+// page's own parser: nothing the server serves is dropped or misread.
+const wave5 = import.meta.glob('../../../tests/contracts/fixtures/wave5/*.json', { eager: true, import: 'default' })
+function wave5Fixture<T>(name: string): T {
+  const hit = Object.entries(wave5).find(([path]) => path.endsWith(`/${name}`))
+  if (!hit) throw new Error(`fixture ${name} not found`)
+  return JSON.parse(JSON.stringify(hit[1])) as T
+}
+
+describe('the shared wave5 fixtures through parseIdeas', () => {
+  it('idea_list.json: every idea, blocked row and problem, exactly as served', () => {
+    const doc = wave5Fixture<IdeaList>('idea_list.json')
+    const drafts = doc.drafts
+    if (drafts.status !== 'ok') throw new Error('the served fixture lists its drafts')
+    const items = drafts.items
+    const view = parseIdeas(doc)
+    expect(view.status).toBe('ok')
+    expect(view.unavailable_reason).toBeNull()
+    expect(view.unreadable).toBe(0)
+    expect(view.truncated).toBe(drafts.truncated)
+    expect(view.now).toBe(doc.now)
+    expect(view.ideas).toHaveLength(items.length)
+    view.ideas.forEach((row, i) => {
+      const item = items[i]
+      expect(row).toEqual({
+        candidate_id: item.candidate_id,
+        program_id: item.program_id,
+        asset_kind: item.asset_kind,
+        summary: item.summary,
+        status: item.status,
+        proposal_status: item.proposal_status,
+        proposal_id: item.proposal_id,
+        max_loss_cents: item.max_loss_cents,
+        notional_cents: item.notional_cents,
+        valid_until: item.valid_until,
+        seconds_to_expiry: item.seconds_to_expiry,
+        hints: item.hints,
+        // a null sleeve_ref is the Python default: sending it absent is the same command
+        compose_args: Object.fromEntries(Object.entries(item.compose_args).filter(([, v]) => v !== null)),
+      })
+    })
+    expect(view.blocked).toEqual(drafts.blocked.map(({ candidate_id, kind, reason }) => ({ candidate_id, kind, reason })))
+    expect(view.problems).toEqual(drafts.problems)
+    expect(view.blocked.length + view.problems.length).toBeGreaterThan(0) // the fixture carries both
+  })
+
+  it('idea_list.json: the manual ticket terms, the hold cap and the latest deadline included', () => {
+    const doc = wave5Fixture<IdeaList>('idea_list.json')
+    const terms = doc.manual_equity
+    expect(parseIdeas(doc).manual_equity).toEqual({
+      program_id: terms.program_id,
+      symbols: terms.symbols,
+      limit_policies: terms.limit_policies.map((p) => (p === 'limit_cents' ? 'limit' : p)),
+      max_entries_per_session: terms.max_entries_per_session,
+      window_status: terms.window_status,
+      window_session: terms.window_session,
+      window_opens_at: terms.window_opens_at,
+      window_closes_at: terms.window_closes_at,
+      hints: terms.hints,
+      max_hold_sessions: terms.max_hold_sessions,
+      max_exit_deadline_session: terms.max_exit_deadline_session,
+      sessions: null,
+      quote: null,
+    })
+    expect(terms.program_id).toBe(MANUAL_PROGRAM_ID)
+    expect(terms.max_hold_sessions).toBe(MANUAL_MAX_HOLD_SESSIONS)
+  })
+
+  it('idea_list_unavailable.json: the reason, no idea, and the terms of a day without a session', () => {
+    const doc = wave5Fixture<IdeaList>('idea_list_unavailable.json')
+    const view = parseIdeas(doc)
+    expect(view.status).toBe('unavailable')
+    expect(view.unavailable_reason).toBe(doc.drafts.unavailable_reason)
+    expect([view.ideas, view.blocked, view.problems, view.unreadable]).toEqual([[], [], [], 0])
+    expect(view.manual_equity).toMatchObject({
+      window_status: 'no_session',
+      window_session: null,
+      max_hold_sessions: MANUAL_MAX_HOLD_SESSIONS,
+      max_exit_deadline_session: null,
+    })
+  })
+
+  it('command_compose_entry_manual.json: the ticket composes into exactly those args', () => {
+    const command = wave5Fixture<CommandBody<'compose_entry'>>('command_compose_entry_manual.json')
+    const { manual_equity_ticket: ticket, candidate_id } = command.args
+    if (!ticket) throw new Error('the fixture carries a ticket')
+    const args = composeArgsForTicket(ticket, candidate_id.replace(/^manual:/, ''))
+    expect({ sleeve_ref: null, ...args }).toEqual(command.args)
   })
 })
 

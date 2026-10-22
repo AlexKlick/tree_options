@@ -27,19 +27,26 @@ PAPER ONLY: the effects bind IBKR paper accounts, the mandate is
 
 **A manual equity ticket** (Wave 5: ``args.manual_equity_ticket``, candidate
 ``manual:<uuid>``) takes the place of step 2; no draft file stands behind it.
-Before any broker call: the symbol is on the allowlist
+Before any broker call: the program is ``owner-manual``
+(``contracts.ideas.MANUAL_PROGRAM_ID``; any other refuses
+``candidate_program_mismatch``), the symbol is on the allowlist
 (``equity_symbol_not_qualified``), ``now`` is inside the equity entry window
 (``entry_window_closed``), and the exit deadline is a session on or after
-today (``manual_ticket_invalid``). Then the session guards
-(``paper_blockers``), the stock qualified, its live quote (none:
-``quote_unavailable``; not real time: ``equity_quote_not_realtime``), the
-limit by the ticket's policy (``ask``; ``mid`` rounded up to the cent; an
-explicit limit), the stop below and the target above that limit
+today and at most ``MANUAL_MAX_HOLD_SESSIONS`` (20) sessions after it on the
+repo calendar (``manual_ticket_invalid``; past the cap its detail is
+``deadline_beyond_max_hold``). Then the session guards (``paper_blockers``),
+the stock qualified (a ValueError or RuntimeError while the session is up:
+``order_unbuildable:<class>``, as the broker preflight; once disconnected it
+propagates), its live quote (none: ``quote_unavailable``; not real time:
+``equity_quote_not_realtime``), the limit by the ticket's policy (``ask``;
+``mid`` rounded up to the cent; an explicit limit), the stop below that limit
+and below the live bid, the target above that limit and above the live ask
 (``manual_ticket_invalid``), and ``equity_draft`` with intent
-``manual-<uuid>``, strategy ``owner-manual/1``, valid until the entry window
-closes. Steps 3 to 5 follow unchanged: the same screening as every equity
-entry (allowlist, cash, window, session cap, risk caps). Composing never
-grants a mandate and never sends; the approval stays the owner's own act.
+``manual-<uuid>``, program ``owner-manual``, strategy ``owner-manual/1``,
+valid until the entry window closes. Steps 3 to 5 follow unchanged: the same
+screening as every equity entry (allowlist, cash, window, session cap, risk
+caps). Composing never grants a mandate and never sends; the approval stays
+the owner's own act.
 
 **Approve** (exactly one send per proposal):
 
@@ -93,9 +100,10 @@ from tree_options.execution import OrderIntent
 from tree_options.time.sessions import shift_instant
 from tree_options.trex import supervised as supervised_core
 from tree_options.trex.admission import entry_send_blockers, owner_fact_blockers
-from tree_options.trex.clock import ET, session_calendar
+from tree_options.trex.clock import ET, last_session_within, session_calendar
 from tree_options.trex.contracts.canonical import model_document
 from tree_options.trex.contracts.commands import (
+    MANUAL_MAX_HOLD_SESSIONS,
     MANUAL_STRATEGY_VERSION,
     AnyCommand,
     ApproveEntryCommand,
@@ -116,6 +124,7 @@ from tree_options.trex.contracts.effects import (
     equity_max_loss_cents,
     equity_notional_cents,
 )
+from tree_options.trex.contracts.ideas import MANUAL_PROGRAM_ID
 from tree_options.trex.contracts.layout import Wave2RunDir
 from tree_options.trex.contracts.mandates import SupervisedMandateV2, approval_blockers
 from tree_options.trex.contracts.proposals import (
@@ -163,6 +172,7 @@ if TYPE_CHECKING:
     from tree_options.trex.supervised_desk import SupervisedDesk
 
 __all__ = [
+    "DEADLINE_BEYOND_MAX_HOLD",
     "DEFAULT_SEND_TTL_S",
     "MANUAL_TICKET_INVALID",
     "REJECTION_SCHEMA",
@@ -187,6 +197,9 @@ _OPTION_MULTIPLIER = 100
 _CENTS = Decimal(100)
 #: Wave 5: a manual ticket the live price cannot turn into a valid effect
 MANUAL_TICKET_INVALID = "manual_ticket_invalid"
+#: the ``detail`` of a ``manual_ticket_invalid`` whose exit deadline is more
+#: than ``MANUAL_MAX_HOLD_SESSIONS`` sessions after the entry session
+DEADLINE_BEYOND_MAX_HOLD = "deadline_beyond_max_hold"
 
 Effect = SupervisedEffect | SupervisedEquityEffect
 
@@ -453,6 +466,13 @@ class OwnerEntries:
             return refused(stopped[0], blockers=list(stopped))
         return None
 
+    def _session_up(self) -> bool:
+        """The broker session reads connected (unreadable: it does not)."""
+        try:
+            return bool(self.desk.ib.connected)
+        except Exception:  # an unreadable session state is not a live session
+            return False
+
     def _intent_used(self, effect: Effect) -> str | None:
         """Why the effect's intent can never be sent again (None: fresh)."""
         iid = effect.intent_id
@@ -664,13 +684,20 @@ class OwnerEntries:
         self, command: ComposeEntryCommand, account: str, now: datetime
     ) -> tuple[Effect, dict[str, Any], datetime] | Outcome:
         """A manual equity ticket as an equity draft (the module docstring's
-        manual steps): the pure checks first, so a symbol off the allowlist
-        or a closed window never reaches the broker."""
+        manual steps): the pure checks first, so a foreign program, a symbol
+        off the allowlist, a closed window or a bad deadline never reaches
+        the broker."""
         args = command.args
         ticket = args.manual_equity_ticket
         assert ticket is not None  # compose dispatches here only with one
         desk = self.desk
         base: dict[str, Any] = {"candidate": args.candidate_id, "symbol": ticket.symbol}
+        if args.program_id != MANUAL_PROGRAM_ID:
+            return refused(
+                Blocker.CANDIDATE_PROGRAM_MISMATCH,
+                f"a manual ticket's program is {MANUAL_PROGRAM_ID}",
+                **base,
+            )
         if ticket.symbol not in desk.broker.equity_allowlist:
             return refused(Blocker.EQUITY_SYMBOL_NOT_QUALIFIED, **base)
         closed = equity_entry_window_blockers(now)
@@ -684,13 +711,29 @@ class OwnerEntries:
                 "exit_deadline_session is not a session on or after today",
                 **base,
             )
+        latest = last_session_within(session, MANUAL_MAX_HOLD_SESSIONS)
+        if deadline > latest:
+            return refused(
+                MANUAL_TICKET_INVALID,
+                DEADLINE_BEYOND_MAX_HOLD,
+                max_hold_sessions=MANUAL_MAX_HOLD_SESSIONS,
+                max_exit_deadline_session=latest.isoformat(),
+                **base,
+            )
         guards = desk.broker.paper_blockers(account)
         if guards:
             return refused(guards[0], blockers=list(guards), **base)
         try:
             con_id = desk.ib.prepare_stock(ticket.symbol)
-        except StockNotQualified:
-            return refused(Blocker.EQUITY_SYMBOL_NOT_QUALIFIED, **base)
+        except (ValueError, RuntimeError) as error:
+            # as IbkrSupervisedBroker.preflight: the error CLASS only (its
+            # text can carry provider or account details); once the session
+            # reads disconnected it is a lost gateway and propagates (exit 6)
+            if not self._session_up():
+                raise
+            if isinstance(error, StockNotQualified):
+                return refused(Blocker.EQUITY_SYMBOL_NOT_QUALIFIED, **base)
+            return refused(f"order_unbuildable:{type(error).__name__}", **base)
         held = desk.ib.equity_quote(ticket.symbol)
         if held is None:
             return refused(Blocker.QUOTE_UNAVAILABLE, **base)
@@ -704,6 +747,12 @@ class OwnerEntries:
             return refused(MANUAL_TICKET_INVALID, "the stop is not below the limit", **priced)
         if target is not None and target <= limit:
             return refused(MANUAL_TICKET_INVALID, "the target is not above the limit", **priced)
+        # a stop at or above the bid would trigger on the first quote, and a
+        # target at or below the ask is already reached: neither is an exit
+        if ticket.stop_price_cents >= held.bid_cents:
+            return refused(MANUAL_TICKET_INVALID, "the stop is not below the bid", **priced)
+        if target is not None and target <= held.ask_cents:
+            return refused(MANUAL_TICKET_INVALID, "the target is not above the ask", **priced)
         intent_id = manual_intent_id(args.candidate_id)
         effect = SupervisedEquityEffect(
             intent_id=intent_id,
@@ -723,7 +772,7 @@ class OwnerEntries:
         _, window_end = equity_entry_window(session)
         draft = equity_draft(
             effect,
-            program_id=args.program_id,
+            program_id=MANUAL_PROGRAM_ID,
             strategy_version=MANUAL_STRATEGY_VERSION,
             valid_until=window_end,
             candidate_id=args.candidate_id,

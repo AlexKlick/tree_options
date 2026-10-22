@@ -10,6 +10,8 @@
 // code without words still shows: `reasonText` falls back to the code's
 // own words and the pages always print the code beside them.
 
+import { MANUAL_MAX_HOLD_SESSIONS } from './contracts'
+
 /** Integer cents as dollars (`26860` -> `$268.60`); money is never a float. */
 export function formatCents(cents: number): string {
   if (!Number.isInteger(cents)) throw new RangeError('money is integer cents')
@@ -145,9 +147,11 @@ export const REASON_TEXT: Readonly<Record<string, string>> = {
   candidate_unknown: 'The desk does not know this idea (it may have been withdrawn)',
   candidate_blocked: 'The desk blocked this idea',
   candidate_invalid: 'The idea could not be turned into an order',
-  candidate_program_mismatch: 'The idea belongs to another program',
+  candidate_program_mismatch: 'The idea or ticket names another program than the desk allows',
   candidate_kind_mismatch: 'The idea is a different kind of trade (option or stock)',
   candidate_expired: "The idea's time window has passed",
+  manual_ticket_invalid: 'The ticket does not fit the live quote or the calendar (its stop, target, limit or exit deadline)',
+  deadline_beyond_max_hold: `The exit deadline is more than ${MANUAL_MAX_HOLD_SESSIONS} market sessions after today`,
   desk_book_unreadable: "The desk's own book could not be read",
   credit_open_not_supported_v1: 'Opening a credit structure is not supported yet',
   equity_not_whole_share_long: 'Stock entries must buy whole shares',
@@ -176,6 +180,8 @@ export const REASON_TEXT: Readonly<Record<string, string>> = {
   gateway_watch_stale: "The IB Gateway watch's last report is too old",
   kill_file_unreadable: 'The kill-switch files could not be read',
   proposals_dir_unreadable: 'The proposals folder could not be read',
+  drafts_dir_unreadable: "The desk's ideas folder could not be read",
+  draft_unreadable: 'An idea file could not be read',
   acceptance_missing: 'No acceptance document has been computed yet',
   acceptance_invalid: 'The acceptance document is invalid',
   acceptance_calendar_mismatch: 'The acceptance document was judged against another calendar',
@@ -216,4 +222,12 @@ export const REASON_TEXT: Readonly<Record<string, string>> = {
 /** The owner-facing words for a reason code (the code's own words if unknown). */
 export function reasonText(code: string): string {
   return REASON_TEXT[code] ?? code.replace(/[_:]+/g, ' ').trim()
+}
+
+/** The words for a refusal's `detail` when the detail is itself a known
+ * code (a manual ticket past its hold cap: `deadline_beyond_max_hold`);
+ * null for free text, which the pages show as sent. */
+export function detailWords(detail: string): string | null {
+  const known = /^[a-z][a-z0-9_]*$/.test(detail) && Object.prototype.hasOwnProperty.call(REASON_TEXT, detail)
+  return known ? REASON_TEXT[detail] : null
 }

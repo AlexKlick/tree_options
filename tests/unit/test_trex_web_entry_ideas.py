@@ -291,8 +291,12 @@ def test_the_manual_terms_name_the_allowlist_and_todays_window(tmp_path):
         "2026-10-22T13:35:00Z",
         "2026-10-22T19:30:00Z",
     )
+    # the hold cap: 20 sessions after Thursday 2026-10-22, hand counted on the
+    # NYSE calendar (Veterans Day trades), is Thursday 2026-11-19
+    assert (terms["max_hold_sessions"], terms["max_exit_deadline_session"]) == (20, "2026-11-19")
     saturday = ideas_payload(run, sup, datetime(2026, 10, 24, 15, 0, tzinfo=UTC))["manual_equity"]
     assert (saturday["window_status"], saturday["window_session"]) == ("no_session", None)
+    assert (saturday["max_hold_sessions"], saturday["max_exit_deadline_session"]) == (20, None)
     assert "outside_regular_session" in saturday["hints"]
 
 

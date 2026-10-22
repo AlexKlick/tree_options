@@ -251,6 +251,31 @@ def test_the_manual_window_is_set_exactly_on_a_session() -> None:
         ideas_contract.ManualEquityTerms.model_validate({**off, "window_status": "open"})
 
 
+def test_the_manual_terms_state_the_hold_cap_additively() -> None:
+    """Wave 5 review amendment: ``max_hold_sessions`` and
+    ``max_exit_deadline_session`` are new optional fields, so a document
+    served before the amendment (without them) still parses. The served
+    fixture's date is hand counted: the 20th NYSE session after Thursday
+    2026-10-22 is Thursday 2026-11-19."""
+    terms = load("idea_list.json")["manual_equity"]
+    assert (terms["max_hold_sessions"], terms["max_exit_deadline_session"]) == (20, "2026-11-19")
+    added = ("max_hold_sessions", "max_exit_deadline_session")
+    older = {k: v for k, v in terms.items() if k not in added}
+    parsed = ideas_contract.ManualEquityTerms.model_validate(older)
+    assert (parsed.max_hold_sessions, parsed.max_exit_deadline_session) == (None, None)
+    off = load("idea_list_unavailable.json")["manual_equity"]
+    assert (off["max_hold_sessions"], off["max_exit_deadline_session"]) == (20, None)
+    for bad in (
+        {**off, "max_exit_deadline_session": "2026-11-19"},  # no session today
+        {**terms, "max_exit_deadline_session": "2026-10-21"},  # before today's session
+        {**terms, "max_hold_sessions": 0},
+        {**terms, "max_hold_sessions": "20"},
+        {**terms, "max_hold_sessions": None},  # a latest deadline without its cap
+    ):
+        with pytest.raises(ValidationError):
+            ideas_contract.ManualEquityTerms.model_validate(bad)
+
+
 def test_execution_is_literally_disabled() -> None:
     for value in (True, 0, "false"):
         with pytest.raises(ValidationError):
@@ -266,6 +291,7 @@ def test_constants() -> None:
     assert cmd.MANUAL_STRATEGY_VERSION == "owner-manual/1"
     assert ideas_contract.MANUAL_PROGRAM_ID == "owner-manual"
     assert ideas_contract.LIMIT_POLICIES == ("ask", "mid", "limit_cents")
+    assert cmd.MANUAL_MAX_HOLD_SESSIONS == ideas_contract.MANUAL_MAX_HOLD_SESSIONS == 20
 
 
 # ---------------------------------------------------------------- vocabulary
