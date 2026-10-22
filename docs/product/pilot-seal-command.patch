@@ -1,0 +1,181 @@
+diff --git a/src/tree_options/trex/contracts/commands.py b/src/tree_options/trex/contracts/commands.py
+index 0e6c919..049afea 100644
+--- a/src/tree_options/trex/contracts/commands.py
++++ b/src/tree_options/trex/contracts/commands.py
+@@ -62,6 +62,8 @@ __all__ = [
+     "RejectEntryCommand",
+     "ResumeAllCommand",
+     "ResumeEntriesCommand",
++    "SealRegistrationArgs",
++    "SealRegistrationCommand",
+     "TrexCommand",
+     "actor_binds_request",
+     "command_body_sha256",
+@@ -81,6 +83,8 @@ CommandKind = Literal[
+     "flatten",
+     "resume_all",
+     "backup_state",
++    # Wave 4 amendment (lane I, C3.5): the owner seals a pilot registration
++    "seal_registration",
+ ]
+ 
+ 
+@@ -178,6 +182,15 @@ class BackupStateArgs(StrictModel):
+     label: PathSafeId | None = None
+ 
+ 
++class SealRegistrationArgs(StrictModel):
++    """Args of ``seal_registration`` (WAVE3-CONTRACTS.md C3.5): the pilot
++    program to seal and the registration body hash the owner reviewed.
++    ``contracts.wave3`` re-exports this class unchanged."""
++
++    program_id: PathSafeId
++    registration_sha256: Sha256Hex
++
++
+ # -- commands --------------------------------------------------------------
+ 
+ 
+@@ -243,6 +256,11 @@ class BackupStateCommand(_CommandBase):
+     args: BackupStateArgs
+ 
+ 
++class SealRegistrationCommand(_CommandBase):
++    kind: Literal["seal_registration"]
++    args: SealRegistrationArgs
++
++
+ AnyCommand = (
+     ComposeEntryCommand
+     | ApproveEntryCommand
+@@ -253,6 +271,7 @@ AnyCommand = (
+     | FlattenCommand
+     | ResumeAllCommand
+     | BackupStateCommand
++    | SealRegistrationCommand
+ )
+ #: Discriminated on ``kind``; an unknown kind refuses.
+ TrexCommand = Annotated[AnyCommand, Field(discriminator="kind")]
+diff --git a/src/tree_options/trex/contracts/wave3.py b/src/tree_options/trex/contracts/wave3.py
+index 06c310d..3b5c370 100644
+--- a/src/tree_options/trex/contracts/wave3.py
++++ b/src/tree_options/trex/contracts/wave3.py
+@@ -76,6 +76,7 @@ from tree_options.trex.contracts.commands import (
+     CommandAuthorityRefused,
+     CommandKind,
+     RawCommandRequest,
++    SealRegistrationArgs,
+ )
+ from tree_options.trex.contracts.vocabulary import Blocker
+ 
+@@ -1352,12 +1353,9 @@ def seal_registration(
+     return PilotRegistration.model_validate(document)
+ 
+ 
+-class SealRegistrationArgs(StrictModel):
+-    """Args of the ``seal_registration`` command kind the pilot lane adds to
+-    ``trex-command/1`` (additive member; WAVE3-CONTRACTS.md C3.5)."""
+-
+-    program_id: PathSafeId
+-    registration_sha256: Sha256Hex
++# ``SealRegistrationArgs`` (the ``seal_registration`` command's args) lives in
++# ``contracts.commands`` beside the kind since the Wave 4 amendment and is
++# re-exported here unchanged (imported above).
+ 
+ 
+ class BudgetUsage(StrictModel):
+diff --git a/src/tree_options/trex/desk_commands.py b/src/tree_options/trex/desk_commands.py
+index 10cd5ef..22cb388 100644
+--- a/src/tree_options/trex/desk_commands.py
++++ b/src/tree_options/trex/desk_commands.py
+@@ -32,7 +32,10 @@ then the entry kinds in ``issued_at`` order. Per command:
+    ``halt`` / ``flatten`` / ``resume_all`` as the existing kill files
+    (``resume_all`` also lifts the pause; approvals are not revived);
+    ``backup_state`` drops ``BACKUP-REQUEST`` (taken by the owner's next beat
+-   outside the session, ``trex.desk_backup``).
++   outside the session, ``trex.desk_backup``); ``seal_registration`` seals a
++   pilot registration for the verified actor
++   (``research.pilot.seal.apply_seal_command``: the actor must be in
++   ``TREX_OWNER_EMAILS``; written once under ``TREX_PILOT_DIR``).
+ 4. **Answer**: ``applied`` / ``refused`` / ``failed`` (a reason for the
+    latter two) with the facts, written atomically under the web store's lock
+    (``commands/.lock``), plus a ``command_applied`` / ``command_refused``
+@@ -120,6 +123,7 @@ from tree_options.trex.contracts.commands import (
+     RejectEntryCommand,
+     ResumeAllCommand,
+     ResumeEntriesCommand,
++    SealRegistrationCommand,
+     command_body_sha256,
+     parse_command,
+ )
+@@ -174,10 +178,18 @@ _CLAIMED = re.compile(rf"^(?P<key>{_KEY}){re.escape(CLAIMED_SUFFIX)}$")
+ _DUPLICATE = re.compile(rf"^(?P<key>{_KEY})\.duplicate-\d+\.json$")
+ _INTAKE_STATUSES = frozenset({"accepted", "applied"})
+ #: the kinds applied by file operations alone (kill files, the pause record,
+-#: the backup request): never a broker call, so applicable with the gateway
+-#: down (``process(kinds=FILE_KINDS)``)
++#: the backup request, a pilot seal): never a broker call, so applicable with
++#: the gateway down (``process(kinds=FILE_KINDS)``)
+ FILE_KINDS = frozenset(
+-    {"pause_entries", "resume_entries", "halt", "flatten", "resume_all", "backup_state"}
++    {
++        "pause_entries",
++        "resume_entries",
++        "halt",
++        "flatten",
++        "resume_all",
++        "backup_state",
++        "seal_registration",
++    }
+ )
+ #: the safety direction (W2b review P1): once the web accepted one inside its
+ #: window it never expires in the queue, and a claim a dead owner never
+@@ -762,6 +774,13 @@ class CommandQueue:
+                 changed=placed,
+                 label=command.args.label,
+             )
++        if isinstance(command, SealRegistrationCommand):
++            from tree_options.research.pilot.seal import apply_seal_command
++
++            sealed = apply_seal_command(command.args, command.issued_by, now)
++            if sealed.status == "applied":
++                return applied(sealed.detail, **sealed.facts)
++            return refused(sealed.reason or "command_invalid", sealed.detail, **sealed.facts)
+         raise ValueError(f"unknown command kind {command.kind}")  # pragma: no cover
+ 
+     # -- answers ------------------------------------------------------------------------
+diff --git a/web/src/lib/contracts.ts b/web/src/lib/contracts.ts
+index d4d8df3..a0a89fc 100644
+--- a/web/src/lib/contracts.ts
++++ b/web/src/lib/contracts.ts
+@@ -522,6 +522,8 @@ export interface CommandArgs {
+   flatten: { reason?: string }
+   resume_all: { reason?: string }
+   backup_state: { label?: string | null }
++  /** Wave 4 amendment (C3.5): seal a pilot registration; the hash the owner reviewed. */
++  seal_registration: { program_id: string; registration_sha256: Sha256Hex }
+ }
+ export type CommandKind = keyof CommandArgs
+ /** The POST /api/commands body (`trex-command/1` without `issued_by`, which
+diff --git a/web/src/lib/pilotApi.amendment.test.ts b/web/src/lib/pilotApi.amendment.test.ts
+new file mode 100644
+index 0000000..5625878
+--- /dev/null
++++ b/web/src/lib/pilotApi.amendment.test.ts
+@@ -0,0 +1,16 @@
++import { describe, expect, it } from 'vitest'
++import { buildCommandBody } from './contracts'
++import { sealCommandBody } from './pilotApi'
++
++// Lands with the seal_registration amendment (docs/product/pilot-seal-command.patch):
++// the page's own builder and the contract's builder produce the same body.
++describe('seal_registration in trex-command/1', () => {
++  it('builds the same body through buildCommandBody', () => {
++    const key = '5f0c2a8e-1b3d-4c6e-9a7b-2d4e6f8a0b1c'
++    const at = new Date('2026-10-22T14:00:00.250Z')
++    const args = { program_id: 'eq-baseline-spy-weekly', registration_sha256: 'a'.repeat(64) }
++    expect(buildCommandBody('seal_registration', args, key, at)).toEqual(
++      sealCommandBody(args.program_id, args.registration_sha256, key, at),
++    )
++  })
++})
