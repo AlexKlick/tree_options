@@ -135,7 +135,7 @@ Discriminated on `kind`; every kind has its own validated `args`.
 
 | `kind` | `args` |
 | --- | --- |
-| `compose_entry` | `program_id`, `candidate_id`, `asset_kind` (option/equity), `sleeve_ref?` |
+| `compose_entry` | `program_id`, `candidate_id`, `asset_kind` (option/equity), `sleeve_ref?`; Wave 5 amendment: `manual_equity_ticket?` (see the amendment log) |
 | `approve_entry` | `proposal_id`, `proposal_sha256`, `effect_sha256`, `owner_epoch`, `profile_digest` (all required) |
 | `reject_entry` | `proposal_id`, `reason` |
 | `pause_entries`, `resume_entries`, `halt`, `flatten`, `resume_all` | `reason` (<= 500 chars, may be empty) |
@@ -655,3 +655,48 @@ both), `DeskEvent` gains `EXIT_QUOTE_BLIND`, equal to the reserved
 the W3/4 set is pinned disjoint from the earlier sets, the member equals the
 runtime's event name and the reserved Blocker, and it is in the runtime's
 notify set. The Wave 4 alert sweep already reads it from `events.jsonl`.
+
+### 2026-10-21: C2.2 `compose_entry` manual equity ticket, C2.7 (Wave 5)
+
+Additive. The owner initiates every entry ("manual plus qualified ideas",
+the 2026-10-14 plan); this settles open question 17 (the candidate source):
+a draft file stem under `proposal-drafts/` (listed by `GET /api/ideas`,
+`trex-idea-list/1`, WAVE3-CONTRACTS.md amendment log) or a manual ticket.
+
+- `ComposeEntryArgs` gains the optional `manual_equity_ticket`
+  (`contracts.commands.ManualEquityTicket`): `symbol`, `quantity` (whole
+  shares, >= 1), `stop_price_cents`, `target_price_cents?` (above the stop),
+  `exit_deadline_session` (ISO date), `limit_policy` = `"ask"` | `"mid"` |
+  `{"limit_cents": n}` (an explicit limit sits between the stop and the
+  target). Strict integers, `extra="forbid"`. Set exactly when
+  `candidate_id` is `manual:<lower-case uuid>` (`MANUAL_CANDIDATE_PREFIX`),
+  and only for `asset_kind` equity; a `manual:` candidate without a ticket
+  refuses, as does a ticket on any other candidate. An absent ticket is
+  absent from the document, so every earlier `compose_entry` keeps its
+  bytes and its `command_body_sha256` (pinned by a stdlib oracle).
+- The desk (`trex.desk_entries`) composes a ticket in place of reading a
+  draft: the allowlist (`equity_symbol_not_qualified`), the equity entry
+  window (`entry_window_closed`) and the exit deadline (a session on or
+  after today) before any broker call; then the session guards, the stock
+  qualified, a live quote (`quote_unavailable`, `equity_quote_not_realtime`),
+  the limit by policy (`mid` rounded up to the cent), the stop below and the
+  target above it; intent `manual-<uuid>` (`manual_intent_id`), strategy
+  `owner-manual/1` (`MANUAL_STRATEGY_VERSION`), the command's program,
+  `equity_draft` valid until the entry window closes. Then the unchanged
+  compose path: fresh books, owner facts, preflight and the equity screening
+  (allowlist, cash, window, session cap, profile caps), and a normal
+  `trex-entry-proposal/1`. Composing never grants a mandate or sends;
+  approval stays `approve_entry` on the proposal.
+- C2.7: `Blocker` gains `manual_ticket_invalid` (the live price cannot bound
+  the ticket: stop not below / target not above the limit, or the exit
+  deadline is not a session on or after today), `drafts_dir_unreadable` and
+  `draft_unreadable` (`GET /api/ideas`).
+- Fixtures: `tests/contracts/fixtures/wave5/command_compose_entry_manual.json`.
+  Tests: `tests/contracts/test_wave5_contracts.py` (round trips, the
+  unchanged earlier body hash, every misbound or malformed ticket, the new
+  members), `tests/contracts/test_wave2_contracts.py` (the W5 set pinned
+  disjoint), `tests/unit/test_desk_manual_ticket.py` (the desk end to end:
+  composes with the bound exit policy, never grants or sends, refusals,
+  idempotency per key). TypeScript: `CommandArgs.compose_entry` gains
+  `manual_equity_ticket?`, with `ManualEquityTicket` and
+  `manualCandidateId` in `web/src/lib/contracts.ts`.

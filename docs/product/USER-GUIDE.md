@@ -6,8 +6,9 @@ page:
 - **Paper only.** TREX trades an IBKR paper account (account ids that start
   with `D`). There is no live path, and paper acceptance never unlocks live
   trading.
-- **You approve every entry.** The desk proposes; nothing opens until you
-  approve it. The app never approves anything for you.
+- **You start and approve every entry.** You pick an idea or write a ticket,
+  the desk turns it into a proposal, and nothing opens until you approve
+  that proposal. The app never approves anything for you.
 - **Exits are automatic.** Once a position is open, the desk closes it by its
   stop, its target, its deadline or the forced exit before the close. You do
   not approve exits, and pausing entries never stops them.
@@ -49,6 +50,61 @@ things:
 
 Each step reads **Done**, **To do** or **Unknown**. Unknown means Today could
 not show that fact; the step says why. Unknown is never counted as done.
+
+## Start a trade
+
+You start every trade, in one of two ways. Both only ask the desk for a
+proposal: composing never approves anything and never sends an order. The
+proposal then waits for you in Trade review (see the next section).
+
+- **A qualified idea.** On a session day the miner drafts option ideas
+  between 09:50 and 11:30 ET (debit structures only; a credit structure is
+  listed as blocked, never as an idea). TREX lists every draft with its
+  structure, the most it can lose, its age, the time left before it expires,
+  whether a proposal already names it, and advisory warnings. Starting the
+  idea sends one command naming it.
+- **A manual stock ticket.** You give the symbol (SPY only, the one symbol
+  with real-time paper data), the number of whole shares, the stop, an
+  optional target, the last session you are willing to hold it (the exit
+  deadline), and how to set the limit: the live ask, the live mid (rounded
+  up to the cent), or a limit you type. Each ticket has its own id; keep it
+  for retries.
+
+What the desk does with your request, in order:
+
+1. It checks the stops (Pause new entries, Emergency stop, Close all desk
+   positions), that the market is in its regular session, your capital
+   profile and the paper account.
+2. For a manual ticket, before it asks the broker anything: the symbol is
+   allowed, the time is inside the stock entry window (09:35 to 15:30 ET,
+   09:35 to 12:30 ET on an early close), and the exit deadline is a trading
+   session on or after today. Then it reads a real-time quote, sets the
+   limit, and checks that the stop is below the limit and the target above
+   it.
+3. It screens the entry like every other one: fresh books and a clean
+   reconciliation, enough settled cash (no margin), your per-trade, open and
+   daily loss limits, and at most 3 entries per session (options and stocks
+   together).
+4. It writes the proposal and answers "Applied". The proposal can be
+   approved for at most 10 minutes, never past the idea's expiry (for a
+   manual ticket: the end of the stock entry window) or the close.
+
+Once a position is open the desk enforces exactly the exit policy you gave
+it: the stop (confirmed over 3 quote ticks), the target, the exit deadline,
+and the forced exit before the close.
+
+When the desk refuses to start a trade:
+
+| You see | Why | What to do |
+| --- | --- | --- |
+| `equity_symbol_not_qualified` | the symbol is not one TREX trades as a stock | use SPY |
+| `entry_window_closed` | outside the stock entry window | try again between 09:35 and 15:30 ET |
+| `manual_ticket_invalid` | at the live price the stop is not below the limit or the target not above it, or the exit deadline is not a session on or after today | change the stop, target, limit or deadline |
+| `equity_quote_not_realtime` or `quote_unavailable` | no live real-time quote to price the ticket | wait for the quote; check the gateway on Today |
+| `session_entry_limit_reached` | 3 entries were already sent this session | wait for the next session |
+| `candidate_expired` | the idea's time ran out | pick a newer idea |
+| `intent_already_used` | this idea or ticket was already sent once | start a new ticket |
+| Duplicate (first outcome kept) | you sent the same request twice | nothing: one proposal is made |
 
 ## Approve a trade from your phone
 

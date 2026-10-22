@@ -565,3 +565,42 @@ it.
   Activity feed horizon field, an `attested` actor ingress, a Today profile
   block, TS mirrors of the effect bodies, Blocker members for
   `gateway_unavailable`, `command_queue_too_long`, `queued_command_invalid`).
+
+### 2026-10-21: `GET /api/ideas`, `trex-idea-list/1` (Wave 5, new read schema)
+
+Additive: a new read view, nothing above changes. Code:
+`src/tree_options/trex/contracts/ideas.py` (models),
+`src/tree_options/trex_web/entry_ideas_view.py` (`attach`, wired in
+`trex_web/app.py`; the name `ideas_view.py` was taken by the market Ideas tab,
+`GET /api/market/{sym}/ideas`). What the owner may compose; read only,
+broker-free, `Cache-Control: no-store`; the null rule of C3.2.
+
+| Block | Shape | Notes |
+| --- | --- | --- |
+| `now` | instant | countdowns start at the response, as Today's |
+| `drafts` | `ok`/`unavailable`; `items`, `blocked`, `problems`, `truncated` | every `trex-entry-proposal-draft/1` under `<run dir>/proposal-drafts/` (the miner's option drafts, `desk.enter_supervised`; any equity draft, `desk_entries.equity_draft`), newest 200 by file time; a missing directory is known and empty; one that cannot be listed (or a link) is `drafts_dir_unreadable`; an unlistable proposals directory is `proposals_dir_unreadable` |
+| `drafts.items[]` (`Idea`) | `candidate_id` (the file stem), `asset_kind`, `underlying`, `intent_id`, `program_id`, `strategy_version`, `summary`, `option` / `equity` (exactly one; strikes and limits in cents), `max_loss_cents`, `notional_cents` (equity: the contract arithmetic), `written_at` (file time), `age_s`, `entry_session`, `valid_until`, `seconds_to_expiry`, `status`, `proposal_status`, `proposal_id`, `hints`, `compose_args` | `status`: `used` (a consumed proposal, consumed mandate/2 or outbox entry for the intent) > `proposed` (a pending or approved proposal) > `expired` > `available`. `proposal_status` is the `GET /api/proposals` status of the consumed proposal, else the newest live one, else the newest (`none`: no proposal; `proposal_id` set exactly otherwise). `compose_args` is what `compose_entry` repeats verbatim |
+| `drafts.blocked[]` | `candidate_id`, `kind`, `reason`, `written_at` | the miner's `<candidate>.BLOCKED.json`; never composable |
+| `drafts.problems[]` | `file`, `reason` | `draft_unreadable` (link, not a file, over 256 KiB, I/O) or `candidate_invalid` (not JSON, not a draft, an invalid effect); never dropped |
+| `manual_equity` | `candidate_prefix` (`manual:`), `program_id` (suggested `owner-manual`), `strategy_version` (`owner-manual/1`), `symbols` (the allowlist), `limit_policies` (`ask`, `mid`, `limit_cents`), `max_entries_per_session`, `window_status` (`open`/`closed`/`no_session`), `window_session`, `window_opens_at`, `window_closes_at` (set exactly on a session), `hints` | the terms of a manual ticket (WAVE2-CONTRACTS.md amendment log) |
+| `execution_enabled` | `false` | |
+
+Hints are advisory (the desk screens again with the live quote): the stops,
+the owner's facts (`owner_fact_blockers`), the capital profile (as the desk
+reads it), `outside_regular_session`, the session cap (the outbox count),
+`candidate_expired`, `intent_already_used`, `trade_loss_cap_exceeded`, and for
+equity `entry_window_closed`, `equity_symbol_not_qualified`,
+`equity_notional_exceeds_intended_capital`. Every hint and reason is a
+`Blocker` or `Wave3Reason` member.
+
+TypeScript: `IdeaList`, `DraftIdeas`, `Idea`, `IdeaOption`, `IdeaLeg`,
+`IdeaEquity`, `BlockedIdea`, `IdeaProblem`, `ManualEquityTerms`,
+`IDEAS_PATH` (kept out of `API_PATHS`, which `vocabulary.json` pins for
+Wave 3) and their `KEYS` in `web/src/lib/contracts.ts`. Fixtures:
+`tests/contracts/fixtures/wave5/idea_list.json` (the document the view
+serves for the test world of `tests/unit/test_trex_web_entry_ideas.py`,
+pinned) and `idea_list_unavailable.json`. Tests:
+`tests/contracts/test_wave5_contracts.py`,
+`tests/unit/test_trex_web_entry_ideas.py`,
+`tests/desk_safety/test_enter_supervised.py` (the writer's drafts are exactly
+what the view lists) and `web/src/lib/contracts.wave5.test.ts`.

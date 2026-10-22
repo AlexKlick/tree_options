@@ -1,10 +1,16 @@
-"""E6 -> entry PROPOSAL drafts, SHADOW: never a request, never a proposal.
+"""E6 -> entry PROPOSAL drafts: candidates, never a request, never a proposal.
 
 The miner's admissible debit deals become ``trex-entry-proposal/1`` DRAFTS
-in ``desk-paper/proposal-drafts/``, a directory the live desk never reads
-(the live inbox ``requests/`` and the owner's ``proposals/`` are siblings,
-never written here). Every entry is approved by the owner one at a time;
-the owner flow composes the real proposal from a draft with live facts.
+in ``<desk run dir>/proposal-drafts/`` (``draft_directory``; the run dir is
+``TREX_DESK_RUN_DIR``, the same directory the desk owner and the web
+resolve). Nothing here writes the live inbox ``requests/`` or the owner's
+``proposals/`` (siblings), and nothing reads a draft on its own: the owner
+INITIATES every entry. ``GET /api/ideas`` (``trex_web.entry_ideas_view``,
+``trex-idea-list/1``) lists these drafts, each with the ``compose_entry``
+args that name it (``candidate_id`` = the file stem); the owner's
+``compose_entry`` command makes the desk (``trex.desk_entries``) read that
+one draft and compose the real proposal with live facts; approving the
+proposal is a separate owner act.
 
 A draft is the proposal body with every LIVE-ONLY binding left null
 (``LIVE_BINDINGS``: the proposal times, the reviewed quote, the screening
@@ -24,7 +30,8 @@ mandate covers.
 
 Credit kinds (and calendars/diagonals) are blocked in v1 (the desk cannot
 open them): a ``<candidate>.BLOCKED.json`` diagnostic is written instead,
-never a draft with a hidden refusal inside it. HALT / AUTO_OFF and the
+never a draft with a hidden refusal inside it (``GET /api/ideas`` lists it
+under ``blocked``, never as a composable idea). HALT / AUTO_OFF and the
 entries-only pause (``PAUSE_ENTRIES``) stop drafting altogether.
 """
 

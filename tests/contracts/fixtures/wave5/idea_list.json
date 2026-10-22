@@ -1,0 +1,141 @@
+{
+  "drafts": {
+    "blocked": [
+      {
+        "candidate_id": "d-credit",
+        "kind": "credit_vertical",
+        "reason": "credit_open_not_supported_v1",
+        "written_at": "2026-10-22T13:57:00Z"
+      }
+    ],
+    "items": [
+      {
+        "age_s": 300,
+        "asset_kind": "equity",
+        "candidate_id": "eq-spy-001",
+        "compose_args": {
+          "asset_kind": "equity",
+          "candidate_id": "eq-spy-001",
+          "program_id": "prog-equity-pilot",
+          "sleeve_ref": null
+        },
+        "entry_session": "2026-10-22",
+        "equity": {
+          "exit_deadline_session": "2026-10-23",
+          "limit_cents": 67150,
+          "quantity": 2,
+          "stop_price_cents": 66500,
+          "target_price_cents": 68000
+        },
+        "hints": [
+          "profile_absent",
+          "risk_snapshot_stale",
+          "reconciliation_required",
+          "exit_owner_not_ready"
+        ],
+        "intent_id": "eq-spy-001",
+        "max_loss_cents": 26860,
+        "notional_cents": 134300,
+        "option": null,
+        "program_id": "prog-equity-pilot",
+        "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48",
+        "proposal_status": "pending",
+        "seconds_to_expiry": 5280,
+        "status": "proposed",
+        "strategy_version": "equity-pilot/1",
+        "summary": "Buy 2 SPY at a 671.50 limit; stop 665.00, target 680.00; out by 2026-10-23",
+        "underlying": "SPY",
+        "valid_until": "2026-10-22T15:30:00Z",
+        "written_at": "2026-10-22T13:57:00Z"
+      },
+      {
+        "age_s": 300,
+        "asset_kind": "option",
+        "candidate_id": "opt-qqq-001",
+        "compose_args": {
+          "asset_kind": "option",
+          "candidate_id": "opt-qqq-001",
+          "program_id": "desk-miner",
+          "sleeve_ref": null
+        },
+        "entry_session": "2026-10-22",
+        "equity": null,
+        "hints": [
+          "profile_absent",
+          "risk_snapshot_stale",
+          "reconciliation_required",
+          "exit_owner_not_ready"
+        ],
+        "intent_id": "opt-qqq-001",
+        "max_loss_cents": 9000,
+        "notional_cents": 9000,
+        "option": {
+          "exit_deadline": "2026-10-23",
+          "kind": "debit_vertical",
+          "legs": [
+            {
+              "action": "BUY",
+              "expiry": "2026-11-20",
+              "right": "P",
+              "strike_cents": 50000
+            },
+            {
+              "action": "SELL",
+              "expiry": "2026-11-20",
+              "right": "P",
+              "strike_cents": 49500
+            }
+          ],
+          "limit_cents": 90,
+          "quantity": 1
+        },
+        "program_id": "desk-miner",
+        "proposal_id": null,
+        "proposal_status": "none",
+        "seconds_to_expiry": 5280,
+        "status": "available",
+        "strategy_version": "desk-row/R1",
+        "summary": "Buy 1 QQQ debit vertical 500P/495P at a 0.90 limit; time stop 2026-10-23",
+        "underlying": "QQQ",
+        "valid_until": "2026-10-22T15:30:00Z",
+        "written_at": "2026-10-22T13:57:00Z"
+      }
+    ],
+    "problems": [
+      {
+        "file": "broken.json",
+        "reason": "candidate_invalid"
+      }
+    ],
+    "status": "ok",
+    "truncated": false,
+    "unavailable_reason": null
+  },
+  "execution_enabled": false,
+  "manual_equity": {
+    "candidate_prefix": "manual:",
+    "hints": [
+      "profile_absent",
+      "risk_snapshot_stale",
+      "reconciliation_required",
+      "exit_owner_not_ready"
+    ],
+    "limit_policies": [
+      "ask",
+      "mid",
+      "limit_cents"
+    ],
+    "max_entries_per_session": 3,
+    "program_id": "owner-manual",
+    "strategy_version": "owner-manual/1",
+    "symbols": [
+      "SPY"
+    ],
+    "window_closes_at": "2026-10-22T19:30:00Z",
+    "window_opens_at": "2026-10-22T13:35:00Z",
+    "window_session": "2026-10-22",
+    "window_status": "open"
+  },
+  "now": "2026-10-22T14:02:00Z",
+  "schema": "trex-idea-list/1"
+}

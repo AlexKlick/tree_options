@@ -257,6 +257,54 @@ def world_now():
     return datetime(2025, 3, 4, 10, 0, tzinfo=ET)
 
 
+def test_the_ideas_view_lists_exactly_what_the_writer_wrote(world):
+    """Wave 5: the drafts this writer leaves are what ``GET /api/ideas``
+    lists, each named by the compose_entry args the desk's compose reads
+    (``proposal-drafts/<candidate_id>.json``)."""
+    from tree_options.trex_web.entry_ideas_view import ideas_payload
+
+    world.queue_file()
+    doc = run(world)
+    payload = ideas_payload(world.root / "execution", world.root / "supervised", world.now)
+    drafts = payload["drafts"]
+    assert drafts["status"] == "ok" and drafts["problems"] == []
+    assert [item["candidate_id"] for item in drafts["items"]] == doc["written"]
+    (item,) = drafts["items"]
+    draft = the_draft(world, doc)
+    assert item["compose_args"] == {
+        "program_id": enter_supervised.PROGRAM_ID,
+        "candidate_id": draft["candidate_id"],
+        "asset_kind": "option",
+        "sleeve_ref": None,
+    }
+    assert item["intent_id"] == draft["body"]["effect"]["intent_id"]
+    assert item["strategy_version"] == draft["body"]["strategy_version"]
+    assert item["entry_session"] == draft["entry_session"]
+    assert item["status"] == "available" and item["proposal_status"] == "none"
+
+
+def test_the_ideas_view_lists_a_blocked_deal_as_blocked_never_as_an_idea(world):
+    from tree_options.trex_web.entry_ideas_view import ideas_payload
+
+    deal = world.queue["admissible"][0]
+    legs = [
+        {**deal["legs"][0], "action": "SELL", "strike": "100"},
+        {**deal["legs"][1], "action": "BUY", "strike": "105"},
+    ]
+    prices = {"limit": "2.00", "ref_mid": "2.05"}
+    deal.update(kind="credit_vertical", legs=legs, fill="2.10", max_loss="300.00", **prices)
+    deal["structure"].update(
+        kind="credit_vertical", legs=legs, exits={"touch": False, "breach": True}, **prices
+    )
+    world.queue_file()
+    doc = run(world)
+    drafts = ideas_payload(world.root / "execution", world.root / "supervised", world.now)["drafts"]
+    assert drafts["items"] == []
+    assert [(b["candidate_id"], b["reason"]) for b in drafts["blocked"]] == [
+        (doc["blocked"][0], "credit_open_not_supported_v1")
+    ]
+
+
 def test_advice_from_the_lab_annotates_the_result(world, tmp_path, monkeypatch):
     """Three lab runs qualify a policy; the annotation is never promoted."""
     import tree_options.desk.lab as lab_module
