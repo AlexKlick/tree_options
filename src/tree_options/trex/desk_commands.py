@@ -10,8 +10,9 @@ consumes it, applies it, and replaces the result with the outcome
 Per command, each loop iteration, in ``issued_at`` order:
 
 1. **Claim** by a no-replace rename to ``<key>.claimed.json``: a command is
-   processed exactly once, and a second ``<key>.json`` after a claim is set
-   aside (``<key>.duplicate-<n>.json``) unprocessed.
+   processed exactly once, and a second ``<key>.json`` after a claim (in
+   hand or archived) is set aside (``done/<key>.duplicate-<n>.json``)
+   unprocessed.
 2. **Validate**: the canonical ``trex-command/1`` document (kind and its
    args, by the contract), its key equals the file name, the web's intake
    result exists with the same kind and ``command_body_sha256`` (which binds
@@ -33,6 +34,10 @@ Per command, each loop iteration, in ``issued_at`` order:
    (``commands/.lock``), plus a ``command_applied`` / ``command_refused``
    desk event. Every desk answer carries ``result.answered_by =
    "trex-desk"``.
+5. **Archive**: the claim moves to ``commands/done/`` (no-replace); the
+   answer stays ``commands/<key>.result.json`` where the web reads it. A
+   claim or duplicate an earlier owner left beside an answered command is
+   archived at the next start (``recover_interrupted``).
 
 The kill-switch kinds are file operations (``FILE_KINDS``): with the
 gateway down the owner still applies them (``process(kinds=FILE_KINDS)``:
@@ -111,6 +116,7 @@ log = logging.getLogger("trex.desk_commands")
 
 __all__ = [
     "ANSWERED_BY",
+    "ARCHIVE_DIR",
     "CLAIMED_SUFFIX",
     "COMMAND_NOT_YET_VALID",
     "COMMAND_PASS_BUDGET_S",
@@ -135,6 +141,10 @@ STORE_LOCK = ".lock"
 MAX_COMMAND_BYTES = 64 * 1024
 #: ``issued_at`` may lead the desk clock by this much (the web's own bound)
 MAX_FUTURE_SKEW_S = 60
+#: ``commands/done/``: a claim moves here once its answer is written, and a
+#: set-aside duplicate goes straight here (evidence kept, never pending in
+#: the web's view, W2c)
+ARCHIVE_DIR = "done"
 COMMAND_NOT_YET_VALID = "command_not_yet_valid"
 INTERRUPTED = "owner_stopped_before_result"
 GATEWAY_UNAVAILABLE = "gateway_unavailable"
@@ -143,6 +153,7 @@ _SESSION_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutErro
 _KEY = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _QUEUED = re.compile(rf"^(?P<key>{_KEY})\.json$")
 _CLAIMED = re.compile(rf"^(?P<key>{_KEY}){re.escape(CLAIMED_SUFFIX)}$")
+_DUPLICATE = re.compile(rf"^(?P<key>{_KEY})\.duplicate-\d+\.json$")
 _INTAKE_STATUSES = frozenset({"accepted", "applied"})
 #: the kinds applied by file operations alone (kill files, the pause record,
 #: the backup request): never a broker call, so applicable with the gateway
@@ -459,10 +470,14 @@ class CommandQueue:
             found.append((urgent, issued, match["key"], path, kind))
         return [(key, path, kind) for _, _, key, path, kind in sorted(found)]
 
+    def archived(self, key: str) -> Path:
+        """Where an answered claim is kept (``commands/done/``)."""
+        return self.directory / ARCHIVE_DIR / f"{key}{CLAIMED_SUFFIX}"
+
     def _process(self, key: str, path: Path) -> CommandResult | None:
         self._stage = "claim"
         claimed = self.claimed(key)
-        if os.path.lexists(claimed):
+        if os.path.lexists(claimed) or os.path.lexists(self.archived(key)):
             self._set_aside(key, path)
             return None
         try:
@@ -476,17 +491,21 @@ class CommandQueue:
         now = self.clock()
         intake = self._intake(key)
         if intake is not None and _answered_by_desk(intake):
-            # a desk answer already stands for this key: never replaced
+            # a desk answer already stands for this key (its claim gone):
+            # never replaced; this second claim is kept aside as a duplicate
+            moved = self._move_aside(key, claimed)
             self._emit(
                 DeskEvent.COMMAND_REFUSED.value,
                 command=key,
                 reason=Blocker.DUPLICATE_COMMAND.value,
                 detail="already answered by the desk",
+                moved_to=None if moved is None else f"{ARCHIVE_DIR}/{moved.name}",
             )
             return None
         command, body_sha, kind, outcome = self._validate(key, claimed, now, intake)
         if kind is None or body_sha is None:
             self._emit(DeskEvent.COMMAND_REFUSED.value, command=key, reason="command_invalid")
+            self._archive(key)  # nothing reads: no answer can ever be written
             return None
         if outcome is None:
             assert command is not None
@@ -494,24 +513,56 @@ class CommandQueue:
             outcome = _late(self._apply(command, now), command, intake, now)
         return self._answer(key, kind, body_sha, outcome, now, command)
 
-    def _set_aside(self, key: str, path: Path) -> None:
+    def _move_aside(self, key: str, path: Path) -> Path | None:
+        """``path`` into the archive's first free ``<key>.duplicate-<n>.json``
+        (no-replace); None when it vanished meanwhile."""
+        folder = self.directory / ARCHIVE_DIR
+        folder.mkdir(parents=True, exist_ok=True)
         n = 0
         while True:
             n += 1
-            target = path.with_name(f"{key}.duplicate-{n}.json")
+            target = folder / f"{key}.duplicate-{n}.json"
             try:
                 rename_noreplace(path, target)
             except FileExistsError:
                 continue
             except FileNotFoundError:
-                return
-            break
+                return None
+            return target
+
+    def _set_aside(self, key: str, path: Path) -> None:
+        """A second ``<key>.json`` for a claimed key: never processed, kept
+        in the archive as a duplicate."""
+        moved = self._move_aside(key, path)
+        if moved is None:
+            return
         self._emit(
             DeskEvent.COMMAND_REFUSED.value,
             command=key,
             reason=Blocker.DUPLICATE_COMMAND.value,
-            moved_to=target.name,
+            moved_to=f"{ARCHIVE_DIR}/{moved.name}",
         )
+
+    def _archive(self, key: str) -> None:
+        """Move the claim of an answered key into the archive (no-replace:
+        a second claim of an archived key is kept as a duplicate). Best
+        effort: a failure is recorded and the claim stays where it is (not
+        pending either way); the next start archives it."""
+        claimed = self.claimed(key)
+        self._stage = "archive"
+        try:
+            if not os.path.lexists(claimed):
+                return
+            target = self.archived(key)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                rename_noreplace(claimed, target)
+            except FileExistsError:
+                self._move_aside(key, claimed)
+            except FileNotFoundError:
+                return
+        except Exception as error:
+            self._note(error, key)
 
     # -- validation -----------------------------------------------------------------
 
@@ -709,12 +760,13 @@ class CommandQueue:
         return result
 
     def _write(self, answer: _Answer) -> None:
+        """The answer where the web reads it, its event, then the claim to
+        the archive (best effort, never failing the answer)."""
+        key = answer.result.idempotency_key
         with self._store_lock():
-            _write_atomic(
-                self.layout.command_result(answer.result.idempotency_key),
-                model_bytes(answer.result),
-            )
+            _write_atomic(self.layout.command_result(key), model_bytes(answer.result))
         self._emit(answer.event, **answer.payload)
+        self._archive(key)
 
     def _write_unwritten(self) -> list[CommandResult]:
         """Write the answers a refused store write left (oldest first)."""
@@ -748,27 +800,34 @@ class CommandQueue:
         (``owner_stopped_before_result``), never re-applied; except a
         safety kind (``SAFETY_KINDS``), which is validated and applied again
         (placing a kill file is idempotent), so a dead owner never drops a
-        HALT, FLATTEN or PAUSE the web accepted."""
+        HALT, FLATTEN or PAUSE the web accepted.
+
+        Each claim is contained on its own (W2c). A claim whose answer
+        stands, and every duplicate left beside the queue, moves to the
+        archive (``done/``)."""
         answered: list[CommandResult] = []
         self._stage = "recover"
         try:
             if not self.directory.is_dir():
                 return answered
-            claims = sorted(
-                (match["key"], path)
-                for path in self.directory.iterdir()
-                if (match := _CLAIMED.match(path.name)) is not None
-            )
+            names = sorted(path.name for path in self.directory.iterdir())
         except Exception as error:
             if self._session_lost(error, ""):
                 raise
             self._note(error, None)
             return answered
         now = self.clock()
-        for key, path in claims:
+        for name in names:
             self._stage = "recover"
+            match = _CLAIMED.match(name) or _DUPLICATE.match(name)
+            if match is None:
+                continue
+            key = match["key"]
             try:
-                result = self._recover(key, path, now)
+                if match.re is _DUPLICATE:
+                    self._move_aside(key, self.directory / name)
+                    continue
+                result = self._recover(key, self.directory / name, now)
             except Exception as error:
                 if self._session_lost(error, ""):
                     raise
@@ -779,9 +838,10 @@ class CommandQueue:
         return answered
 
     def _recover(self, key: str, path: Path, now: datetime) -> CommandResult | None:
-        """One unanswered claim (``recover_interrupted``)."""
+        """One claim a previous owner left (``recover_interrupted``)."""
         intake = self._intake(key)
         if intake is not None and _answered_by_desk(intake):
+            self._archive(key)  # answered, its archive interrupted
             return None
         command: AnyCommand | None
         try:

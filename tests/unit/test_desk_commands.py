@@ -148,7 +148,8 @@ def test_a_queued_command_is_claimed_applied_and_answered_once(rig):
     assert (audit["actor"], audit["command"], audit["reason"]) == ("family:owner", key, "lunch")
     folder = rig.root / "commands"
     assert not (folder / f"{key}.json").exists()
-    assert (folder / f"{key}{CLAIMED_SUFFIX}").exists()
+    assert not (folder / f"{key}{CLAIMED_SUFFIX}").exists(), "answered: archived"
+    assert (folder / desk_commands.ARCHIVE_DIR / f"{key}{CLAIMED_SUFFIX}").exists()
     assert rig.queue.process() == [], "processed exactly once"
     assert ("command_applied", "pause_entries") in [(n, p.get("kind")) for n, p in rig.events]
 
@@ -158,7 +159,8 @@ def test_the_web_reads_the_desk_answer_and_a_retry_is_a_duplicate(rig):
     rig.queue.process()
     stored = rig.result(key)
     assert (stored.status, stored.kind, stored.result["kill_file"]) == ("applied", "halt", "HALT")
-    command = parse_command(json.loads((rig.root / "commands" / f"{key}.claimed.json").read_text()))
+    archived = rig.root / "commands" / desk_commands.ARCHIVE_DIR / f"{key}.claimed.json"
+    command = parse_command(json.loads(archived.read_text()))
     retry = rig.store.submit(command, now=rig.clock.utc())
     assert retry.result.status == "duplicate"
     assert retry.result.result["first_status"] == "applied"
@@ -402,11 +404,57 @@ def test_a_second_file_for_a_claimed_key_is_set_aside_unprocessed(rig):
     key = rig.submit("halt", {"reason": ""})
     rig.queue.process()
     first = rig.result(key)
-    claimed = rig.root / "commands" / f"{key}.claimed.json"
+    done = rig.root / "commands" / desk_commands.ARCHIVE_DIR
+    claimed = done / f"{key}.claimed.json"
     (rig.root / "commands" / f"{key}.json").write_bytes(claimed.read_bytes())
     assert rig.queue.process() == []
-    assert (rig.root / "commands" / f"{key}.duplicate-1.json").exists()
+    assert (done / f"{key}.duplicate-1.json").exists(), "set aside into the archive"
     assert rig.result(key) == first, "the desk's answer is never replaced"
+    # the same once more: the next free slot, never a replacement
+    (rig.root / "commands" / f"{key}.json").write_bytes(claimed.read_bytes())
+    assert rig.queue.process() == []
+    assert (done / f"{key}.duplicate-2.json").exists()
+    assert sorted(p.name for p in (rig.root / "commands").glob("*.json")) == [f"{key}.result.json"]
+
+
+def test_a_claim_still_in_hand_sets_a_second_file_aside_too(rig):
+    """A claim not yet archived (its answer still unwritten) is still a
+    claim: a second ``<key>.json`` is set aside, never processed."""
+    key = rig.submit("compose_entry", _COMPOSE)
+    folder = rig.root / "commands"
+    (folder / f"{key}.json").rename(folder / f"{key}{CLAIMED_SUFFIX}")
+    (folder / f"{key}.json").write_bytes((folder / f"{key}{CLAIMED_SUFFIX}").read_bytes())
+    assert rig.queue.process() == []
+    assert rig.flows.calls == []
+    assert (folder / desk_commands.ARCHIVE_DIR / f"{key}.duplicate-1.json").exists()
+
+
+def test_recovery_archives_answered_claims_and_set_aside_duplicates(rig):
+    """The claims and duplicates an earlier owner left beside answered
+    commands (written before the archive existed, or a crash between the
+    answer and the archive) move to ``done/`` at the next start; an
+    unanswered claim is answered first, then archived."""
+    folder = rig.root / "commands"
+    answered = rig.submit("pause_entries", {"reason": ""})
+    rig.queue.process()
+    done = folder / desk_commands.ARCHIVE_DIR
+    (done / f"{answered}{CLAIMED_SUFFIX}").rename(folder / f"{answered}{CLAIMED_SUFFIX}")
+    (folder / f"{answered}.duplicate-1.json").write_text("{}")
+    open_claim = rig.submit("resume_all", {"reason": ""})
+    (folder / f"{open_claim}.json").rename(folder / f"{open_claim}{CLAIMED_SUFFIX}")
+    (recovered,) = rig.new_queue().recover_interrupted()
+    assert (recovered.idempotency_key, recovered.status) == (open_claim, "failed")
+    assert sorted(p.name for p in folder.glob("*.json")) == sorted(
+        [f"{answered}.result.json", f"{open_claim}.result.json"]
+    )
+    assert sorted(p.name for p in done.iterdir()) == sorted(
+        [
+            f"{answered}{CLAIMED_SUFFIX}",
+            f"{answered}.duplicate-1.json",
+            f"{open_claim}{CLAIMED_SUFFIX}",
+        ]
+    )
+    assert rig.store.pending_kinds() == frozenset()
 
 
 def test_any_error_while_the_session_is_down_propagates(rig):

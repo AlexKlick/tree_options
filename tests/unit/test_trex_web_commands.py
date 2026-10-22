@@ -790,6 +790,37 @@ def test_legacy_resume_never_lifts_a_queued_entries_pause(desk):
     assert response.status_code == 202 and response.json()["kind"] == "resume_all"
 
 
+def test_only_unclaimed_queued_commands_are_pending(desk):
+    """W2c item 4: the desk's own names beside a queued command (its claim
+    ``<key>.claimed.json``, a duplicate it set aside ``<key>.duplicate-<n>
+    .json``, its archive ``done/``) are never pending. A pause the owner
+    claimed and then resumed no longer blocks the legacy resume forever."""
+    assert post(desk, command_body(desk.clock, "pause_entries")).status_code == 202
+    store = CommandStore(desk.run_dir)
+    assert store.pending_kinds() == {"pause_entries"}
+    folder = desk.layout.commands()
+    claimed = folder / f"{KEY}.claimed.json"
+    desk.layout.command(KEY).rename(claimed)
+    (folder / f"{KEY}.duplicate-1.json").write_bytes(claimed.read_bytes())
+    (folder / "done").mkdir()
+    (folder / "done" / f"{KEY2}.claimed.json").write_bytes(claimed.read_bytes())
+    assert store.pending_kinds() == frozenset()
+    response = legacy(desk, "resume")
+    assert response.status_code == 202 and response.json()["kind"] == "resume_all"
+
+
+def test_a_long_desk_history_never_makes_the_queue_unknowable(desk):
+    """More desk claims than the pending scan bound are not a long queue."""
+    from tree_options.trex_web.command_store import MAX_PENDING_SCAN
+
+    assert post(desk, command_body(desk.clock, "pause_entries")).status_code == 202
+    folder = desk.layout.commands()
+    raw = desk.layout.command(KEY).read_bytes()
+    for n in range(MAX_PENDING_SCAN + 1):
+        (folder / f"{n:08x}-0000-4000-8000-000000000000.claimed.json").write_bytes(raw)
+    assert CommandStore(desk.run_dir).pending_kinds() == {"pause_entries"}
+
+
 def test_legacy_unknown_action_is_422_after_authentication(desk):
     assert legacy(desk, "arm").status_code == 422
     desk.authority.refuse_with = "bad_signature"

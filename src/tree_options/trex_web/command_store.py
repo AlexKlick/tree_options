@@ -7,7 +7,9 @@ authenticates, validates and queues. It writes ONLY under
 (canonical bytes, written once) and its result ``<key>.result.json``.
 Consuming a command (claim-and-rename) and moving its result on
 (``applied``/``refused``/``failed``) are the owner's job; the web never
-writes a kill file and never executes a broker action.
+writes a kill file and never executes a broker action. Once its answer is
+written the owner moves its claim (and any duplicate it set aside) into
+``commands/done/``: evidence kept, never pending (W2c).
 
 The one validity rule for every kind (``command_window_blocker``) lives
 here so the web's intake and the owner's apply cannot disagree: a command
@@ -37,6 +39,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -85,6 +88,9 @@ MAX_CLOCK_SKEW_S: Final = 60
 COMMAND_NOT_YET_VALID: Final = "command_not_yet_valid"
 #: Bounds the scan of queued commands (``pending_kinds``).
 MAX_PENDING_SCAN = 512
+#: The exact name ``submit`` queues a command under (``Wave2RunDir.command``;
+#: the key is a contract ``IdempotencyKey``): nothing else is pending.
+_QUEUED_NAME = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json")
 
 
 def command_window_blocker(command: AnyCommand, now: datetime) -> str | None:
@@ -178,18 +184,18 @@ class CommandStore:
             raise CommandStoreUnavailable("command_result_invalid", key) from error
 
     def pending_kinds(self) -> frozenset[CommandKind]:
-        """The kinds of the commands queued and not yet claimed by the owner
-        (a visible ``<key>.json``). A file that cannot be read as a command
-        makes the answer unknowable: ``CommandStoreUnavailable``."""
+        """The kinds of the commands queued and not yet claimed by the owner:
+        a visible ``<key>.json`` named exactly as ``submit`` queues it (the
+        key is a lowercase UUID). The desk's own files beside it (its claim
+        ``<key>.claimed.json``, a duplicate it set aside
+        ``<key>.duplicate-<n>.json``, its ``done/`` archive) are never
+        pending (W2c). A queued file that cannot be read as a command makes
+        the answer unknowable: ``CommandStoreUnavailable``."""
         folder = self.layout.commands()
         if not folder.is_dir():
             return frozenset()
         kinds: set[CommandKind] = set()
-        names = sorted(
-            p.name
-            for p in folder.glob("*.json")
-            if not p.name.endswith(".result.json") and not p.name.startswith(".")
-        )
+        names = sorted(p.name for p in folder.iterdir() if _QUEUED_NAME.fullmatch(p.name))
         if len(names) > MAX_PENDING_SCAN:
             raise CommandStoreUnavailable("command_queue_too_long", str(len(names)))
         for name in names:
@@ -307,7 +313,10 @@ class CommandStore:
 
 
 def _json_object(raw: bytes) -> dict[str, Any]:
-    document = json.loads(raw)
+    try:
+        document = json.loads(raw)
+    except RecursionError as error:  # nested too deeply: malformed, never a crash
+        raise ValueError("nested too deeply") from error
     if not isinstance(document, dict):
         raise ValueError("a command is a JSON object")
     return document
