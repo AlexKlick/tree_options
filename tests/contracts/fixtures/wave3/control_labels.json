@@ -1,0 +1,10 @@
+{
+  "labels": {
+    "flatten": "Close all desk positions",
+    "halt": "Emergency stop (also stops exits)",
+    "pause_entries": "Pause new entries",
+    "resume_all": "Clear emergency stop, close-all and pause",
+    "resume_entries": "Resume new entries"
+  },
+  "primary_control": "pause_entries"
+}

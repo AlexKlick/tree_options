@@ -1,0 +1,9 @@
+{
+  "as_of": "2026-10-22T14:00:00Z",
+  "compute_seconds": 600,
+  "day": "2026-10-22",
+  "program_id": "eq-challenger-spy-gap",
+  "requests": 150,
+  "schema": "trex-pilot-usage/1",
+  "storage_bytes": 10485760
+}

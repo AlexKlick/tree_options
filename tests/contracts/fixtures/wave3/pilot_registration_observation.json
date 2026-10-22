@@ -1,0 +1,44 @@
+{
+  "budgets": {
+    "compute_minutes_per_day": 30,
+    "requests_per_day": 2000,
+    "storage_mb": 256
+  },
+  "controls": [],
+  "created_at": "2026-10-21T18:00:00Z",
+  "data_sources": [
+    {
+      "dataset": "SPY realtime NBBO",
+      "license": "IBKR market data terms",
+      "name": "ibkr-nbbo",
+      "provenance": "IBKR paper market data subscription (receipt in the pilot evidence dir)",
+      "provider": "IBKR",
+      "realtime": true
+    }
+  ],
+  "decision_rule": {
+    "metric": "mean_realized_pnl_cents_per_lifecycle",
+    "minimum_lifecycles": 10,
+    "minimum_sessions": 20,
+    "statement": "Compare mean realized P&L per completed lifecycle against the baseline over the registered sample."
+  },
+  "existing_registration": {
+    "path": "registrations/qsl-observation-sealed.json",
+    "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "hypothesis": "The sealed QSL observation continues unchanged; this entry only cites it.",
+  "program_id": "qsl-observation",
+  "role": "observation",
+  "schema": "trex-pilot-registration/1",
+  "sealed_at": "2026-10-21T19:00:00Z",
+  "sealed_by": "owner@example.com",
+  "sha256": "6e10e8a061f7cf727613d506ef9f96b5bd02d3853dd4cd12d3b288411209ffef",
+  "status": "sealed",
+  "title": "QSL observation (existing, cited)",
+  "universe": {
+    "asset_kind": "option",
+    "symbols": [
+      "SPY"
+    ]
+  }
+}

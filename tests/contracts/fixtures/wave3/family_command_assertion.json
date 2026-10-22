@@ -1,0 +1,24 @@
+{
+  "body": "{\"schema\":\"trex-command/1\",\"idempotency_key\":\"5f0c2a8e-1b3d-4c6e-9a7b-2d4e6f8a0b1c\",\"kind\":\"pause_entries\",\"args\":{\"reason\":\"pausing from my phone\"},\"issued_at\":\"2026-10-22T14:00:00Z\",\"expires_at\":\"2026-10-22T14:05:00Z\"}",
+  "claims": {
+    "aud": "trex-command",
+    "exp": 1792677661,
+    "iat": 1792677601,
+    "ingress": "family",
+    "jti": "8c1f4e2a9b7d3c5e6f0a1b2c3d4e5f60",
+    "method": "POST",
+    "origin": "https://family.example.net",
+    "path": "/api/commands",
+    "request_id": "5f0c2a8e-1b3d-4c6e-9a7b-2d4e6f8a0b1c",
+    "request_sha256": "366c2916af00695cfcae10cba431474b27ab308af49ef680be5cf825b9407f42",
+    "sub": "owner@example.com",
+    "v": 2
+  },
+  "host": "family.example.net",
+  "key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "key_note": "TEST ONLY: bytes 0..31; never a real key",
+  "origin": "https://family.example.net",
+  "path": "/api/commands",
+  "portal_path": "/trex/api/commands",
+  "token": "eyJ2IjoyLCJzdWIiOiJvd25lckBleGFtcGxlLmNvbSIsImF1ZCI6InRyZXgtY29tbWFuZCIsImlhdCI6MTc5MjY3NzYwMSwiZXhwIjoxNzkyNjc3NjYxLCJtZXRob2QiOiJQT1NUIiwicGF0aCI6Ii9hcGkvY29tbWFuZHMiLCJpbmdyZXNzIjoiZmFtaWx5Iiwib3JpZ2luIjoiaHR0cHM6Ly9mYW1pbHkuZXhhbXBsZS5uZXQiLCJyZXF1ZXN0X2lkIjoiNWYwYzJhOGUtMWIzZC00YzZlLTlhN2ItMmQ0ZTZmOGEwYjFjIiwicmVxdWVzdF9zaGEyNTYiOiIzNjZjMjkxNmFmMDA2OTVjZmNhZTEwY2JhNDMxNDc0YjI3YWIzMDhhZjQ5ZWY2ODBiZTVjZjgyNWI5NDA3ZjQyIiwianRpIjoiOGMxZjRlMmE5YjdkM2M1ZTZmMGExYjJjM2Q0ZTVmNjAifQ.XQyAMF44M-C_lUeQSRKGEnNfMxcrsG3rTox6zE6ffjs"
+}

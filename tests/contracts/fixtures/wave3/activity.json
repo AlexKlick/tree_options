@@ -1,0 +1,98 @@
+{
+  "execution_enabled": false,
+  "has_more": true,
+  "items": [
+    {
+      "actor": {
+        "ingress": "family",
+        "sub": "owner@example.com"
+      },
+      "actor_unavailable_reason": null,
+      "at": "2026-10-22T14:04:00Z",
+      "command_key": "5f0c2a8e-1b3d-4c6e-9a7b-2d4e6f8a0b1c",
+      "command_status": "applied",
+      "id": "command:5f0c2a8e-1b3d-4c6e-9a7b-2d4e6f8a0b1c",
+      "kind": "pause_entries",
+      "reason": null,
+      "refs": {},
+      "source": "command",
+      "summary": "Paused new entries (from the phone)"
+    },
+    {
+      "actor": {
+        "ingress": "system",
+        "sub": "trex-desk"
+      },
+      "actor_unavailable_reason": null,
+      "at": "2026-10-22T14:03:59Z",
+      "command_key": null,
+      "command_status": null,
+      "id": "desk_event:events.jsonl:1042",
+      "kind": "entries_paused",
+      "reason": null,
+      "refs": {},
+      "source": "desk_event",
+      "summary": "New entries paused; exits continue"
+    },
+    {
+      "actor": {
+        "ingress": "family",
+        "sub": "owner@example.com"
+      },
+      "actor_unavailable_reason": null,
+      "at": "2026-10-22T14:02:00Z",
+      "command_key": "7d3e9f1a-2b4c-4d6e-8f0a-1b2c3d4e5f6a",
+      "command_status": "refused",
+      "id": "command:7d3e9f1a-2b4c-4d6e-8f0a-1b2c3d4e5f6a",
+      "kind": "approve_entry",
+      "reason": "approval_epoch_mismatch",
+      "refs": {
+        "intent_id": "eq-spy-001",
+        "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48"
+      },
+      "source": "command",
+      "summary": "Approval refused: the desk restarted after the proposal was made"
+    },
+    {
+      "actor": null,
+      "actor_unavailable_reason": "actor_not_recorded",
+      "at": "2026-10-22T13:31:00Z",
+      "command_key": null,
+      "command_status": null,
+      "id": "audit:kill-files:2026-10-22T13:31:00Z",
+      "kind": "kill_file_removed",
+      "reason": null,
+      "refs": {
+        "path": "HALT"
+      },
+      "source": "audit",
+      "summary": "HALT removed at the terminal"
+    }
+  ],
+  "limit": 4,
+  "next_cursor": "MjAyNi0xMC0yMlQxMzozMTowMFo",
+  "now": "2026-10-22T14:05:00Z",
+  "schema": "trex-activity/1",
+  "sources": [
+    {
+      "source": "command",
+      "status": "ok",
+      "unavailable_reason": null
+    },
+    {
+      "source": "desk_event",
+      "status": "ok",
+      "unavailable_reason": null
+    },
+    {
+      "source": "audit",
+      "status": "ok",
+      "unavailable_reason": null
+    },
+    {
+      "source": "drill",
+      "status": "unavailable",
+      "unavailable_reason": "activity_source_unreadable"
+    }
+  ]
+}

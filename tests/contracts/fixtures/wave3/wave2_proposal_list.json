@@ -1,0 +1,63 @@
+{
+  "execution_enabled": false,
+  "now": "2026-10-22T14:02:00Z",
+  "problems": [],
+  "proposals": [
+    {
+      "asset_kind": "equity",
+      "intent_id": "eq-spy-001",
+      "proposal": {
+        "effect": {
+          "account_id": "DU0000001",
+          "con_id": 756733,
+          "currency": "USD",
+          "exchange": "SMART",
+          "exit_policy": {
+            "exit_deadline_session": "2026-10-23",
+            "forced_exit_et": "15:45",
+            "stop_confirm_ticks": 3,
+            "stop_price_cents": 66500,
+            "target_price_cents": 68000
+          },
+          "intent_id": "eq-spy-001",
+          "limit_cents": 67150,
+          "order_ref": "trex:sup:eq-spy-001",
+          "outside_rth": false,
+          "quantity": 2,
+          "schema": "supervised-equity-effect/1",
+          "side": "BUY",
+          "symbol": "SPY",
+          "tif": "DAY"
+        },
+        "effect_sha256": "712eec9ac375251048e6622c7d76f18c85444fe10a704c4d007bdccde6fd9a8b",
+        "program_id": "prog-equity-pilot",
+        "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48",
+        "proposed_at": "2026-10-22T14:00:00Z",
+        "review": {
+          "max_loss_cents": 26860,
+          "notional_cents": 134300,
+          "owner_epoch": "owner-20261022T133000Z-4242",
+          "profile_digest": "d11e81bc8942960c211bce52582136c6852e1131625828cefe5c9b5412062d07",
+          "quote": {
+            "as_of": "2026-10-22T13:59:58Z",
+            "ask_cents": 67152,
+            "bid_cents": 67148,
+            "market_data_type": "realtime"
+          },
+          "screening_sha256": "e95d43374e80a2a957232bf1a0874e0866f3e1ceb8fdc488c8c1a461520e4722"
+        },
+        "schema": "trex-entry-proposal/1",
+        "send_deadline": "2026-10-22T14:10:00Z",
+        "sleeve_ref": "sleeve-equity-01",
+        "strategy_version": "equity-pilot/1"
+      },
+      "proposal_id": "03480209a044f5707b002402160c279d036c4f05c678ad15ab9e13eb76ee2d48",
+      "proposal_sha256": "6e40adefc7ee40b33b77bb9eb389eb4c7a145f3fe6d6fc7f16900a60ff921ea7",
+      "proposed_at": "2026-10-22T14:00:00Z",
+      "send_deadline": "2026-10-22T14:10:00Z",
+      "status": "pending"
+    }
+  ],
+  "schema": "trex-proposal-list/1",
+  "truncated": false
+}
