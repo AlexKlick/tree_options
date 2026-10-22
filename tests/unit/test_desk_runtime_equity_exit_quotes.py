@@ -15,10 +15,9 @@ raises ``exit_quote_blind`` once per structure per session. A standing
 FLATTEN (review P1) closes on the same fallback: the runtime's flatten
 branch prices through ``equity_exits.marketable_limit``.
 
-``exit_quote_blind`` needs one hook in ``desk_runtime`` (not this lane's
-file): ``_AlertWiredRuntime`` below is exactly that hook, so the alert is
-proven against the real runtime; the integrator moves the same lines into
-``DeskRuntime._equity_close`` and this subclass reduces to ``DeskRuntime``.
+``exit_quote_blind`` is wired into ``DeskRuntime._equity_close`` itself
+(Wave 3/4 integration; the lane proved it with a subclass carrying the same
+hook), and the event is pushed urgent (``desk_runtime._NOTIFY_EVENTS``).
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -34,55 +32,14 @@ from tests.unit.test_desk_runtime_equity import IID, STOP, TARGET, Rig
 from tests.unit.trex_fakes import FillStep, equity_effect
 from tree_options.trex import equity_exits as ee
 from tree_options.trex.clock import ET
-from tree_options.trex.contracts import DeskEvent, EquityDeskSpecV2
-from tree_options.trex.desk_runtime import DeskRuntime
-from tree_options.trex.equity_exits import EquityClose
-from tree_options.trex.state import BookState, Status, StructureState
+from tree_options.trex.contracts import DeskEvent
+from tree_options.trex.state import Status
 
 pytest.importorskip("ib_async")
 
 ENTRY_DAY = date(2026, 10, 22)  # the SessionClock's first session
 DEADLINE = date(2026, 10, 23)
 NEXT_SESSION = date(2026, 10, 26)
-
-
-class _AlertWiredRuntime(DeskRuntime):
-    """``DeskRuntime`` plus the lane c2 alert hook (see the module doc)."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.exit_quotes = ee.ExitQuoteWatch()
-
-    def _equity_close(
-        self,
-        spec: EquityDeskSpecV2,
-        st: StructureState,
-        action: EquityClose,
-        trade: Any,
-        book: BookState,
-        *,
-        halt: bool,
-        now: datetime,
-    ) -> None:
-        alert = self.exit_quotes.observe(spec.intent_id, action, now)
-        if alert is not None:
-            self._event(
-                ee.EXIT_QUOTE_BLIND,
-                structure=spec.intent_id,
-                symbol=spec.position.symbol,
-                **alert.payload(),
-            )
-        super()._equity_close(spec, st, action, trade, book, halt=halt, now=now)
-
-
-class _WiredRig(Rig):
-    def _runtime(self) -> DeskRuntime:
-        rt = _AlertWiredRuntime(self.ib, self.paths, supervised=self.sup, clock=self.clock)
-        rt.acquire()
-        rt.notify = lambda title, message, priority="default": self.notified.append(
-            (title, message, priority)
-        )
-        return rt
 
 
 @pytest.fixture()
@@ -93,10 +50,9 @@ def rig(tmp_path: Path) -> Iterator[Rig]:
 
 
 @pytest.fixture()
-def wired(tmp_path: Path) -> Iterator[Rig]:
-    r = _WiredRig(tmp_path)
-    yield r
-    r.rt.release()
+def wired(rig: Rig) -> Rig:
+    """The real ``DeskRuntime`` (the alert hook is its own since integration)."""
+    return rig
 
 
 def _limits(rig: Rig) -> list[float]:
@@ -299,6 +255,20 @@ def test_no_quote_at_all_alerts_exit_quote_blind_once_after_five_minutes(wired: 
     }
     assert (alert["blind_since"], alert["blind_s"]) == (since.isoformat(), 300)
     assert wired.sells() == [], "blind: no order, never a market order"
+    pushes = [(t, p) for t, _m, p in wired.notified if t == f"trex-desk {ee.EXIT_QUOTE_BLIND}"]
+    assert pushes == [(f"trex-desk {DeskEvent.EXIT_QUOTE_BLIND.value}", "urgent")]
+
+
+def test_exit_quote_blind_is_wired_into_the_runtime_itself(tmp_path: Path) -> None:
+    """Wave 3/4 integration: the plain runtime carries the watch (no subclass)."""
+    from tree_options.trex.desk_runtime import DeskRuntime
+
+    rig = Rig(tmp_path)
+    try:
+        assert type(rig.rt) is DeskRuntime
+        assert isinstance(rig.rt.exit_quotes, ee.ExitQuoteWatch)
+    finally:
+        rig.rt.release()
 
 
 def test_a_quote_inside_five_minutes_sends_the_exit_and_never_alerts(wired: Rig) -> None:

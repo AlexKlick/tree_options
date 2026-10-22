@@ -156,10 +156,12 @@ from tree_options.trex.engine import (
 )
 from tree_options.trex.equity_exits import (
     EXIT_EVENTS,
+    EXIT_QUOTE_BLIND,
     EquityAbort,
     EquityClose,
     EquityExitReason,
     EquityQuote,
+    ExitQuoteWatch,
     decide_equity,
     in_regular_session,
     marketable_limit,
@@ -362,6 +364,9 @@ _NOTIFY_EVENTS: dict[str, str] = {
     "equity_unqualified": "urgent",
     # one structure's tick failed (contained): its exits are not running
     "structure_tick_failed": "urgent",
+    # Wave 2b/4: an equity close wanted out with no usable bid for 300 s
+    # (equity_exits.ExitQuoteWatch; once per structure per ET session)
+    EXIT_QUOTE_BLIND: "urgent",
     "backup_failed": "default",
     "entry_request": "default",
     "entry_filled": "default",
@@ -412,6 +417,9 @@ class DeskRuntime:
         self._tick_equities: dict[str, EquityDeskSpecV2] = {}
         self._quote_guarded: set[str] = set()
         self._quote_blind: dict[str, str] = {}  # symbol -> first blind instant
+        # Wave 2b/4: an equity close pending without a usable bid raises
+        # exit_quote_blind once per structure per ET session (in memory)
+        self.exit_quotes = ExitQuoteWatch()
         # the first contained failure's class in the last tick, else None
         self._degraded: str | None = None
         # Wave 2b: run after a (re)connect is observed (observe_connection)
@@ -1502,7 +1510,9 @@ class DeskRuntime:
         return stock
 
     def _equity_release(self, sid: str) -> None:
-        """Drop a CLOSED position's claim on its market-data stream."""
+        """Drop a CLOSED position's claim on its market-data stream (and its
+        exit_quote_blind clock)."""
+        self.exit_quotes.forget(sid)
         stock = self._equity_contracts.pop(sid, None)
         if stock is not None:
             self.ib._unsubscribe(int(stock.conId))
@@ -1828,8 +1838,15 @@ class DeskRuntime:
     ) -> None:
         """Start or keep an equity exit: SELL the open shares at the bid,
         repriced (cancel, confirm, merge the final fills, replace the
-        remainder) only when the bid falls below the working limit."""
+        remainder) only when the bid falls below the working limit. A close
+        that stays unpriced for ``EXIT_QUOTE_BLIND_AFTER_S`` records (and
+        pushes, urgent) ``exit_quote_blind`` once per structure per session."""
         sid = spec.intent_id
+        alert = self.exit_quotes.observe(sid, action, now)
+        if alert is not None:
+            self._event(
+                EXIT_QUOTE_BLIND, structure=sid, symbol=spec.position.symbol, **alert.payload()
+            )
         limit = action.limit_cents
         if limit is None:
             self._note_once(sid, "exit_pending_no_quote", reason=action.reason.value)
