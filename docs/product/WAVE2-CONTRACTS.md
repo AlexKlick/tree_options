@@ -380,6 +380,17 @@ Module `contracts.vocabulary`. `Blocker` (wire strings, frozen by a test):
     `reconciliation_unavailable`, `account_mismatch`, `non_paper_account`;
   - reserved for the Wave 2b lanes (coordinator, not yet emitted):
     `entry_window_closed`, `outside_undefined_risk`, `exit_quote_blind`.
+- added by the W2c integration amendment (2026-10-21; see the amendment
+  log): `flatten` (`trex.admission`: a standing FLATTEN blocks entries);
+  the owner entry flows' (`trex.desk_entries`) `outside_regular_session`,
+  `profile_absent`, `profile_invalid`, `account_unbound`,
+  `candidate_unknown`, `candidate_blocked`, `candidate_invalid`,
+  `candidate_program_mismatch`, `candidate_kind_mismatch`,
+  `candidate_expired`, `intent_already_used`, `quote_unavailable`,
+  `proposal_rejected`, `broker_rejected`, `send_uncertain`,
+  `desk_book_unreadable`; the owner command consumer's
+  (`trex.desk_commands`) `command_invalid`, `command_key_mismatch`,
+  `apply_error`, `owner_stopped_before_result`.
 
 `DeskEvent` (names for `events.jsonl`): `proposal_composed`,
 `entry_approved`, `entry_rejected`, `entries_paused`, `entries_resumed`,
@@ -389,7 +400,9 @@ Module `contracts.vocabulary`. `Blocker` (wire strings, frozen by a test):
 added by the 2026-10-21 amendment (the desk runtime's equity path):
 `equity_contract_mismatch`, `equity_unqualified`,
 `exit_evidence_inconclusive`, `holdings_unverifiable`,
-`structure_tick_failed`.
+`structure_tick_failed`; added by the W2c integration amendment:
+`commands_failed` (a contained command-stage failure), `gateway_connected`,
+`books_problem`, `books_failed`.
 
 Both enums are `@unique` (no two members share a value) and every member
 name is its value spelled as an identifier (`:` becomes `_`, so
@@ -551,3 +564,21 @@ emits, so no producer changed.
   literal of its producer module (AST scan, independent of the enum); the
   producers' constants equal the members; and the admission, equity review
   and portfolio view outputs of fixed scenarios are all members.
+
+### 2026-10-21: C2.7 vocabulary, additive (W2c integration)
+
+The Wave 2c integration lane (branch `w2c/seams`) made the plain strings
+the Wave 2b owner lane introduced additive members, values unchanged, and
+added the two codes its own fixes emit. Nothing renamed or removed.
+
+- `Blocker`: `flatten` (new: `admission.entry_send_blockers` now refuses
+  every entry sender while `FLATTEN` stands) and the owner lane's 20
+  refusal codes listed under C2.7 (`command_not_yet_valid` was already a
+  member).
+- `DeskEvent`: `commands_failed` (new: the owner contains a command-stage
+  failure and records it), `gateway_connected`, `books_problem`,
+  `books_failed`.
+- Tests (`tests/contracts/test_wave2_contracts.py`): the W2c set is pinned
+  disjoint from the earlier sets; every W2c code round-trips; every value
+  but `commands_failed` (whose producer spells the member) is a literal of
+  its producer module; the producers' constants equal the members.

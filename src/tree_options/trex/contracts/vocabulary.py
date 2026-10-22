@@ -10,6 +10,11 @@ Amendment 2026-10-21 (lane K, coordinator-approved): the wire strings the
 merged Wave 2 lanes emit were added, each value exactly as its producer
 spells it. Producers may keep passing the plain strings: a ``StrEnum``
 member compares and serializes equal to its value.
+
+Amendment 2026-10-21 (W2c integration, additive): the plain strings the
+Wave 2b owner lane emits (its entry flows, command consumer, connection
+edge and books events) and ``flatten`` (a standing FLATTEN blocks entries),
+each value exactly as its producer spells it.
 """
 
 from __future__ import annotations
@@ -138,6 +143,28 @@ class Blocker(StrEnum):
     # --- amendment 2026-10-21 (W2c integration): additive ---------------
     # a standing FLATTEN stops every entry sender (trex.admission)
     FLATTEN = "flatten"
+    # the owner's entry flows (trex.desk_entries, supervised_desk's inbox)
+    OUTSIDE_REGULAR_SESSION = "outside_regular_session"
+    PROFILE_ABSENT = "profile_absent"
+    PROFILE_INVALID = "profile_invalid"
+    ACCOUNT_UNBOUND = "account_unbound"
+    CANDIDATE_UNKNOWN = "candidate_unknown"
+    CANDIDATE_BLOCKED = "candidate_blocked"
+    CANDIDATE_INVALID = "candidate_invalid"
+    CANDIDATE_PROGRAM_MISMATCH = "candidate_program_mismatch"
+    CANDIDATE_KIND_MISMATCH = "candidate_kind_mismatch"
+    CANDIDATE_EXPIRED = "candidate_expired"
+    INTENT_ALREADY_USED = "intent_already_used"
+    QUOTE_UNAVAILABLE = "quote_unavailable"
+    PROPOSAL_REJECTED = "proposal_rejected"
+    BROKER_REJECTED = "broker_rejected"
+    SEND_UNCERTAIN = "send_uncertain"
+    DESK_BOOK_UNREADABLE = "desk_book_unreadable"
+    # the owner's command consumer (trex.desk_commands)
+    COMMAND_INVALID = "command_invalid"
+    COMMAND_KEY_MISMATCH = "command_key_mismatch"
+    APPLY_ERROR = "apply_error"
+    OWNER_STOPPED_BEFORE_RESULT = "owner_stopped_before_result"
 
 
 @unique
@@ -167,3 +194,8 @@ class DeskEvent(StrEnum):
     # --- amendment 2026-10-21 (W2c integration): additive ---------------
     # a contained command-stage failure (trex.desk_commands, supervised_desk)
     COMMANDS_FAILED = "commands_failed"
+    # the owner's connection edge (trex.desk_runtime) and books
+    # (trex.desk_books, supervised_desk.books_step)
+    GATEWAY_CONNECTED = "gateway_connected"
+    BOOKS_PROBLEM = "books_problem"
+    BOOKS_FAILED = "books_failed"
