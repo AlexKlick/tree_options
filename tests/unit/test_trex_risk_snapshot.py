@@ -29,10 +29,14 @@ from tests.unit.trex_books_support import (
     portfolio_item,
 )
 from tests.unit.trex_fakes import FillStep, Wave2Gateway, contract_fixture, entry_proposal
+from tree_options.trex.admission import owner_fact_blockers
 from tree_options.trex.contracts.desk_spec_v2 import OptionDeskSpecV2
 from tree_options.trex.fills import fold_executions
 from tree_options.trex.ledger import AttributionIndex, fill_events, fold_ledger
+from tree_options.trex.pause import exit_blockers
 from tree_options.trex.risk_snapshot import (
+    OUTSIDE_UNDEFINED_RISK,
+    UndefinedRisk,
     build_risk_snapshot,
     equity_open_loss_cents,
     option_open_loss_cents,
@@ -146,7 +150,15 @@ def test_option_open_loss_is_the_remaining_defined_max_loss() -> None:
     assert option_open_loss_cents(structure, 0) == 0
 
 
-def leg(exec_id: str, con_id: int, side: str, price_micros: int, qty: int = 1) -> Any:
+def leg(
+    exec_id: str,
+    con_id: int,
+    side: str,
+    price_micros: int,
+    qty: int = 1,
+    order_ref: str = "trex:sup:canary-001",
+    perm_id: int = 77,
+) -> Any:
     return execution(
         exec_id=exec_id,
         sec_type="OPT",
@@ -155,25 +167,29 @@ def leg(exec_id: str, con_id: int, side: str, price_micros: int, qty: int = 1) -
         side=side,
         price_micros=price_micros,
         quantity=qty,
-        perm_id=77,
-        order_ref="trex:sup:canary-001",
+        perm_id=perm_id,
+        order_ref=order_ref,
         commission_micros=650_000,
     )
 
 
-def test_an_open_option_structure_reserves_its_defined_max_loss() -> None:
-    fold = fold_of(
-        [
-            leg("0000e0d5.70000001.01.01", 700001, "BOT", 3_000_000),
-            leg("0000e0d5.70000002.01.01", 700002, "SLD", 1_900_000),
-        ]
+LONG_LEG = leg("0000e0d5.70000001.01.01", 700001, "BOT", 3_000_000)
+SHORT_LEG = leg("0000e0d5.70000002.01.01", 700002, "SLD", 1_900_000)
+
+
+def opt_row(con_id: int, position: int, value_cents: int) -> c.BrokerPortfolioItem:
+    return portfolio_item(
+        con_id=con_id, sec_type="OPT", position=position, market_value_cents=value_cents
     )
-    rows = [
-        portfolio_item(con_id=700001, sec_type="OPT", position=1, market_value_cents=29_000),
-        portfolio_item(con_id=700002, sec_type="OPT", position=-1, market_value_cents=-18_500),
-    ]
+
+
+def test_an_open_option_structure_reserves_its_defined_max_loss() -> None:
+    fold = fold_of([LONG_LEG, SHORT_LEG])
+    rows = [opt_row(700001, 1, 29_000), opt_row(700002, -1, -18_500)]
     build = snapshot(fold=fold, broker_rows=rows)
     assert build.problems == ()
+    # the short leg is inside a whole defined-risk package: no undefined risk
+    assert (build.blockers, build.undefined_risk) == ((), ())
     assert build.snapshot.open_loss_cents == 12_000  # once per structure, not per leg
     assert build.snapshot.equity_gross_cents == 0
     assert build.snapshot.outside_positions == ()
@@ -182,7 +198,7 @@ def test_an_open_option_structure_reserves_its_defined_max_loss() -> None:
 def test_outside_positions_count_broker_priced() -> None:
     rows = [
         portfolio_item(),
-        nvda(position=-2, market_value_cents=-41_000),
+        nvda(position=2, market_value_cents=41_000),
         portfolio_item(con_id=QQQ, symbol="QQQ", position=5, market_value_cents=250_000),
     ]
     build = snapshot(broker_rows=rows)
@@ -192,7 +208,181 @@ def test_outside_positions_count_broker_priced() -> None:
     assert snap.equity_gross_cents == 134_300 + 250_000
     assert snap.outside_positions == (
         c.OutsidePosition(con_id=QQQ, sec_type="STK", symbol="QQQ", quantity=5),
-        c.OutsidePosition(con_id=NVDA_OPT, sec_type="OPT", symbol="NVDA", quantity=-2),
+        c.OutsidePosition(con_id=NVDA_OPT, sec_type="OPT", symbol="NVDA", quantity=2),
+    )
+
+
+# ------------------------------------------------ undefined risk fails closed
+
+
+def test_an_outside_short_call_blocks_entries_with_outside_undefined_risk(
+    tmp_path: Path,
+) -> None:
+    # NVDA call written outside the desk: |market value| is no bound on its loss
+    rows = [portfolio_item(), nvda(position=-1, market_value_cents=-20_500)]
+    build = snapshot(broker_rows=rows)
+    assert OUTSIDE_UNDEFINED_RISK == "outside_undefined_risk"
+    assert build.blockers == ("outside_undefined_risk",)
+    assert build.undefined_risk == (
+        UndefinedRisk(
+            con_id=NVDA_OPT,
+            sec_type="OPT",
+            quantity=-1,
+            reason="outside_short_option",
+            intent_id=None,
+        ),
+    )
+    assert any(
+        p.startswith("outside_undefined_risk") and str(NVDA_OPT) in p for p in build.problems
+    ), build.problems
+    snap = build.snapshot
+    assert snap.status == "unavailable"
+    assert (snap.open_loss_cents, snap.cash_cents, snap.outside_positions) == (None, None, ())
+    assert build.entry_blockers(AS_OF) == ("risk_snapshot_stale", "outside_undefined_risk")
+    # the published file fails closed through today's admission; exits never read it
+    write_risk_snapshot(c.Wave2RunDir(tmp_path), snap)
+    assert "risk_snapshot_stale" in owner_fact_blockers(tmp_path, AS_OF, account_id=ACCOUNT)
+    assert exit_blockers(tmp_path) == ()
+
+
+def test_an_outside_long_option_is_still_priced_at_its_value() -> None:
+    build = snapshot(broker_rows=[portfolio_item(), nvda(position=3, market_value_cents=61_500)])
+    assert (build.problems, build.blockers, build.undefined_risk) == ((), (), ())
+    assert build.snapshot.status == "complete"
+    assert build.snapshot.open_loss_cents == 26_860 + 61_500
+    assert build.entry_blockers(AS_OF) == ()
+
+
+def test_an_outside_short_stock_is_undefined_risk() -> None:
+    rows = [
+        portfolio_item(),
+        portfolio_item(con_id=QQQ, symbol="QQQ", position=-5, market_value_cents=-250_000),
+    ]
+    build = snapshot(broker_rows=rows)
+    assert build.blockers == (OUTSIDE_UNDEFINED_RISK,)
+    assert build.undefined_risk == (
+        UndefinedRisk(
+            con_id=QQQ, sec_type="STK", quantity=-5, reason="short_stock", intent_id=None
+        ),
+    )
+    assert build.snapshot.status == "unavailable"
+
+
+UNTAGGED_SHORT = leg("0000e0d5.70000003.01.01", 700001, "SLD", 3_100_000, order_ref="", perm_id=78)
+GHOST_SHORT = leg(
+    "0000e0d5.70000009.01.01", 700009, "SLD", 1_000_000, order_ref="trex:sup:ghost", perm_id=79
+)
+
+
+@pytest.mark.parametrize(
+    ("executions", "rows", "expected"),
+    [
+        pytest.param(
+            [GHOST_SHORT],
+            [opt_row(700009, -1, -10_000)],
+            [(700009, -1, None)],
+            id="unattributed-trex-tag",
+        ),
+        pytest.param(
+            [LONG_LEG, SHORT_LEG, UNTAGGED_SHORT],
+            [opt_row(700001, 0, 0), opt_row(700002, -1, -18_500)],
+            [(700001, -1, None)],
+            id="outside-lot-in-a-touched-contract",
+        ),
+    ],
+)
+def test_outside_or_unattributed_short_option_lots_are_undefined_risk(
+    executions: list[c.BrokerExecution], rows: list[c.BrokerPortfolioItem], expected: list[Any]
+) -> None:
+    build = snapshot(fold=fold_of(executions), broker_rows=rows)
+    assert build.blockers == (OUTSIDE_UNDEFINED_RISK,)
+    assert build.undefined_risk == tuple(
+        UndefinedRisk(
+            con_id=con, sec_type="OPT", quantity=qty, reason="short_option_lot", intent_id=intent
+        )
+        for con, qty, intent in expected
+    )
+    assert build.snapshot.status == "unavailable"
+
+
+LONG_LEG_CLOSED = leg(
+    "0000e0d5.70000004.01.01",
+    700001,
+    "SLD",
+    3_200_000,
+    order_ref="trex:desk:canary-001",
+    perm_id=80,
+)
+LONG_LEG_OVERSOLD = leg(
+    "0000e0d5.70000005.01.01",
+    700001,
+    "SLD",
+    3_200_000,
+    qty=2,
+    order_ref="trex:desk:canary-001",
+    perm_id=81,
+)
+
+
+@pytest.mark.parametrize(
+    ("executions", "specs", "rows", "expected"),
+    [
+        pytest.param(
+            [LONG_LEG, SHORT_LEG, LONG_LEG_CLOSED],
+            SPECS,
+            [opt_row(700001, 0, 0), opt_row(700002, -1, -18_500)],
+            [(700002, -1)],
+            id="short-leg-left-alone",
+        ),
+        pytest.param(
+            [LONG_LEG, SHORT_LEG, LONG_LEG_OVERSOLD],
+            SPECS,
+            [opt_row(700001, -1, -31_000), opt_row(700002, -1, -18_500)],
+            [(700001, -1), (700002, -1)],
+            id="both-legs-short",
+        ),
+        pytest.param(
+            [LONG_LEG, SHORT_LEG],
+            [EQUITY_SPEC],
+            [opt_row(700001, 1, 29_000), opt_row(700002, -1, -18_500)],
+            [(700002, -1)],
+            id="option-spec-gone",
+        ),
+    ],
+)
+def test_our_short_legs_outside_a_whole_defined_risk_package_are_undefined_risk(
+    executions: list[c.BrokerExecution],
+    specs: list[Any],
+    rows: list[c.BrokerPortfolioItem],
+    expected: list[tuple[int, int]],
+) -> None:
+    build = snapshot(fold=fold_of(executions), specs=specs, broker_rows=rows)
+    assert build.blockers == (OUTSIDE_UNDEFINED_RISK,)
+    assert build.undefined_risk == tuple(
+        UndefinedRisk(
+            con_id=con,
+            sec_type="OPT",
+            quantity=qty,
+            reason="short_option_lot",
+            intent_id="canary-001",
+        )
+        for con, qty in expected
+    )
+
+
+def test_a_broker_short_beyond_our_defined_short_leg_is_undefined_risk() -> None:
+    fold = fold_of([LONG_LEG, SHORT_LEG])
+    rows = [opt_row(700001, 1, 29_000), opt_row(700002, -2, -37_000)]
+    build = snapshot(fold=fold, broker_rows=rows)
+    assert build.blockers == (OUTSIDE_UNDEFINED_RISK,)
+    assert build.undefined_risk == (
+        UndefinedRisk(
+            con_id=700002,
+            sec_type="OPT",
+            quantity=-2,
+            reason="unexplained_short_option",
+            intent_id=None,
+        ),
     )
 
 

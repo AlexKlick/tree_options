@@ -12,8 +12,9 @@ every rounding toward MORE risk:
   - our option structure with a spec: its remaining defined max loss, the
     spec's ``max_loss_per_package()`` x 100 x the packages still open
     (the largest leg quantity), counted once per structure, not per leg;
-  - anything else (outside positions, outside or unattributed lots in a
-    touched contract, a lot whose spec is gone, a contract whose lots
+  - anything else whose loss is bounded by what it is worth (outside
+    long positions, outside or unattributed long lots in a touched
+    contract, a long lot whose spec is gone, a contract whose lots
     disagree in sign): broker-priced at its full market value, |market
     value| (stocks may use |quantity| x mark);
 - ``day_realized_loss_cents``: the ledger's realized losses on the ET
@@ -22,22 +23,50 @@ every rounding toward MORE risk:
 - ``equity_gross_cents``: market value of every long stock row;
 - ``outside_positions``: broker rows in contracts the ledger never touched.
 
+Undefined risk (``OUTSIDE_UNDEFINED_RISK``). A short option or a short
+stock has no maximum loss, so |market value| is no reservation for it: it
+would understate the open loss and let entries through. Every such
+position makes the build carry the blocker ``outside_undefined_risk``
+(``RiskSnapshotBuild.blockers``, with one ``UndefinedRisk`` row per
+contract) and publishes the snapshot as ``unavailable``, so every reader
+of the frozen contract fails closed (``risk_snapshot_stale``) until the
+position is gone. The only short option exempt is one of OUR desk-spec'd
+structures whose open lots still form whole packages (as many contracts as
+the structure has legs, one quantity, the legs' long/short signs): the
+spec's defined max loss bounds it. Nothing else can be proven defined
+risk from these rows: neither a broker position row nor a ledger lot
+carries a strike, right or expiry, so an outside spread is not
+recognizable and always blocks. The rules, per contract:
+
+- ``outside_short_option``: a broker short option in a contract the
+  ledger never touched;
+- ``short_option_lot``: a ledger short option lot that no whole
+  structure of ours explains (an outside or unattributed lot, our lot
+  whose option spec is gone, a leg left without the rest of its package);
+- ``unexplained_short_option``: a broker short option in a touched
+  contract beyond the short quantity our whole structures hold there;
+- ``short_stock``: any broker short stock row (a cash-only, long-only
+  account holds none).
+
 Fail closed: an unreadable broker view or cash, a held contract with no
-broker mark, an unpriceable row or an inconsistent ledger gives an
-``unavailable`` snapshot (every figure None), which
+broker mark, an unpriceable row, an inconsistent ledger or undefined risk
+gives an ``unavailable`` snapshot (every figure None), which
 ``risk_snapshot_blockers`` reads as ``risk_snapshot_stale``: entries
 block, exits never read it. A snapshot is stale 120 s after ``as_of``.
+``RiskSnapshotBuild.entry_blockers`` is the contract's blockers plus the
+build's own codes (``outside_undefined_risk``; a plain string until the
+vocabulary lane adds the ``Blocker`` member).
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Final, Literal
 
 from pydantic import ValidationError
 
@@ -47,14 +76,16 @@ from tree_options.trex.contracts.canonical import model_bytes
 from tree_options.trex.contracts.defaults import EQUITY_GAP_RESERVE_BPS
 from tree_options.trex.contracts.desk_spec_v2 import EquityDeskSpecV2
 from tree_options.trex.contracts.layout import Wave2RunDir
-from tree_options.trex.contracts.risk import RiskSnapshot
+from tree_options.trex.contracts.risk import RiskSnapshot, risk_snapshot_blockers
 from tree_options.trex.ledger import AnyDeskSpec, LedgerFold, Lot, write_atomic
 from tree_options.trex.plan import LegStructure
 from tree_options.trex.reconcile import broker_positions, outside_positions
 
 __all__ = [
     "MICROS_PER_CENT",
+    "OUTSIDE_UNDEFINED_RISK",
     "RiskSnapshotBuild",
+    "UndefinedRisk",
     "build_risk_snapshot",
     "equity_open_loss_cents",
     "option_open_loss_cents",
@@ -65,6 +96,14 @@ __all__ = [
 
 MICROS_PER_CENT = 10_000
 SETTLED_CASH_TAG = "SettledCash"
+#: entry blocker: the account holds a position whose loss has no bound
+#: (wire string; ``Blocker.OUTSIDE_UNDEFINED_RISK`` once the vocabulary
+#: lane adds it, equal by ``StrEnum`` value)
+OUTSIDE_UNDEFINED_RISK: Final = "outside_undefined_risk"
+
+UndefinedReason = Literal[
+    "outside_short_option", "short_option_lot", "unexplained_short_option", "short_stock"
+]
 
 
 class _Unpriceable(Exception):
@@ -124,14 +163,48 @@ def settled_cash_cents(rows: Iterable[Any], *, account_id: str | None = None) ->
 
 
 @dataclass(frozen=True)
+class UndefinedRisk:
+    """One contract whose open loss has no bound (see the module doc)."""
+
+    con_id: int
+    sec_type: Literal["OPT", "STK"]
+    #: the short quantity found: the lot's, or the broker row's position
+    quantity: int
+    reason: UndefinedReason
+    #: our intent when the lot is ours (spec gone, broken package), else None
+    intent_id: str | None = None
+
+    def describe(self) -> str:
+        owner = f" of {self.intent_id}" if self.intent_id else ""
+        return (
+            f"{OUTSIDE_UNDEFINED_RISK}: con_id {self.con_id} {self.sec_type} "
+            f"{self.quantity}{owner} ({self.reason})"
+        )
+
+
+@dataclass(frozen=True)
 class RiskSnapshotBuild:
-    """The snapshot plus why it is unavailable (empty when complete)."""
+    """The snapshot to publish, why it is unavailable (empty when complete)
+    and the entry blockers it carries beyond the contract's."""
 
     snapshot: RiskSnapshot
     problems: tuple[str, ...] = ()
+    #: ``(OUTSIDE_UNDEFINED_RISK,)`` while ``undefined_risk`` is non-empty
+    blockers: tuple[str, ...] = ()
+    undefined_risk: tuple[UndefinedRisk, ...] = ()
+
+    def entry_blockers(self, now: datetime) -> tuple[str, ...]:
+        """The contract's snapshot blockers, then this build's own codes."""
+        contract = tuple(b.value for b in risk_snapshot_blockers(self.snapshot, now))
+        return (*contract, *self.blockers)
 
 
-def _unavailable(account_id: str, as_of: datetime, problems: list[str]) -> RiskSnapshotBuild:
+def _unavailable(
+    account_id: str,
+    as_of: datetime,
+    problems: list[str],
+    undefined: Sequence[UndefinedRisk] = (),
+) -> RiskSnapshotBuild:
     snapshot = RiskSnapshot(
         account_id=account_id,
         as_of=as_of,
@@ -141,7 +214,12 @@ def _unavailable(account_id: str, as_of: datetime, problems: list[str]) -> RiskS
         cash_cents=None,
         equity_gross_cents=None,
     )
-    return RiskSnapshotBuild(snapshot=snapshot, problems=tuple(problems))
+    return RiskSnapshotBuild(
+        snapshot=snapshot,
+        problems=tuple(problems),
+        blockers=(OUTSIDE_UNDEFINED_RISK,) if undefined else (),
+        undefined_risk=tuple(undefined),
+    )
 
 
 def _mark_micros(row: BrokerPortfolioItem | None, con_id: int) -> int:
@@ -215,6 +293,68 @@ def _ours_open_loss(
     return loss
 
 
+def _whole_packages(structure: LegStructure, lots: Sequence[Lot]) -> bool:
+    """One intent's open option lots are whole packages of ``structure``:
+    one lot per leg, one quantity, the legs' long/short signs. A spec names
+    no leg con_ids, so this is as far as the rows can prove it."""
+    if len(lots) != len(structure.legs) or len({abs(lot.quantity) for lot in lots}) != 1:
+        return False
+    held = sorted(1 if lot.quantity > 0 else -1 for lot in lots)
+    return held == sorted(leg.sign for leg in structure.legs)
+
+
+def _undefined_risk(
+    lots: Sequence[Lot],
+    rows: Mapping[int, BrokerPortfolioItem],
+    specs: Mapping[str, AnyDeskSpec],
+    touched: frozenset[int],
+) -> tuple[UndefinedRisk, ...]:
+    """Every contract holding a short with no defined max loss (one row per
+    contract, the ledger's reason first, ascending con_id)."""
+    found: dict[int, UndefinedRisk] = {}
+    ours: dict[str, list[Lot]] = defaultdict(list)
+    for lot in lots:
+        if lot.sec_type != "OPT" or not lot.quantity:
+            continue
+        intent = lot.attribution.intent_id
+        if intent is not None:
+            ours[intent].append(lot)
+        elif lot.quantity < 0:
+            found.setdefault(
+                lot.con_id, UndefinedRisk(lot.con_id, "OPT", lot.quantity, "short_option_lot")
+            )
+    defined_short: dict[int, int] = defaultdict(int)
+    for intent in sorted(ours):
+        spec = specs.get(intent)
+        whole = (
+            spec is not None
+            and not isinstance(spec, EquityDeskSpecV2)
+            and _whole_packages(spec.structure, ours[intent])
+        )
+        for lot in ours[intent]:
+            if lot.quantity > 0:
+                continue
+            if whole:
+                defined_short[lot.con_id] -= lot.quantity
+            else:
+                found.setdefault(
+                    lot.con_id,
+                    UndefinedRisk(lot.con_id, "OPT", lot.quantity, "short_option_lot", intent),
+                )
+    for con_id, row in rows.items():
+        reason: UndefinedReason
+        if row.position >= 0:
+            continue
+        if row.sec_type == "STK":
+            reason = "short_stock"
+        elif -row.position > defined_short[con_id]:
+            reason = "unexplained_short_option" if con_id in touched else "outside_short_option"
+        else:
+            continue
+        found.setdefault(con_id, UndefinedRisk(con_id, row.sec_type, row.position, reason))
+    return tuple(found[con_id] for con_id in sorted(found))
+
+
 def _specs_by_intent(specs: Iterable[AnyDeskSpec]) -> dict[str, AnyDeskSpec]:
     out: dict[str, AnyDeskSpec] = {}
     for spec in specs:
@@ -246,11 +386,17 @@ def build_risk_snapshot(
     if rows is None:
         return _unavailable(account_id, as_of, ["broker positions contradict each other"])
     try:
-        open_loss = _ours_open_loss(
-            fold.account_lots(account_id), rows, _specs_by_intent(specs), gap_reserve_bps
-        )
+        by_intent = _specs_by_intent(specs)
+    except _Unpriceable as exc:
+        return _unavailable(account_id, as_of, [str(exc)])
+    lots = fold.account_lots(account_id)
+    touched = fold.touched(account_id)
+    undefined = _undefined_risk(lots, rows, by_intent, touched)
+    problems = [risk.describe() for risk in undefined]
+    try:
+        open_loss = _ours_open_loss(lots, rows, by_intent, gap_reserve_bps)
         outside = outside_positions(
-            account_id=account_id, touched=fold.touched(account_id), broker_rows=list(rows.values())
+            account_id=account_id, touched=touched, broker_rows=list(rows.values())
         )
         for position in outside:
             open_loss += _full_value_cents(
@@ -262,7 +408,9 @@ def build_risk_snapshot(
             if row.sec_type == "STK" and row.position > 0
         )
     except _Unpriceable as exc:
-        return _unavailable(account_id, as_of, [str(exc)])
+        problems.append(str(exc))
+    if problems:
+        return _unavailable(account_id, as_of, problems, undefined)
     day = session_day or as_of.astimezone(SESSION_TIMEZONE).date()
     day_loss_micros = fold.day_realized_loss_micros(account_id, day)
     snapshot = RiskSnapshot(
