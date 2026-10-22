@@ -79,6 +79,9 @@ describe('#/pilot', () => {
     expect(cards.map((c) => c.getAttribute('data-program'))).toEqual([OBSERVATION, BASELINE, CHALLENGER])
     expect(within(cards[0]).getByText(/Sealed by owner@example\.com/)).toBeTruthy()
     expect(within(cards[1]).getByText('Draft: cannot run until the owner seals it.')).toBeTruthy()
+    // a zero budget reads as a decision, not as a used-up day
+    expect(within(cards[0]).getByText('No pilot request budget: no pilot job runs under this program.')).toBeTruthy()
+    expect(within(cards[0]).queryByText(/budget is used up/)).toBeNull()
     expect(screen.getByText(/Paper research only/)).toBeTruthy()
     expect(screen.getByText(/never authorizes live trading/)).toBeTruthy()
     // only reads: the page never posts a command by itself
@@ -101,6 +104,7 @@ describe('#/pilot', () => {
     render(<PilotPanel />)
     const card = (await screen.findAllByRole('article'))[1]
     expect(within(card).getByText('3 of 20 requests')).toBeTruthy()
+    expect(within(card).queryByText(/No pilot .* budget/)).toBeNull()
     expect(within(card).getByText('2 of 10 compute minutes')).toBeTruthy()
     expect(within(card).getByText('2.0 KiB of 64 MiB storage')).toBeTruthy()
   })
@@ -160,6 +164,8 @@ describe('#/pilot/:programId', () => {
     expect(button.disabled).toBe(false)
     fireEvent.click(button)
     expect(await screen.findByText(/Seal queued/)).toBeTruthy()
+    expect(button.disabled).toBe(true) // one seal command per visit
+    fireEvent.click(button)
     const posts = calls.filter((c) => c.init?.method === 'POST')
     expect(posts).toHaveLength(1)
     expect(posts[0].url).toBe('api/commands')

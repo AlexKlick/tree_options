@@ -44,7 +44,16 @@ const ROSTER_WORDS: Record<string, string> = {
 
 const link = (id: string) => `#/pilot/${encodeURIComponent(id)}`
 
-function blockerText(code: string): string {
+// a zero budget is a decision (no pilot job runs under this id), not a used-up day
+const ZERO_BUDGET_WORDS: Record<string, [keyof PilotRegistration['budgets'], string]> = {
+  budget_requests_exhausted: ['requests_per_day', 'No pilot request budget: no pilot job runs under this program.'],
+  budget_compute_exhausted: ['compute_minutes_per_day', 'No pilot compute budget.'],
+  budget_storage_exhausted: ['storage_mb', 'No pilot storage budget.'],
+}
+
+function blockerText(code: string, registration?: PilotRegistration | null): string {
+  const zero = ZERO_BUDGET_WORDS[code]
+  if (zero && registration && registration.budgets[zero[0]] === 0) return zero[1]
   return BLOCKER_WORDS[code] ?? code
 }
 
@@ -99,7 +108,7 @@ function Blockers({ row }: { row: PilotProgramRow }) {
   return (
     <ul className="pilot-blockers" aria-label="Why it cannot run now">
       {row.run_blockers.map((code) => (
-        <li key={code}>{blockerText(code)}</li>
+        <li key={code}>{blockerText(code, row.registration)}</li>
       ))}
     </ul>
   )
@@ -131,9 +140,11 @@ function SealSection({ row, view, onSealed }: { row: PilotProgramRow; view: Pilo
     .map((control) => control.program_id)
     .filter((id) => view.programs?.find((p) => p.program_id === id)?.state !== 'sealed')
   const sha = row.review_sha256
+  // one seal command per page visit: the desk applies it, the view then shows it sealed
+  const queued = answer?.outcome === 'queued'
 
   async function seal() {
-    if (!checked || sending || unsealedControls.length > 0) return
+    if (!checked || sending || queued || unsealedControls.length > 0) return
     // a retry after a network failure resends the same body (the store then
     // answers duplicate); anything else is a new command
     const reuse = pending && answer?.outcome === 'not_sent' && Date.parse(pending.expires_at) > Date.now()
@@ -178,7 +189,7 @@ function SealSection({ row, view, onSealed }: { row: PilotProgramRow; view: Pilo
           <button
             type="button"
             className="pilot-seal-button"
-            disabled={!checked || sending || unsealedControls.length > 0}
+            disabled={!checked || sending || queued || unsealedControls.length > 0}
             onClick={() => void seal()}
           >
             Seal registration
