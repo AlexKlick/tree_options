@@ -13,15 +13,31 @@ body hash excludes the per-HTTP-request ``issued_by.request_id`` and
 ``issued_by.request_sha256`` (a browser retry is a duplicate, not a
 mismatch) but includes the actor's ``sub`` and ``ingress`` (another
 principal reusing a key is a mismatch).
+
+Wave 5 amendment (additive, 2026-10-21): ``compose_entry`` takes an
+optional ``manual_equity_ticket`` (``ManualEquityTicket``): the owner's own
+whole-share SPY ticket, composed by the desk from the ticket and a live
+quote. Its candidate id is ``manual:<lower-case uuid>`` and no draft file
+stands behind it. An absent ticket is absent from the document, so every
+earlier ``compose_entry`` keeps its bytes and its ``command_body_sha256``.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Protocol
+from datetime import date
+from typing import Annotated, Any, Final, Literal, Protocol
 
-from pydantic import Field, JsonValue, TypeAdapter, model_validator
+from pydantic import (
+    Field,
+    JsonValue,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    model_serializer,
+    model_validator,
+)
 
 from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.schemas.common import IdStr, StrictModel
@@ -30,6 +46,7 @@ from tree_options.trex.contracts.canonical import (
     PathSafeId,
     Reason,
     Sha256Hex,
+    Symbol,
     UTCInstant,
     model_document,
     sha256_hex,
@@ -41,6 +58,8 @@ __all__ = [
     "COMMAND_ADAPTER",
     "COMMAND_RESULT_SCHEMA",
     "COMMAND_SCHEMA",
+    "MANUAL_CANDIDATE_PREFIX",
+    "MANUAL_STRATEGY_VERSION",
     "Actor",
     "AnyCommand",
     "ApproveEntryArgs",
@@ -55,6 +74,8 @@ __all__ = [
     "ComposeEntryCommand",
     "FlattenCommand",
     "HaltCommand",
+    "ManualEquityTicket",
+    "ManualLimit",
     "PauseEntriesCommand",
     "RawCommandRequest",
     "ReasonArgs",
@@ -67,6 +88,7 @@ __all__ = [
     "TrexCommand",
     "actor_binds_request",
     "command_body_sha256",
+    "manual_intent_id",
     "parse_command",
 ]
 
@@ -148,13 +170,97 @@ def actor_binds_request(actor: Actor, raw_request: RawCommandRequest) -> bool:
 # -- args ------------------------------------------------------------------
 
 
+#: Wave 5: the candidate id of a manual ticket is this prefix plus a
+#: lower-case UUID the client mints once per ticket.
+MANUAL_CANDIDATE_PREFIX: Final = "manual:"
+#: Wave 5: the ``strategy_version`` the desk binds to every manual ticket.
+MANUAL_STRATEGY_VERSION: Final = "owner-manual/1"
+_MANUAL_CANDIDATE = re.compile(
+    r"^manual:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+)
+
+
+def manual_intent_id(candidate_id: str) -> str:
+    """The path-safe intent id of a manual ticket (``manual-<uuid>``): the
+    ``:`` of the candidate id cannot be a file name (mandate/2, spec/2)."""
+    match = _MANUAL_CANDIDATE.fullmatch(candidate_id)
+    if match is None:
+        raise ValueError("a manual candidate id is manual:<lower-case uuid>")
+    return f"manual-{match.group(1)}"
+
+
+class ManualLimit(StrictModel):
+    """An explicit DAY limit for a manual ticket, in integer cents."""
+
+    limit_cents: int = Field(strict=True, gt=0)
+
+
+class ManualEquityTicket(StrictModel):
+    """The owner's own whole-share, long-only stock ticket (Wave 5).
+
+    The desk turns it into a ``supervised-equity-effect/1``: the stock
+    qualified, the limit from a live real-time quote by ``limit_policy``
+    (``ask``; ``mid`` = (bid + ask) / 2 rounded up to the cent; or an
+    explicit ``limit_cents``), the exit policy exactly as given
+    (``stop_confirm_ticks`` and ``forced_exit_et`` at their defaults). The
+    allowlist, cash, entry window and session cap are the desk's screening,
+    never this schema's: a ticket is only well formed here."""
+
+    symbol: Symbol
+    quantity: int = Field(strict=True, ge=1)
+    stop_price_cents: int = Field(strict=True, gt=0)
+    target_price_cents: Annotated[int, Field(strict=True, gt=0)] | None = None
+    exit_deadline_session: date
+    limit_policy: Literal["ask", "mid"] | ManualLimit
+
+    @model_validator(mode="after")
+    def _prices(self) -> ManualEquityTicket:
+        stop, target = self.stop_price_cents, self.target_price_cents
+        if target is not None and target <= stop:
+            raise ValueError("target_price_cents must be above stop_price_cents")
+        if isinstance(self.limit_policy, ManualLimit):
+            limit = self.limit_policy.limit_cents
+            if stop >= limit:
+                raise ValueError("stop_price_cents must be below limit_cents")
+            if target is not None and target <= limit:
+                raise ValueError("target_price_cents must be above limit_cents")
+        return self
+
+
 class ComposeEntryArgs(StrictModel):
-    """Ask the desk to screen a candidate and write a proposal for it."""
+    """Ask the desk to screen a candidate and write a proposal for it.
+
+    ``manual_equity_ticket`` (Wave 5, optional): set exactly when
+    ``candidate_id`` is ``manual:<lower-case uuid>``, and only for
+    ``asset_kind`` equity. Absent from the document when None."""
 
     program_id: IdStr
     candidate_id: IdStr
     asset_kind: Literal["option", "equity"]
     sleeve_ref: IdStr | None = None
+    manual_equity_ticket: ManualEquityTicket | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_ticket(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """An absent ticket stays absent: an earlier ``compose_entry``
+        document (and its body hash) is unchanged."""
+        document = handler(self)
+        if self.manual_equity_ticket is None and isinstance(document, dict):
+            document.pop("manual_equity_ticket", None)
+        return document
+
+    @model_validator(mode="after")
+    def _manual(self) -> ComposeEntryArgs:
+        manual = self.candidate_id.startswith(MANUAL_CANDIDATE_PREFIX)
+        if self.manual_equity_ticket is None:
+            if manual:
+                raise ValueError("a manual: candidate carries its manual_equity_ticket")
+            return self
+        if self.asset_kind != "equity":
+            raise ValueError("a manual ticket is an equity entry")
+        if _MANUAL_CANDIDATE.fullmatch(self.candidate_id) is None:
+            raise ValueError("a manual ticket's candidate_id is manual:<lower-case uuid>")
+        return self
 
 
 class ApproveEntryArgs(StrictModel):

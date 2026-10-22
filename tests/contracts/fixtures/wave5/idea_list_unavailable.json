@@ -1,0 +1,36 @@
+{
+  "drafts": {
+    "blocked": null,
+    "items": null,
+    "problems": null,
+    "status": "unavailable",
+    "truncated": null,
+    "unavailable_reason": "drafts_dir_unreadable"
+  },
+  "execution_enabled": false,
+  "manual_equity": {
+    "candidate_prefix": "manual:",
+    "hints": [
+      "profile_absent",
+      "outside_regular_session",
+      "entry_window_closed"
+    ],
+    "limit_policies": [
+      "ask",
+      "mid",
+      "limit_cents"
+    ],
+    "max_entries_per_session": 3,
+    "program_id": "owner-manual",
+    "strategy_version": "owner-manual/1",
+    "symbols": [
+      "SPY"
+    ],
+    "window_closes_at": null,
+    "window_opens_at": null,
+    "window_session": null,
+    "window_status": "no_session"
+  },
+  "now": "2026-10-24T15:00:00Z",
+  "schema": "trex-idea-list/1"
+}

@@ -1,0 +1,27 @@
+{
+  "args": {
+    "asset_kind": "equity",
+    "candidate_id": "manual:3b0d6c1e-8f2a-4c5d-9e7f-1a2b3c4d5e6f",
+    "manual_equity_ticket": {
+      "exit_deadline_session": "2026-10-23",
+      "limit_policy": "ask",
+      "quantity": 2,
+      "stop_price_cents": 66500,
+      "symbol": "SPY",
+      "target_price_cents": 68000
+    },
+    "program_id": "owner-manual",
+    "sleeve_ref": null
+  },
+  "expires_at": "2026-10-22T14:03:30Z",
+  "idempotency_key": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+  "issued_at": "2026-10-22T14:01:30Z",
+  "issued_by": {
+    "ingress": "family",
+    "request_id": "req-0005",
+    "request_sha256": "5b0e3f2c1d4a6b8e9f7a2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5a6b7",
+    "sub": "owner"
+  },
+  "kind": "compose_entry",
+  "schema": "trex-command/1"
+}

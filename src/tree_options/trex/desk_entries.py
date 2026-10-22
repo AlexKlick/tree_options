@@ -25,6 +25,22 @@ PAPER ONLY: the effects bind IBKR paper accounts, the mandate is
    screening digest, owner epoch and profile digest) is written once, in its
    canonical bytes, to ``proposals/<proposal_id>.json``.
 
+**A manual equity ticket** (Wave 5: ``args.manual_equity_ticket``, candidate
+``manual:<uuid>``) takes the place of step 2; no draft file stands behind it.
+Before any broker call: the symbol is on the allowlist
+(``equity_symbol_not_qualified``), ``now`` is inside the equity entry window
+(``entry_window_closed``), and the exit deadline is a session on or after
+today (``manual_ticket_invalid``). Then the session guards
+(``paper_blockers``), the stock qualified, its live quote (none:
+``quote_unavailable``; not real time: ``equity_quote_not_realtime``), the
+limit by the ticket's policy (``ask``; ``mid`` rounded up to the cent; an
+explicit limit), the stop below and the target above that limit
+(``manual_ticket_invalid``), and ``equity_draft`` with intent
+``manual-<uuid>``, strategy ``owner-manual/1``, valid until the entry window
+closes. Steps 3 to 5 follow unchanged: the same screening as every equity
+entry (allowlist, cash, window, session cap, risk caps). Composing never
+grants a mandate and never sends; the approval stays the owner's own act.
+
 **Approve** (exactly one send per proposal):
 
 1. the proposal exists, is canonical and not rejected (``proposal_unknown``
@@ -72,6 +88,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
+from tree_options.action_graph.canary import equity_entry_window, equity_entry_window_blockers
 from tree_options.execution import OrderIntent
 from tree_options.time.sessions import shift_instant
 from tree_options.trex import supervised as supervised_core
@@ -79,15 +96,19 @@ from tree_options.trex.admission import entry_send_blockers, owner_fact_blockers
 from tree_options.trex.clock import ET, session_calendar
 from tree_options.trex.contracts.canonical import model_document
 from tree_options.trex.contracts.commands import (
+    MANUAL_STRATEGY_VERSION,
     AnyCommand,
     ApproveEntryCommand,
     CommandResult,
     ComposeEntryCommand,
+    ManualLimit,
     RejectEntryCommand,
+    manual_intent_id,
 )
 from tree_options.trex.contracts.defaults import EQUITY_GAP_RESERVE_BPS, PROPOSAL_MAX_TTL_S
 from tree_options.trex.contracts.effects import (
     EFFECT_V1_ADAPTER,
+    EquityExitPolicy,
     SupervisedEffect,
     SupervisedEquityEffect,
     effect_v1_bytes,
@@ -118,7 +139,7 @@ from tree_options.trex.desk_commands import (
 from tree_options.trex.desk_runtime import assignment_plan, exit_owner_ready
 from tree_options.trex.desk_spec import DeskSpec
 from tree_options.trex.equity_exits import in_regular_session
-from tree_options.trex.ibkr import market_data_type_name
+from tree_options.trex.ibkr import StockNotQualified, market_data_type_name
 from tree_options.trex.ledger import LedgerFold
 from tree_options.trex.risk_snapshot import option_open_loss_cents
 from tree_options.trex.state import ENTRY_LANE, BookState
@@ -135,6 +156,7 @@ from tree_options.trex.supervised_canary import (
     OperatorCanaryInputs,
     collect_entry_screening,
 )
+from tree_options.trex.supervised_ibkr import supervised_order_ref
 
 if TYPE_CHECKING:
     from tree_options.trex.contracts.desk_spec_v2 import EquityDeskSpecV2
@@ -142,12 +164,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_SEND_TTL_S",
+    "MANUAL_TICKET_INVALID",
     "REJECTION_SCHEMA",
     "OwnerEntries",
     "Reservation",
     "entries_this_session",
     "equity_draft",
     "equity_loss_cents",
+    "manual_limit_cents",
     "pending_reservation",
 ]
 
@@ -161,6 +185,8 @@ _PATH_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _TERMINAL, _SENDING, _RECONCILED = ".terminal.json", ".sending.json", ".reconciled.json"
 _OPTION_MULTIPLIER = 100
 _CENTS = Decimal(100)
+#: Wave 5: a manual ticket the live price cannot turn into a valid effect
+MANUAL_TICKET_INVALID = "manual_ticket_invalid"
 
 Effect = SupervisedEffect | SupervisedEquityEffect
 
@@ -329,6 +355,19 @@ def equity_draft(
             },
         },
     }
+
+
+def manual_limit_cents(policy: str | ManualLimit, bid_cents: int, ask_cents: int) -> int:
+    """A manual ticket's DAY limit from a two-sided quote (cents): the ask;
+    the mid rounded UP to the cent (a buy limit never sits below the mid);
+    or the ticket's explicit limit."""
+    if isinstance(policy, ManualLimit):
+        return policy.limit_cents
+    if policy == "ask":
+        return ask_cents
+    if policy == "mid":
+        return -(-(bid_cents + ask_cents) // 2)
+    raise ValueError(f"unknown limit policy {policy!r}")
 
 
 def _read_bounded(path: Path) -> bytes:
@@ -621,6 +660,77 @@ class OwnerEntries:
         }
         return effect, rebound, valid_until
 
+    def _manual_candidate(
+        self, command: ComposeEntryCommand, account: str, now: datetime
+    ) -> tuple[Effect, dict[str, Any], datetime] | Outcome:
+        """A manual equity ticket as an equity draft (the module docstring's
+        manual steps): the pure checks first, so a symbol off the allowlist
+        or a closed window never reaches the broker."""
+        args = command.args
+        ticket = args.manual_equity_ticket
+        assert ticket is not None  # compose dispatches here only with one
+        desk = self.desk
+        base: dict[str, Any] = {"candidate": args.candidate_id, "symbol": ticket.symbol}
+        if ticket.symbol not in desk.broker.equity_allowlist:
+            return refused(Blocker.EQUITY_SYMBOL_NOT_QUALIFIED, **base)
+        closed = equity_entry_window_blockers(now)
+        if closed:
+            return refused(closed[0], **base)
+        session = now.astimezone(ET).date()
+        deadline = ticket.exit_deadline_session
+        if deadline < session or not session_calendar().is_session(deadline):
+            return refused(
+                MANUAL_TICKET_INVALID,
+                "exit_deadline_session is not a session on or after today",
+                **base,
+            )
+        guards = desk.broker.paper_blockers(account)
+        if guards:
+            return refused(guards[0], blockers=list(guards), **base)
+        try:
+            con_id = desk.ib.prepare_stock(ticket.symbol)
+        except StockNotQualified:
+            return refused(Blocker.EQUITY_SYMBOL_NOT_QUALIFIED, **base)
+        held = desk.ib.equity_quote(ticket.symbol)
+        if held is None:
+            return refused(Blocker.QUOTE_UNAVAILABLE, **base)
+        if not held.realtime:
+            return refused(Blocker.EQUITY_QUOTE_NOT_REALTIME, **base)
+        limit = manual_limit_cents(ticket.limit_policy, held.bid_cents, held.ask_cents)
+        priced = {**base, "limit_cents": limit, "bid_cents": held.bid_cents}
+        priced["ask_cents"] = held.ask_cents
+        target = ticket.target_price_cents
+        if ticket.stop_price_cents >= limit:
+            return refused(MANUAL_TICKET_INVALID, "the stop is not below the limit", **priced)
+        if target is not None and target <= limit:
+            return refused(MANUAL_TICKET_INVALID, "the target is not above the limit", **priced)
+        intent_id = manual_intent_id(args.candidate_id)
+        effect = SupervisedEquityEffect(
+            intent_id=intent_id,
+            account_id=account,
+            symbol=ticket.symbol,
+            con_id=con_id,
+            side="BUY",
+            quantity=ticket.quantity,
+            limit_cents=limit,
+            order_ref=supervised_order_ref(intent_id),
+            exit_policy=EquityExitPolicy(
+                stop_price_cents=ticket.stop_price_cents,
+                target_price_cents=target,
+                exit_deadline_session=deadline,
+            ),
+        )
+        _, window_end = equity_entry_window(session)
+        draft = equity_draft(
+            effect,
+            program_id=args.program_id,
+            strategy_version=MANUAL_STRATEGY_VERSION,
+            valid_until=window_end,
+            candidate_id=args.candidate_id,
+        )
+        draft["body"]["sleeve_ref"] = args.sleeve_ref
+        return effect, draft, window_end
+
     def compose(self, command: ComposeEntryCommand, now: datetime) -> Outcome:
         from tree_options.desk.enter_supervised import complete_draft
 
@@ -635,7 +745,11 @@ class OwnerEntries:
         account = desk.books.account_id()
         if account is None:
             return refused("account_unbound")
-        candidate = self._candidate(command, account)
+        candidate = (
+            self._candidate(command, account)
+            if command.args.manual_equity_ticket is None
+            else self._manual_candidate(command, account, now)
+        )
         if isinstance(candidate, Outcome):
             return candidate
         effect, draft, valid_until = candidate

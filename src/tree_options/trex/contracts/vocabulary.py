@@ -15,6 +15,10 @@ Amendment 2026-10-21 (W2c integration, additive): the plain strings the
 Wave 2b owner lane emits (its entry flows, command consumer, connection
 edge and books events) and ``flatten`` (a standing FLATTEN blocks entries),
 each value exactly as its producer spells it.
+
+Amendment 2026-10-21 (Wave 5, additive): ``manual_ticket_invalid`` (the
+owner's manual equity ticket) and the two unreadable states of
+``GET /api/ideas``.
 """
 
 from __future__ import annotations
@@ -165,6 +169,14 @@ class Blocker(StrEnum):
     COMMAND_KEY_MISMATCH = "command_key_mismatch"
     APPLY_ERROR = "apply_error"
     OWNER_STOPPED_BEFORE_RESULT = "owner_stopped_before_result"
+    # --- amendment 2026-10-21 (Wave 5, owner-initiated entries): additive -
+    # a manual equity ticket the live price cannot turn into a valid effect
+    # (trex.desk_entries)
+    MANUAL_TICKET_INVALID = "manual_ticket_invalid"
+    # GET /api/ideas (trex_web.entry_ideas_view): the drafts directory, or
+    # one draft file, cannot be read
+    DRAFTS_DIR_UNREADABLE = "drafts_dir_unreadable"
+    DRAFT_UNREADABLE = "draft_unreadable"
 
 
 @unique

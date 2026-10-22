@@ -8708,6 +8708,50 @@ MUTANTS.extend(
 )
 
 
+# Wave 5 (owner-initiated entries): the manual equity ticket the desk composes,
+# the compose_entry amendment's unchanged earlier bytes, and GET /api/ideas.
+MUTANTS.extend(
+    [
+        {
+            "id": "W5B-M1-manual-ticket-allowlist-skipped",
+            "owner": "test_a_symbol_off_the_allowlist_is_refused_before_any_quote",
+            "file": "src/tree_options/trex/desk_entries.py",
+            "anchor": "        if ticket.symbol not in desk.broker.equity_allowlist:",
+            "replacement": "        if False:",
+            "selectors": ["tests/unit/test_desk_manual_ticket.py"],
+            "invariant": "a manual ticket off the equity allowlist is refused before any broker call",
+        },
+        {
+            "id": "W5B-M2-manual-ticket-target-unbound",
+            "owner": "test_a_manual_spy_ticket_composes_a_proposal_with_the_bound_exit_policy",
+            "file": "src/tree_options/trex/desk_entries.py",
+            "anchor": "                target_price_cents=target,",
+            "replacement": "                target_price_cents=None,",
+            "selectors": ["tests/unit/test_desk_manual_ticket.py"],
+            "invariant": "the proposal a manual ticket composes binds exactly the ticket's exit policy",
+        },
+        {
+            "id": "W5B-M3-compose-args-ticket-always-serialized",
+            "owner": "test_an_earlier_compose_entry_keeps_its_bytes_and_body_hash",
+            "file": "src/tree_options/trex/contracts/commands.py",
+            "anchor": '            document.pop("manual_equity_ticket", None)',
+            "replacement": "            pass",
+            "selectors": ["tests/contracts/test_wave5_contracts.py"],
+            "invariant": "an earlier compose_entry keeps its bytes and command_body_sha256 (additive amendment)",
+        },
+        {
+            "id": "W5B-M4-ideas-outbox-spend-ignored",
+            "owner": "test_a_rejected_proposal_frees_the_idea_and_an_outbox_entry_spends_it",
+            "file": "src/tree_options/trex_web/entry_ideas_view.py",
+            "anchor": '    spent = proposal_status == "consumed" or _intent_spent(supervised_dir, effect.intent_id)',
+            "replacement": '    spent = proposal_status == "consumed"',
+            "selectors": ["tests/unit/test_trex_web_entry_ideas.py"],
+            "invariant": "GET /api/ideas marks an idea used once its intent reached the supervised outbox",
+        },
+    ]
+)
+
+
 # Parked with the derived-cost custody/governance suites (docs/desk/PARKED-DERIVED-COST.md).
 # Their guarded source or their owning test files never landed on main: the first group's
 # anchors occur 0x (MUTATION_DRIFT), the second group's selector files do not exist

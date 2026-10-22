@@ -521,7 +521,15 @@ export interface ApproveEntryArgs {
   profile_digest: Sha256Hex
 }
 export interface CommandArgs {
-  compose_entry: { program_id: string; candidate_id: string; asset_kind: AssetKind; sleeve_ref?: string | null }
+  /** Wave 5 amendment: `manual_equity_ticket` is set exactly for a
+   * `manual:<uuid>` candidate (asset_kind `equity`); absent otherwise. */
+  compose_entry: {
+    program_id: string
+    candidate_id: string
+    asset_kind: AssetKind
+    sleeve_ref?: string | null
+    manual_equity_ticket?: ManualEquityTicket
+  }
   approve_entry: ApproveEntryArgs
   reject_entry: { proposal_id: Sha256Hex; reason?: string }
   pause_entries: { reason?: string }
@@ -686,6 +694,125 @@ export interface PortfolioView {
   entry_blockers: string[]
   exits_blocked: boolean
   problems: Record<string, string>[]
+  execution_enabled: false
+}
+
+// ---------------------------------------------------------------- Wave 5: owner-initiated entries
+
+// The owner starts every trade: a qualified idea (a draft listed by
+// GET /api/ideas, composed with its `compose_args`) or a manual equity
+// ticket (compose_entry + `manual_equity_ticket`). Composing never approves
+// or sends; the approval stays a separate owner act on the proposal.
+// Python: contracts/ideas.py and contracts/commands.py; fixtures:
+// tests/contracts/fixtures/wave5/ (contracts.wave5.test.ts).
+
+/** `GET /api/ideas` (`trex-idea-list/1`), relative to the app's mount. */
+export const IDEAS_PATH = '/api/ideas' as const
+/** A manual ticket's candidate id is this prefix plus a lower-case UUID. */
+export const MANUAL_CANDIDATE_PREFIX = 'manual:' as const
+export type ManualLimitPolicy = 'ask' | 'mid' | { limit_cents: number }
+
+/** The owner's own whole-share, long-only stock ticket. Money in integer
+ * cents. The desk prices it from a live real-time quote: `ask`; `mid`
+ * rounded up to the cent; or the explicit `{limit_cents}`. */
+export interface ManualEquityTicket {
+  symbol: string
+  quantity: number
+  stop_price_cents: number
+  target_price_cents?: number | null
+  exit_deadline_session: IsoDate
+  limit_policy: ManualLimitPolicy
+}
+
+const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/** `manual:<uuid>`: mint the UUID once per ticket and keep it for retries. */
+export function manualCandidateId(ticketUuid: string): string {
+  if (!LOWER_UUID.test(ticketUuid)) throw new RangeError('a manual ticket id is a lower-case UUID')
+  return `${MANUAL_CANDIDATE_PREFIX}${ticketUuid}`
+}
+
+export interface IdeaLeg {
+  right: 'C' | 'P'
+  action: 'BUY' | 'SELL'
+  strike_cents: number
+  expiry: IsoDate
+}
+export interface IdeaOption {
+  kind: string
+  legs: IdeaLeg[]
+  quantity: number
+  /** The package limit per share in cents (0.90 is 90). */
+  limit_cents: number
+  exit_deadline: IsoDate
+}
+export interface IdeaEquity {
+  quantity: number
+  limit_cents: number
+  stop_price_cents: number
+  /** null: no target (the desk exits by stop or deadline). */
+  target_price_cents: number | null
+  exit_deadline_session: IsoDate
+}
+export type IdeaStatus = 'available' | 'proposed' | 'used' | 'expired'
+export type IdeaProposalStatus = 'none' | 'pending' | 'approved' | 'consumed' | 'rejected' | 'expired' | 'unknown'
+export type Idea = {
+  candidate_id: string
+  underlying: string
+  intent_id: string
+  program_id: string
+  strategy_version: string
+  summary: string
+  max_loss_cents: number
+  notional_cents: number
+  written_at: Instant
+  age_s: number
+  entry_session: IsoDate
+  valid_until: Instant
+  /** Whole seconds left at the response's `now` (count down from receipt). */
+  seconds_to_expiry: number
+  status: IdeaStatus
+  /** Advisory: the desk screens everything again when it composes. */
+  hints: ReasonCode[]
+  /** What the compose_entry command repeats, verbatim. */
+  compose_args: CommandArgs['compose_entry']
+} & (
+  | { asset_kind: 'option'; option: IdeaOption; equity: null }
+  | { asset_kind: 'equity'; option: null; equity: IdeaEquity }
+) &
+  ({ proposal_status: 'none'; proposal_id: null } | { proposal_status: Exclude<IdeaProposalStatus, 'none'>; proposal_id: Sha256Hex })
+export interface BlockedIdea {
+  candidate_id: string
+  kind: string
+  reason: string
+  written_at: Instant
+}
+export interface IdeaProblem {
+  file: string
+  reason: ReasonCode
+}
+export type DraftIdeas = Block<
+  'ok',
+  { items: Idea[]; blocked: BlockedIdea[]; problems: IdeaProblem[]; truncated: boolean }
+>
+export type ManualEquityTerms = {
+  candidate_prefix: typeof MANUAL_CANDIDATE_PREFIX
+  program_id: string
+  strategy_version: string
+  symbols: string[]
+  limit_policies: ('ask' | 'mid' | 'limit_cents')[]
+  max_entries_per_session: number
+  hints: ReasonCode[]
+} & (
+  | { window_status: 'no_session'; window_session: null; window_opens_at: null; window_closes_at: null }
+  | { window_status: 'open' | 'closed'; window_session: IsoDate; window_opens_at: Instant; window_closes_at: Instant }
+)
+/** `GET /api/ideas` (`trex-idea-list/1`). */
+export interface IdeaList {
+  schema: 'trex-idea-list/1'
+  now: Instant
+  drafts: DraftIdeas
+  manual_equity: ManualEquityTerms
   execution_enabled: false
 }
 
@@ -961,4 +1088,69 @@ export const KEYS = {
     'execution_enabled',
   ]),
   Holding: keys<Holding>()(['account_id', 'con_id', 'sec_type', 'symbol', 'quantity', 'cost_basis_micros', 'lots']),
+  // -- Wave 5 (tests/contracts/fixtures/wave5/) --
+  IdeaList: keys<IdeaList>()(['schema', 'now', 'drafts', 'manual_equity', 'execution_enabled']),
+  DraftIdeas: keys<DraftIdeas>()(['status', 'unavailable_reason', 'items', 'blocked', 'problems', 'truncated']),
+  Idea: keys<Idea>()([
+    'candidate_id',
+    'asset_kind',
+    'underlying',
+    'intent_id',
+    'program_id',
+    'strategy_version',
+    'summary',
+    'option',
+    'equity',
+    'max_loss_cents',
+    'notional_cents',
+    'written_at',
+    'age_s',
+    'entry_session',
+    'valid_until',
+    'seconds_to_expiry',
+    'status',
+    'proposal_status',
+    'proposal_id',
+    'hints',
+    'compose_args',
+  ]),
+  IdeaOption: keys<IdeaOption>()(['kind', 'legs', 'quantity', 'limit_cents', 'exit_deadline']),
+  IdeaLeg: keys<IdeaLeg>()(['right', 'action', 'strike_cents', 'expiry']),
+  IdeaEquity: keys<IdeaEquity>()([
+    'quantity',
+    'limit_cents',
+    'stop_price_cents',
+    'target_price_cents',
+    'exit_deadline_session',
+  ]),
+  BlockedIdea: keys<BlockedIdea>()(['candidate_id', 'kind', 'reason', 'written_at']),
+  IdeaProblem: keys<IdeaProblem>()(['file', 'reason']),
+  ManualEquityTerms: keys<ManualEquityTerms>()([
+    'candidate_prefix',
+    'program_id',
+    'strategy_version',
+    'symbols',
+    'limit_policies',
+    'max_entries_per_session',
+    'window_status',
+    'window_session',
+    'window_opens_at',
+    'window_closes_at',
+    'hints',
+  ]),
+  ManualEquityTicket: keys<ManualEquityTicket>()([
+    'symbol',
+    'quantity',
+    'stop_price_cents',
+    'target_price_cents',
+    'exit_deadline_session',
+    'limit_policy',
+  ]),
+  ComposeEntryArgs: keys<CommandArgs['compose_entry']>()([
+    'program_id',
+    'candidate_id',
+    'asset_kind',
+    'sleeve_ref',
+    'manual_equity_ticket',
+  ]),
 } as const

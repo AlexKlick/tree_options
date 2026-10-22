@@ -498,6 +498,7 @@ def create_app(
     from tree_options.trex_web.activity_view import attach as attach_activity
     from tree_options.trex_web.commands_view import attach as attach_commands
     from tree_options.trex_web.desk_view import attach as attach_desk_evidence
+    from tree_options.trex_web.entry_ideas_view import attach as attach_entry_ideas
     from tree_options.trex_web.family_authority import (
         dispatching_authority,
         family_ingress_status,
@@ -546,6 +547,10 @@ def create_app(
     attach_activity(app, run_dir=resolve_run_dir, clock=clock)
     attach_acceptance(app, clock=clock)
     attach_pilot(app, clock=clock)
+    # Wave 5: what the owner may compose (drafts + manual ticket terms; read only)
+    attach_entry_ideas(
+        app, run_dir=resolve_run_dir, supervised_dir=resolve_supervised_dir, clock=clock
+    )
 
     attach_desk_evidence(
         app,
