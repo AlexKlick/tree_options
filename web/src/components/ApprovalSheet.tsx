@@ -54,7 +54,7 @@ export function Unavailable({ reason, what = 'Unavailable' }: { reason: string; 
 const APPLIED_TEXT: Partial<Record<CommandKind, string>> = {
   approve_entry: 'Approved. The desk owner granted this one paper entry.',
   reject_entry: 'Rejected. The desk will not send this entry.',
-  pause_entries: 'New entries are paused. Exits keep running.',
+  pause_entries: 'New entries are paused. Pausing never stops exits.',
   resume_entries: 'New entries are open again.',
 }
 
@@ -184,10 +184,10 @@ export interface ApprovalSheetProps {
   pollMs?: number
 }
 
-/** The contract's `secondsLeft` for ApprovalFacts (it reads only
- * `seconds_to_deadline`, which ApprovalFacts carries). */
+/** The contract's `secondsLeft` for ApprovalFacts (it takes any value with
+ * `seconds_to_deadline` since the integration amendment; no cast). */
 export const approvalSecondsLeft = (approval: ApprovalFacts, receivedAtMs: number, nowMs: number): number =>
-  secondsLeft(approval as PendingApproval, receivedAtMs, nowMs)
+  secondsLeft(approval, receivedAtMs, nowMs)
 const leftOn = approvalSecondsLeft
 
 export function ApprovalSheet({

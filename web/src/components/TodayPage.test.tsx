@@ -130,12 +130,12 @@ describe('TodayPage with every block known', () => {
 })
 
 describe('the pause is the primary control', () => {
-  it('Pause new entries queues pause_entries and says exits keep running', async () => {
+  it('Pause new entries queues pause_entries and says pausing never stops exits', async () => {
     const today = todayFixture()
     today.controls.queued = { status: 'ok', unavailable_reason: null, items: [] }
     const calls = await mount(today)
     const controls = region('Controls')
-    expect(controls.textContent).toContain('Exits keep running')
+    expect(controls.textContent).toContain('it never stops exits')
     fireEvent.click(within(controls).getByRole('button', { name: CONTROL_LABELS.pause_entries }))
     await flush()
     const sent = posts(calls)
@@ -150,6 +150,44 @@ describe('the pause is the primary control', () => {
     const pause = within(controls).getByRole('button', { name: CONTROL_LABELS.pause_entries }) as HTMLButtonElement
     expect(pause.disabled).toBe(true)
     expect(controls.textContent).toContain('queued for the desk owner')
+  })
+
+  it('after an unconfirmed send, pressing again re-sends the SAME request (review P2)', async () => {
+    const today = todayFixture()
+    today.controls.queued = { status: 'ok', unavailable_reason: null, items: [] }
+    let failures = 1
+    const calls = installFetch((call) => {
+      if (call.url === 'api/today' && call.method === 'GET') return fakeResponse(200, today)
+      if (call.url === 'api/commands' && call.method === 'POST') {
+        if (failures-- > 0) return fakeResponse(503, '<html>upstream down</html>', 'text/html')
+        return fakeResponse(202, resultFor(call.body!, 'accepted'))
+      }
+      return fakeResponse(404, { error: 'unknown' })
+    })
+    render(<TodayPage />)
+    await flush()
+    const controls = region('Controls')
+    fireEvent.click(within(controls).getByRole('button', { name: CONTROL_LABELS.pause_entries }))
+    await flush()
+    expect(controls.textContent).toContain('Trying again re-sends the same request')
+    fireEvent.click(within(controls).getByRole('button', { name: CONTROL_LABELS.pause_entries }))
+    await flush()
+    const sent = posts(calls).map((c) => c.body)
+    expect(sent).toHaveLength(2)
+    expect(sent[1]).toBe(sent[0]) // same key, same bytes: at most one pause is queued
+  })
+
+  it('never says exits keep running beside a standing emergency stop (review P2)', async () => {
+    const today = todayFixture()
+    today.controls.queued = { status: 'ok', unavailable_reason: null, items: [] }
+    const since = '2026-10-22T13:45:00Z'
+    today.controls.pause_entries = { name: 'PAUSE_ENTRIES', status: 'standing', unavailable_reason: null, since, reason: '' }
+    today.controls.halt = { name: 'HALT', status: 'standing', unavailable_reason: null, since, reason: '' }
+    await mount(today)
+    const page = document.body.textContent ?? ''
+    expect(page).not.toMatch(/exits keep running/i)
+    expect(region('Desk status').textContent).toContain('Exits are NOT running')
+    expect(region('Desk status').textContent).toContain('NOT sent')
   })
 
   it('a standing pause offers Resume new entries', async () => {

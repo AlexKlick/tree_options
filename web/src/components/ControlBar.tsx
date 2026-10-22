@@ -13,7 +13,9 @@
 //   non-JSON answer) keeps its exact body: pressing the control again or
 //   Retry resends the same bytes under the same idempotency key, so the
 //   command store answers `duplicate` instead of queueing it twice. Any
-//   other command, or a definite answer, drops the kept body.
+//   other command, or a definite answer, drops the kept body, and so does
+//   its expiry (a body the store would refuse `command_expired` is never
+//   resent; the press mints a fresh command instead).
 // - The switch state comes from `GET api/today` (`controls`). Unknown state
 //   renders as unavailable with its reason and every control stays offered;
 //   it never reads as "allowed".
@@ -43,6 +45,8 @@ export const CONTROL_REASON = 'from the control bar'
 export const CONFIRM_KINDS: ReadonlySet<ControlKind> = new Set<ControlKind>(['halt', 'flatten', 'resume_all'])
 const SEND_TIMEOUT_MS = 15_000
 const TODAY_POLL_MS = 15_000
+/** A kept body is resent only while it has at least this long left. */
+const KEEP_MARGIN_MS = 5_000
 
 // ---------------------------------------------------------------- the outbox
 
@@ -107,11 +111,28 @@ export class CommandOutbox {
   }
 
   async send(kind: ControlKind, issuedAt: Date): Promise<SendResult> {
-    const attempt = this.kept !== null && this.kept.kind === kind ? this.kept : this.fresh(kind, issuedAt)
+    const attempt = this.reusable(kind, issuedAt) ?? this.fresh(kind, issuedAt)
     this.kept = attempt
     const outcome = await this.post(attempt)
     if (outcome.state !== 'unconfirmed' && this.kept === attempt) this.kept = null
     return outcome
+  }
+
+  /** The kept body of this kind while it is still valid at `issuedAt` (with
+   * KEEP_MARGIN_MS to spare). An expired body would only be refused
+   * `command_expired`, costing an extra confirm on the most urgent control
+   * (review P2); a fresh key is safe: every control kind is idempotent at
+   * the desk, so a stored first attempt plus a second one stops once. */
+  private reusable(kind: ControlKind, issuedAt: Date): PendingCommand | null {
+    const kept = this.kept
+    if (kept === null || kept.kind !== kind) return null
+    let expires = Number.NaN
+    try {
+      expires = Date.parse(String((JSON.parse(kept.body) as { expires_at?: unknown }).expires_at))
+    } catch {
+      return null
+    }
+    return Number.isFinite(expires) && expires - KEEP_MARGIN_MS > issuedAt.getTime() ? kept : null
   }
 
   private fresh(kind: ControlKind, issuedAt: Date): PendingCommand {
@@ -246,6 +267,10 @@ export interface ControlBarViewProps {
   now?: () => Date
   /** A note about the state's age (last known, refresh failing). */
   stateNote?: string | null
+  /** Phone layout (review P2): the entry control and any "clear" stay in
+   * view; the emergency stop and close-all sit behind "More controls", so
+   * the page's own content (Today's approvals) starts on the first screen. */
+  compact?: boolean
 }
 
 export function ControlBarView({
@@ -255,6 +280,7 @@ export function ControlBarView({
   onSent,
   now = () => new Date(),
   stateNote = null,
+  compact = false,
 }: ControlBarViewProps) {
   const [confirming, setConfirming] = useState<ControlKind | null>(null)
   const [inFlight, setInFlight] = useState<ControlKind | null>(null)
@@ -306,12 +332,31 @@ export function ControlBarView({
     if (kind === 'halt' || kind === 'flatten') return 'control-button control-danger'
     return 'control-button control-secondary'
   }
+  // compact (phone): the stops that are not standing go behind a disclosure
+  const tucked = (kind: ControlKind): boolean => compact && (kind === 'halt' || kind === 'flatten')
+  const shown = offered.filter((kind) => !tucked(kind))
+  const more = offered.filter(tucked)
+  const button = (kind: ControlKind) => (
+    <button
+      key={kind}
+      type="button"
+      className={buttonClass(kind)}
+      disabled={busy}
+      aria-expanded={CONFIRM_KINDS.has(kind) ? confirming === kind : undefined}
+      onClick={() => press(kind)}
+    >
+      {CONTROL_LABELS[kind]}
+    </button>
+  )
 
   const lines: string[] = []
   if (checking) {
     lines.push('New entries: checking...')
   } else {
-    if (pause.status === 'clear') lines.push('New entries: allowed (each one still needs your approval)')
+    // a clear pause is not "allowed" while another stop blocks every entry (review P2)
+    if (pause.status === 'clear' && halt.status === 'standing') lines.push('New entries: blocked by the emergency stop')
+    else if (pause.status === 'clear' && flatten.status === 'standing') lines.push('New entries: blocked by close-all')
+    else if (pause.status === 'clear') lines.push('New entries: allowed (each one still needs your approval)')
     else if (pause.status === 'standing') lines.push(`New entries: paused since ${at(pause.since)}`)
     else lines.push(`New entries: unavailable (${pause.unavailable_reason})`)
 
@@ -351,20 +396,15 @@ export function ControlBarView({
         {stateNote ? <p className="control-line muted">{stateNote}</p> : null}
       </div>
       <div className="control-actions">
-        {offered.map((kind) => (
-          <button
-            key={kind}
-            type="button"
-            className={buttonClass(kind)}
-            disabled={busy}
-            aria-expanded={CONFIRM_KINDS.has(kind) ? confirming === kind : undefined}
-            onClick={() => press(kind)}
-          >
-            {CONTROL_LABELS[kind]}
-          </button>
-        ))}
+        {shown.map(button)}
       </div>
-      <p className="control-hint muted">Pausing stops new entries only; exits keep running.</p>
+      {more.length > 0 ? (
+        <details className="control-more">
+          <summary>More controls</summary>
+          <div className="control-actions">{more.map(button)}</div>
+        </details>
+      ) : null}
+      <p className="control-hint muted">Pausing stops new entries only; it never stops exits.</p>
       {confirming !== null && confirming !== 'pause_entries' && confirming !== 'resume_entries' ? (
         <div className="control-confirm" role="group" aria-label={`Confirm: ${CONTROL_LABELS[confirming]}`}>
           <p>
@@ -431,7 +471,7 @@ async function fetchToday(): Promise<TodayView> {
 }
 
 /** The control bar fed by `GET api/today`; commands carry the server's clock. */
-export function ControlBar({ outbox = defaultOutbox }: { outbox?: CommandOutbox }) {
+export function ControlBar({ outbox = defaultOutbox, compact = false }: { outbox?: CommandOutbox; compact?: boolean }) {
   const poll = usePoll(fetchToday, TODAY_POLL_MS)
   const today = poll.data
   const serverMs = today ? Date.parse(today.now) : Number.NaN
@@ -454,6 +494,7 @@ export function ControlBar({ outbox = defaultOutbox }: { outbox?: CommandOutbox 
       onSent={refresh}
       now={now}
       stateNote={stateNote}
+      compact={compact}
     />
   )
 }

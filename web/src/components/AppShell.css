@@ -99,6 +99,11 @@
 .control-confirm .control-actions { justify-content: flex-start; }
 .control-ok p { color: var(--pos); }
 .control-warn p, .control-error p { color: var(--neg); }
+/* phone: the stops that are not standing sit behind this disclosure */
+.control-more { grid-column: 1 / -1; }
+.control-more summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; font-size: 0.88rem; color: var(--muted); }
+.control-more summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.control-more .control-actions { padding-top: 6px; }
 
 /* ---- phone: bottom tab bar ---- */
 

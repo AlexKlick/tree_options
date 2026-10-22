@@ -60,6 +60,8 @@ const SCOPE_LABEL: Record<HumanBlocker['scope'], string> = {
 }
 /** Few sessions left in the repo calendar means it needs extending soon. */
 const CALENDAR_LOW = 20
+/** An unconfirmed pause is re-sent as the same request only while it has this long left. */
+const RETRY_MARGIN_MS = 5_000
 
 type Tone = 'ok' | 'warn' | 'bad' | 'unknown' | 'neutral'
 
@@ -111,6 +113,22 @@ function SessionTile({ view }: { view: TodayView }) {
   )
 }
 
+/** Whether exits run NOW (review P2): the pause never stops them, but the
+ * emergency stop does, and so does a desk owner that is not ready. Never a
+ * promise beside a standing HALT. */
+export function exitsNow(view: TodayView): { running: boolean | null; text: string } {
+  if (view.controls.halt.status === 'standing') {
+    return { running: false, text: `Exits are NOT running: ${CONTROL_LABELS.halt} is on.` }
+  }
+  const o = view.desk_owner
+  if (!isKnown(o)) return { running: null, text: 'Whether exits are running is unknown.' }
+  if (!o.exit_owner_ready) return { running: false, text: 'Exits are NOT running: the desk owner is not ready.' }
+  if (view.controls.halt.status === 'unavailable') {
+    return { running: null, text: 'Whether exits are running is unknown (the emergency stop cannot be read).' }
+  }
+  return { running: true, text: 'Exits keep running.' }
+}
+
 function OwnerTile({ view }: { view: TodayView }) {
   const o = view.desk_owner
   if (!isKnown(o)) {
@@ -122,6 +140,7 @@ function OwnerTile({ view }: { view: TodayView }) {
     )
   }
   const tone: Tone = !o.exit_owner_ready || o.status === 'stopped' ? 'bad' : o.status === 'stale' ? 'warn' : 'ok'
+  const halted = view.controls.halt.status === 'standing'
   return (
     <Tile title="Desk owner" tone={tone}>
       <p className="status-main">{OWNER_LABEL[o.status]}</p>
@@ -129,8 +148,12 @@ function OwnerTile({ view }: { view: TodayView }) {
         Heartbeat {ago(o.heartbeat_age_s)} ago (stale after {o.stale_after_s} s);{' '}
         {o.lock_held ? 'holds the desk lock' : 'does not hold the desk lock'}
       </p>
-      <p className={o.exit_owner_ready ? 'status-sub' : 'status-sub bad-text'}>
-        {o.exit_owner_ready ? 'Exits are watched' : 'Exits are NOT watched'}
+      <p className={o.exit_owner_ready && !halted ? 'status-sub' : 'status-sub bad-text'}>
+        {!o.exit_owner_ready
+          ? 'Exits are NOT watched'
+          : halted
+            ? `Exits are watched but NOT sent: ${CONTROL_LABELS.halt} is on`
+            : 'Exits are watched'}
       </p>
     </Tile>
   )
@@ -165,10 +188,13 @@ function EntriesTile({ view }: { view: TodayView }) {
     )
   }
   if (p.status === 'standing') {
+    const exits = exitsNow(view)
     return (
       <Tile title="New entries" tone="warn">
         <p className="status-main">New entries paused</p>
-        <p className="status-sub">Since {whenEt(p.since, view.now)}. Exits keep running.</p>
+        <p className={exits.running === false ? 'status-sub bad-text' : 'status-sub'}>
+          Since {whenEt(p.since, view.now)}. {exits.text}
+        </p>
       </Tile>
     )
   }
@@ -218,6 +244,20 @@ function EntriesControl({
   const press = () => {
     if (inFlight || waiting !== null) return
     const issuedAt = serverNowMs(view.now, receivedAtMs, Date.now())
+    const phase = runner.phase
+    // review P2: after an unconfirmed send (network error, 5xx, not JSON) the
+    // same press re-sends the SAME request (key and bytes), as the status line
+    // promises; only a definite answer, another kind or an expired body
+    // (refused command_expired anyway) starts a new command
+    if (
+      phase.name === 'error' &&
+      phase.error.retryable &&
+      phase.prepared.kind === kind &&
+      Date.parse(phase.prepared.body.expires_at) - RETRY_MARGIN_MS > issuedAt
+    ) {
+      runner.retry()
+      return
+    }
     runner.reset()
     runner.submit(prepareCommand(kind, { reason: standing ? 'resumed from Today' : 'paused from Today' }, issuedAt))
   }
@@ -242,7 +282,7 @@ function EntriesControl({
       >
         {CONTROL_LABELS[kind]}
       </button>
-      <p className="control-note">Pausing stops new entries only. Exits keep running.</p>
+      <p className="control-note">Pausing stops new entries only; it never stops exits.</p>
       {waiting !== null && (
         <p className="queued-note">
           {commandLabel(waiting.kind)} is queued for the desk owner (by {waiting.issued_by_sub}, expires{' '}

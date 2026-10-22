@@ -128,6 +128,40 @@ describe('CommandOutbox: retries reuse the idempotency key', () => {
     expect(posts(fetchMock)[2].init.body).toBe(bodyText('halt', KEY_B))
   })
 
+  it('a kept body past its expiry is never resent: the next press mints a fresh command (review P2)', async () => {
+    const answers: Array<() => Promise<Response>> = [
+      async () => {
+        throw new TypeError('Failed to fetch')
+      },
+      async () => json(202, resultDoc('halt', KEY_B, 'accepted')),
+    ]
+    const fetchMock = vi.fn((..._args: FetchArgs) => answers.shift()!())
+    const outbox = new CommandOutbox({ fetch: fetchMock, newKey: keys(KEY_A, KEY_B) })
+    expect((await outbox.send('halt', AT)).state).toBe('unconfirmed') // expires 14:05:00Z
+    // ten minutes later, in an emergency: the 14:00 body would only be refused
+    // command_expired, costing the owner one more confirm cycle
+    const later = new Date('2026-10-22T14:10:00Z')
+    expect((await outbox.send('halt', later)).state).toBe('answered')
+    const [, second] = posts(fetchMock)
+    const body = JSON.parse(second.init.body as string)
+    expect(body.idempotency_key).toBe(KEY_B)
+    expect((body.issued_at as string) > '2026-10-22T14:05:00Z').toBe(true)
+  })
+
+  it('a kept body about to expire (under 5 s left) is not resent either', async () => {
+    const answers: Array<() => Promise<Response>> = [
+      async () => {
+        throw new TypeError('Failed to fetch')
+      },
+      async () => json(202, resultDoc('pause_entries', KEY_B, 'accepted')),
+    ]
+    const fetchMock = vi.fn((..._args: FetchArgs) => answers.shift()!())
+    const outbox = new CommandOutbox({ fetch: fetchMock, newKey: keys(KEY_A, KEY_B) })
+    await outbox.send('pause_entries', AT)
+    await outbox.send('pause_entries', new Date('2026-10-22T14:04:56Z'))
+    expect(JSON.parse(posts(fetchMock)[1].init.body as string).idempotency_key).toBe(KEY_B)
+  })
+
   it.each([
     ['a 503', () => json(503, { error: 'command_store_unavailable', reason: 'commands_dir_unwritable' })],
     ['a 502 HTML page', () => new Response('<html>bad gateway</html>', { status: 502, headers: { 'content-type': 'text/html' } })],
@@ -237,7 +271,9 @@ describe('ControlBarView: what it offers', () => {
     expect(primary.className).toContain('control-primary')
     expect(buttonNames()).toEqual([LABEL.pause_entries, LABEL.halt, LABEL.flatten])
     expect(screen.getByText(/New entries: allowed/)).toBeTruthy()
-    expect(screen.getByText(/exits keep running/i)).toBeTruthy()
+    // the pause's rule as policy, never a claim about the exits' state now
+    expect(screen.getByText(/Pausing stops new entries only; it never stops exits/)).toBeTruthy()
+    expect(screen.queryByText(/exits keep running/i)).toBeNull()
     // the fixture's queued pause, waiting for the desk
     expect(screen.getByText(/Waiting for the desk:/).textContent).toContain(LABEL.pause_entries)
   })
@@ -254,11 +290,15 @@ describe('ControlBarView: what it offers', () => {
     render(<ControlBarView controls={standing(clearControls(), 'halt')} unavailableReason={null} outbox={okOutbox().outbox} />)
     expect(buttonNames()).toEqual([LABEL.pause_entries, LABEL.flatten, LABEL.resume_all])
     expect(screen.getByText(/Emergency stop: ON since/).textContent).toMatch(/exits are stopped/)
+    // review P2: never "allowed" while the emergency stop blocks every order
+    expect(screen.queryByText(/New entries: allowed/)).toBeNull()
+    expect(screen.getByText(/New entries: blocked/).textContent).toContain('emergency stop')
   })
 
-  it('close-all standing: offers to clear it', () => {
+  it('close-all standing: offers to clear it and says entries are blocked', () => {
     render(<ControlBarView controls={standing(clearControls(), 'flatten')} unavailableReason={null} outbox={okOutbox().outbox} />)
     expect(buttonNames()).toEqual([LABEL.pause_entries, LABEL.halt, LABEL.resume_all])
+    expect(screen.getByText(/New entries: blocked/).textContent).toContain('close-all')
   })
 
   it('unknown state renders as unavailable with the reason and offers every control', () => {
@@ -268,6 +308,46 @@ describe('ControlBarView: what it offers', () => {
     expect(screen.getByText(/New entries: unavailable/).textContent).toContain('kill_file_unreadable')
     expect(screen.getByText(/Queued commands: unavailable/).textContent).toContain('command_store_unavailable')
     expect(screen.queryByText(/allowed/)).toBeNull()
+  })
+
+  it('compact (phone): Pause stays in view, the stops sit behind "More controls" (review P2)', () => {
+    const { container } = render(
+      <ControlBarView controls={clearControls()} unavailableReason={null} outbox={okOutbox().outbox} compact />,
+    )
+    const more = container.querySelector('details.control-more') as HTMLDetailsElement
+    expect(more).not.toBeNull()
+    expect(more.open).toBe(false)
+    expect(within(more).getByText('More controls')).toBeTruthy()
+    const tucked = Array.from(more.querySelectorAll('button')).map((b) => b.textContent)
+    expect(tucked).toEqual([LABEL.halt, LABEL.flatten])
+    const inView = Array.from(container.querySelectorAll('button'))
+      .filter((b) => !more.contains(b))
+      .map((b) => b.textContent)
+    expect(inView).toEqual([LABEL.pause_entries])
+  })
+
+  it('compact with the emergency stop standing keeps its clear control in view', () => {
+    const { container } = render(
+      <ControlBarView controls={standing(clearControls(), 'halt')} unavailableReason={null} outbox={okOutbox().outbox} compact />,
+    )
+    const more = container.querySelector('details.control-more') as HTMLDetailsElement
+    const inView = Array.from(container.querySelectorAll('button'))
+      .filter((b) => !more.contains(b))
+      .map((b) => b.textContent)
+    expect(inView).toEqual([LABEL.pause_entries, LABEL.resume_all])
+    expect(Array.from(more.querySelectorAll('button')).map((b) => b.textContent)).toEqual([LABEL.flatten])
+  })
+
+  it('compact: a tucked stop still asks for confirmation before sending', async () => {
+    const { fetchMock, outbox } = okOutbox()
+    const { container } = render(
+      <ControlBarView controls={clearControls()} unavailableReason={null} outbox={outbox} compact />,
+    )
+    const more = container.querySelector('details.control-more') as HTMLDetailsElement
+    fireEvent.click(within(more).getByRole('button', { name: LABEL.halt }))
+    expect(posts(fetchMock)).toEqual([])
+    fireEvent.click(screen.getByRole('button', { name: `Yes: ${LABEL.halt}` }))
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(1))
   })
 
   it('no Today view at all: unavailable with the reason, every control offered', () => {

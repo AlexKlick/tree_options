@@ -128,7 +128,7 @@ export function AppShell({
           <DensityToggle />
         </div>
       </header>
-      <ControlBar />
+      <ControlBar compact={phone} />
       <main>
         {route.fallback ? (
           <p className="route-fallback muted">

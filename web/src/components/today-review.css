@@ -312,6 +312,14 @@
   background: var(--card);
   padding: 8px 0 calc(8px + env(safe-area-inset-bottom));
 }
+/* integration (review P2): on the phone shell the fixed tab bar (z-index 20,
+   56 px links plus its border and the safe area) covers the bottom edge, so
+   the stuck decision row sits just above it and over it */
+.shell-phone .approval-sheet-inline .sheet-decision {
+  bottom: calc(57px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: 8px;
+  z-index: 21;
+}
 
 .sheet-backdrop {
   position: fixed;

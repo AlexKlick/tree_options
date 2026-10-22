@@ -277,8 +277,14 @@ export interface TodayView {
 }
 
 /** Seconds left on an approval, counted from when the response ARRIVED
- * (never the client clock against `send_deadline`). */
-export function secondsLeft(approval: PendingApproval, receivedAtMs: number, nowMs: number): number {
+ * (never the client clock against `send_deadline`). Integration amendment
+ * (lane F, additive): any value carrying `seconds_to_deadline` (a Today
+ * `PendingApproval` or the facts built from a `GET /api/proposals` row). */
+export function secondsLeft(
+  approval: Pick<PendingApproval, 'seconds_to_deadline'>,
+  receivedAtMs: number,
+  nowMs: number,
+): number {
   const elapsed = Math.floor(Math.max(0, nowMs - receivedAtMs) / 1000)
   return Math.max(0, approval.seconds_to_deadline - elapsed)
 }

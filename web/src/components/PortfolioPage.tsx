@@ -99,15 +99,23 @@ function EntriesSection({ view }: { view: PortfolioView }) {
           ))}
         </ul>
       )}
-      {view.kill_files.PAUSE_ENTRIES && <p>{CONTROL_LABELS.pause_entries}: standing. Exits continue.</p>}
+      {view.kill_files.PAUSE_ENTRIES && (
+        <p>{CONTROL_LABELS.pause_entries}: standing. Pausing never stops exits.</p>
+      )}
       {view.kill_files.FLATTEN && <p>{CONTROL_LABELS.flatten}: standing. The desk is closing its positions.</p>}
       <p>
         <strong>
           {view.exits_blocked
             ? `Exits are stopped: ${CONTROL_LABELS.halt} is standing, so open positions are not being watched.`
-            : 'Exits run automatically, also while new entries are paused.'}
+            : 'Exits run automatically, also while new entries are paused, as long as the desk owner is running.'}
         </strong>
       </p>
+      {view.exits_blocked ? null : (
+        <p className="muted">
+          This page does not see the desk owner: whether it is running exits right now is on{' '}
+          <a href="#/today">Today</a> (Desk owner).
+        </p>
+      )}
       <p className="muted">
         The controls live in the control bar at the top of every page. <a href="#/today">Open Today</a> for the
         current state.
