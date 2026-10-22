@@ -642,3 +642,16 @@ Now:
 - Tests: `tests/unit/test_desk_commands.py` (the review's probes A-E plus
   late delivery, re-stamp and terminal-stop cases) and
   `tests/unit/test_trex_pause.py`.
+
+### 2026-10-21: C2.7 `DeskEvent.exit_quote_blind` (Wave 3/4 integration)
+
+Additive. The desk runtime now records `exit_quote_blind` (an equity close
+pending without a usable bid for 300 s, once per structure per ET session,
+`trex.equity_exits.ExitQuoteWatch`, wired into `DeskRuntime._equity_close`)
+and pushes it urgent. Following this log's rule (a code a lane also records
+as an event gets the `DeskEvent` member, as `reconciliation_required` has
+both), `DeskEvent` gains `EXIT_QUOTE_BLIND`, equal to the reserved
+`Blocker.EXIT_QUOTE_BLIND`. Tests (`tests/contracts/test_wave2_contracts.py`):
+the W3/4 set is pinned disjoint from the earlier sets, the member equals the
+runtime's event name and the reserved Blocker, and it is in the runtime's
+notify set. The Wave 4 alert sweep already reads it from `events.jsonl`.

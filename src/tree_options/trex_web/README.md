@@ -20,6 +20,11 @@ never imports `ib_async`. Designed to run in parallel with the live
 | `/api/market/{sym}/options` | Recorded options surface (nightly chain ATM slice + features cards + iv_rank + 2y IV30 history) plus `live` viewchain when warmed (`?window=&max_expiries=`) |
 | `/api/market/{sym}/ideas` | Advisory idea context: signals slice (xsmom rank/top3, PEAD, next report + the report after next via `signals.after_next_report`, present only when one is known), desk-mine queue deals, paper positions, sealed cards, research lines, and the `protocol` block (`allowed_direction` from `desk.signals` — the UI's direction chips derive from it, nothing else) |
 | `/api/market/refresh` `POST` | Spool a forced market refresh (warms quote/bars/news/viewchain for the symbols) |
+| `/api/today` | Wave 3 `trex-today/1`: session, desk owner, gateway, controls, pending approvals, positions, acceptance summary, next events, blockers (read-only; `today_view.py`) |
+| `/api/activity` | Wave 3 `trex-activity/1`: commands, desk events, audits and drills, newest first, keyset-paged (`?limit=&cursor=&source=`; `activity_view.py`) |
+| `/api/acceptance` | Wave 4 `trex-acceptance-view/1`: the verified paper acceptance document (`TREX_ACCEPTANCE_DIR`; `acceptance_view.py`) |
+| `/api/pilot` | Wave 4 `trex-pilot-view/1`: the research pilot registrations, usage and run blockers (`TREX_PILOT_DIR`; `pilot_view.py`) |
+| `/api/commands` `POST` | Wave 2 `trex-command/1` intake (queues only); C3.1 dispatch: `x-family-actor` requests by the family verifier only, others by the loopback authority |
 | `/plan/{plan_id}/book.json` | Raw `book.json` for debugging |
 | `/plan/{plan_id}/events.jsonl` | Raw `events.jsonl` |
 | `/health` | JSON liveness probe |

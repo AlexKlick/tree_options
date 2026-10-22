@@ -1467,3 +1467,43 @@ def test_no_en_or_em_dashes(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     for dash in (chr(0x2013), chr(0x2014)):  # en dash, em dash
         assert dash not in text, f"{path.name} contains U+{ord(dash):04X}"
+
+
+def test_the_package_reexports_the_wave3_modules_and_the_seal_kind() -> None:
+    """Integration: ``contracts`` re-exports the two Wave 3/4 submodules and
+    the ``seal_registration`` amendment's classes (one object each)."""
+    from typing import get_args
+
+    assert c.wave3 is w and c.acceptance is acc
+    assert {"wave3", "acceptance", "SealRegistrationArgs", "SealRegistrationCommand"} <= set(
+        c.__all__
+    )
+    assert c.SealRegistrationArgs is w.SealRegistrationArgs
+    assert "seal_registration" in get_args(c.CommandKind)
+    command = c.parse_command(
+        {
+            "schema": "trex-command/1",
+            "idempotency_key": "5f0c2a8e-1b3d-4c6e-9a7b-2d4e6f8a0b1c",
+            "kind": "seal_registration",
+            "args": {"program_id": "eq-baseline-spy-weekly", "registration_sha256": "a" * 64},
+            "issued_at": "2026-10-22T14:00:00Z",
+            "expires_at": "2026-10-22T14:05:00Z",
+            "issued_by": {
+                "sub": "owner@example.com",
+                "ingress": "family",
+                "request_id": "web-1",
+                "request_sha256": "b" * 64,
+            },
+        }
+    )
+    assert isinstance(command, c.SealRegistrationCommand)
+
+
+def test_new_integration_text_has_no_en_or_em_dashes() -> None:
+    for path in (
+        REPO / "docs/product/WAVE34-INTEGRATION.md",
+        REPO / "docs/product/WAVE2-CONTRACTS.md",
+        REPO / "src/tree_options/trex/contracts/__init__.py",
+    ):
+        text = path.read_text(encoding="utf-8")
+        assert chr(0x2013) not in text and chr(0x2014) not in text, path.name

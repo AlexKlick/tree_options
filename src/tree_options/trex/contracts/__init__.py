@@ -14,10 +14,25 @@ pure helpers only: no I/O beyond path math, no broker contact, no
 | C2.5 | ``risk`` | ``trex-risk-snapshot/1``, ``trex-reconciliation/1`` |
 | C2.6 | ``desk_spec_v2``, ``layout`` | ``trex-desk-spec/2`` + run-dir layout |
 | C2.7 | ``vocabulary`` | ``Blocker``, ``DeskEvent`` |
+
+Waves 3 and 4 (docs/product/WAVE3-CONTRACTS.md) live in two submodules,
+re-exported here as modules (their names are many and lane-facing; import
+them as ``contracts.wave3`` / ``contracts.acceptance``):
+
+| Id | Module | Schema ids |
+| --- | --- | --- |
+| C3.1-C3.3, C3.5-C3.7 | ``wave3`` | ``trex-family-command/1``, ``trex-today/1``, ``trex-activity/1``, ``trex-pilot-registration/1``, ``trex-pilot-usage/1`` |
+| C3.4 | ``acceptance`` | ``trex-acceptance/1``, ``trex-acceptance-view/1`` |
+
+The ``seal_registration`` command kind (the lane I amendment) is part of
+``trex-command/1`` and exported with the other command names.
 """
 
 from __future__ import annotations
 
+# Waves 3 and 4: the submodules themselves (they import the Wave 2 submodules
+# by full path, never this package's namespace, so the order is free)
+from tree_options.trex.contracts import acceptance, wave3
 from tree_options.trex.contracts.books import (
     DESK_REF_PREFIX,
     LEDGER_EVENT_SCHEMA,
@@ -55,6 +70,8 @@ from tree_options.trex.contracts.commands import (
     CommandKind,
     CommandResult,
     RawCommandRequest,
+    SealRegistrationArgs,
+    SealRegistrationCommand,
     TrexCommand,
     actor_binds_request,
     command_body_sha256,
@@ -164,6 +181,8 @@ __all__ = [
     "Reconciliation",
     "ReviewFacts",
     "RiskSnapshot",
+    "SealRegistrationArgs",
+    "SealRegistrationCommand",
     "Sha256Hex",
     "SupervisedEffect",
     "SupervisedEquityEffect",
@@ -172,6 +191,7 @@ __all__ = [
     "UTCInstant",
     "Wave2RunDir",
     "Wave2SupervisedDir",
+    "acceptance",
     "actor_binds_request",
     "approval_blockers",
     "approval_expiry",
@@ -198,4 +218,5 @@ __all__ = [
     "reconciliation_blockers",
     "risk_snapshot_blockers",
     "sha256_hex",
+    "wave3",
 ]

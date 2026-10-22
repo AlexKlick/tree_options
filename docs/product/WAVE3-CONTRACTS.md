@@ -467,3 +467,101 @@ Each default is in code and holds until the owner rules.
   `tsc --noEmit` clean; a removed key in `KEYS` fails `tsc` (checked).
 - `ruff format --check`, `ruff check` and `mypy` clean on the new Python
   files.
+
+## Amendment log
+
+Every entry is additive (a new optional field, vocabulary member, union
+member or helper); nothing frozen above is renamed or removed. The frozen
+sections are unchanged; read them with these entries.
+
+### 2026-10-21: `seal_registration` in `trex-command/1` (lane I, coordinator-approved)
+
+Default 14 lands: `CommandKind` gains `seal_registration`
+(`SealRegistrationCommand`, args `SealRegistrationArgs{program_id,
+registration_sha256}`). `SealRegistrationArgs` moves from `wave3.py` into
+`contracts/commands.py` (commands cannot import wave3, which imports
+commands); `wave3` re-exports the identical class. The desk applies it as a
+file kind (`desk_commands.FILE_KINDS`) through
+`research.pilot.seal.apply_seal_command` with the verified actor as sealer.
+TypeScript: `CommandArgs.seal_registration`. Tests:
+`tests/research/test_pilot_seal_command.py` (no longer skipped) and
+`web/src/lib/pilotApi.amendment.test.ts`. The patch file is removed.
+
+### 2026-10-21: C3.7 one acceptance-dir resolver (integration, lanes C, D, H, J)
+
+`ACCEPTANCE_DIR_ENV = "TREX_ACCEPTANCE_DIR"`, `ACCEPTANCE_DIR_DEFAULT =
+"~/.local/state/trex/acceptance"` and `acceptance_dir_from_env(env)`
+(trimmed; blank means unset). Today, Activity, `GET /api/acceptance`, the
+publisher and the alert sweep all resolve through it. Deployment: the
+production web drop-in and `trex-deadman.service` set
+`TREX_ACCEPTANCE_DIR=@DESK_STATE@/acceptance`, the publisher's own dir
+(`tests/unit/test_trex_acceptance_units.py` pins the three agree; staging
+sets none).
+
+### 2026-10-21: `acceptance_owners_mismatch` (integration, review P2)
+
+New `Wave3Reason` member (appended; fixture `vocabulary.json` and
+`WAVE3_REASONS` in `contracts.ts` updated together) and the pure helper
+`acceptance_owners_problem(document_owners, env)`. When `TREX_OWNER_EMAILS`
+is configured, `GET /api/acceptance`, Today's acceptance summary and the
+alert sweep refuse a document whose `owners` differ from that list (a
+malformed list vouches for none); unconfigured means nothing to compare.
+Before this, "attested by an owner" was judged only against the document's
+own list. Today and the sweep also refuse a document dated more than 300 s
+ahead, as the view already did.
+
+### 2026-10-21: portal constants (lane A)
+
+`PORTAL_STAGING_KEY_CONFIG_FIELD = "trexStagingCommandKeyPath"` (one portal
+process serves `/trex` and `/trex-staging`) and `PORTAL_REFUSAL_REASONS`,
+the `reason` of the portal's own JSON refusals `{"error": <plain words>,
+"reason": <code>}` (Cache-Control: private, no-store): `trex-method-not-allowed`
+(405, with `Allow`), `trex-wrong-origin` (403), `trex-command-too-large`
+(413), `trex-commands-not-configured` (503), `trex-bad-request` (400),
+`trex-owner-only` (403, defensive). A non-operator or signed-out caller
+gets the portal's HTML 403 page first. Both clients already treat these as
+refusals carrying `error`.
+
+Recorded risk on open question 3 (review P2, lane A): the only binding of
+a command to "the TREX page" is the exact Origin, and every family app and
+Pop Deck share that origin, so script on any co-hosted page (an XSS, a
+compromised backend) could have the portal sign an owner command. The
+dedicated key separates TREX from other backends cryptographically only.
+This is a blocker for any future `live_authorized` change: serve TREX from
+its own origin, or add owner step-up (WebAuthn user verification) for
+`approve_entry`, `compose_entry` and the resumes.
+
+### 2026-10-21: TypeScript helpers (lanes E and F)
+
+`secondsLeft` accepts `Pick<PendingApproval, 'seconds_to_deadline'>` (a
+Today item or the facts built from a `GET /api/proposals` row). Relative
+URLs: the SPA fetches `API_PATHS` values without their leading slash
+(`commandsApi.relativeUrl`, `ControlBar`'s constants), so every call
+resolves under `/` on loopback and `/trex/` through the portal; never a
+root-absolute path.
+
+### 2026-10-21: C3.2 blockers Today now emits (integration)
+
+No schema change (existing vocabulary): Today names
+`family_commands_disabled` whenever family ingress is disabled (its message
+lists the `IngressProblem` codes, never a path or a key) and
+`profile_absent`, `profile_invalid` or `profile_limits_missing` from
+`<run dir>/profile.json` read by the desk's own `load_profile`. Onboarding
+reads the absence of the first in a readable Today as "key installed" and
+the profile codes as "To do". The `entries_paused` blocker states whether
+exits run now (HALT, desk owner not healthy, unknown) instead of promising
+it.
+
+### No-change decisions (integration)
+
+- Lane-local shapes stay lane-local: `trex-pilot-view/1` (`GET /api/pilot`,
+  `research/pilot/view.py`, pinned by its fixture), `trex-acceptance-sample/1`
+  and `trex-drill-check/1` (only their own lane parses them), the pilot
+  reason codes (pattern-valid `ReasonCode`s) and the `usage/<program>/jobs/`
+  markers.
+- Deferred additive requests, with reasons, are listed in
+  `docs/product/WAVE34-INTEGRATION.md` (per-source `NextEvents` status,
+  `owner_epoch_unknown`, `acceptance_unreadable`, `acceptance_stale`, an
+  Activity feed horizon field, an `attested` actor ingress, a Today profile
+  block, TS mirrors of the effect bodies, Blocker members for
+  `gateway_unavailable`, `command_queue_too_long`, `queued_command_invalid`).
