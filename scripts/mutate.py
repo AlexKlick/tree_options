@@ -7893,7 +7893,7 @@ MUTANTS.extend(
     [
         {
             "id": "e-auth-consume-once",
-            "owner": "e-authority",
+            "owner": "test_replayed_approval_is_idempotent_and_consumes_once",
             "file": "src/tree_options/trex/supervised.py",
             "anchor": "    _durable_rename(pending, consumed)\n",
             "replacement": "    pass\n",
@@ -7902,7 +7902,7 @@ MUTANTS.extend(
         },
         {
             "id": "e-auth-cash-boundary",
-            "owner": "e-authority",
+            "owner": "test_cash_only_notional_must_fit_settled_cash",
             "file": "src/tree_options/action_graph/canary.py",
             "anchor": "notional > cash",
             "replacement": "notional >= cash",
@@ -7911,7 +7911,7 @@ MUTANTS.extend(
         },
         {
             "id": "dbooks-m1-booked-chain-attribution",
-            "owner": "d-books",
+            "owner": "test_a_booked_chain_keeps_its_attribution_when_the_index_changes",
             "file": "src/tree_options/trex/ledger.py",
             "anchor": "return cls(event.attribution, event.detail)",
             "replacement": "break",
@@ -7952,7 +7952,7 @@ MUTANTS.extend(
         },
         {
             "id": "w2a-M1-future-exit-owner-health",
-            "owner": "a-pause-admission",
+            "owner": "test_an_unready_exit_owner_blocks_entries",
             "file": "src/tree_options/trex/admission.py",
             "anchor": "if age is None or not 0 <= age <= EXIT_OWNER_HEALTH_MAX_AGE_S:",
             "replacement": "if age is None or not age <= EXIT_OWNER_HEALTH_MAX_AGE_S:",
@@ -7963,7 +7963,7 @@ MUTANTS.extend(
         },
         {
             "id": "w2a-M2-pause-gates-exits",
-            "owner": "a-pause-admission",
+            "owner": "test_a_pause_refuses_entries_and_leaves_every_exit_input_unchanged",
             "file": "src/tree_options/trex/pause.py",
             "anchor": "return (HALTED,) if os.path.lexists(Path(run_dir) / HALT) else ()",
             "replacement": "return (HALTED,) if os.path.lexists(Path(run_dir) / HALT) or is_paused(run_dir) else ()",
@@ -8005,7 +8005,7 @@ MUTANTS.extend(
         },
         {
             "id": "w2a-M3-no-recheck-after-screening",
-            "owner": "a-pause-admission",
+            "owner": "test_a_stop_placed_during_screening_still_stops_the_send",
             "file": "src/tree_options/trex/supervised_desk.py",
             "anchor": '            return {"status": "blocked", "blockers": list(stopped), **facts}',
             "replacement": "            pass",
