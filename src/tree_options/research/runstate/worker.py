@@ -51,6 +51,16 @@ loudly instead of silently computing a comparison.
 
 Workers are unit-testable without threads: ``step()`` claims at most
 one queued run synchronously.
+
+Wave 4 (lane I) adds an ADMISSION HOOK for research-pilot runs: a run
+record that carries ``pilot_program_id`` meets ``RunAdmission.admit``
+under the queue control lock before it is claimed. A refusal is terminal
+(``failed``, ``error_code`` ``pilot_admission_refused``, the blockers in
+``admission_blockers``) and no compute runs; an admitted job is settled
+(``RunAdmission.settle``: its compute seconds, rounded up, and its
+published result bytes) when it ends, completed or failed. With no hook
+given, pilot runs use ``PilotAdmission.from_env()``; runs without the
+field never meet it.
 """
 
 from __future__ import annotations
@@ -58,12 +68,15 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
+import math
 import threading
-from collections.abc import Callable, Iterator
+import time
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from tree_options.desk.contracts import canonical
 from tree_options.research.comparison.calendar import calendar_sha256
@@ -90,6 +103,11 @@ from tree_options.research.forecast.sources import (
 )
 from tree_options.research.forecast.spec_io import forecast_from_dict
 from tree_options.research.paths import assert_no_overlap_with_desk
+from tree_options.research.pilot import PILOT_PROGRAM_FIELD
+from tree_options.research.pilot.codes import (
+    PILOT_ADMISSION_REFUSED,
+    PILOT_ADMISSION_UNAVAILABLE,
+)
 from tree_options.research.runstate.spec_hash import spec_hash as make_spec_hash
 from tree_options.research.runstate.store import (
     RunstateStoreError,
@@ -116,6 +134,23 @@ from tree_options.research.spec_io import spec_from_dict
 #: Run-record format written by this module; anything else in the store
 #: predates the custody correction and is blocked, not interpreted.
 RUN_FORMAT_VERSION = 2
+
+log = logging.getLogger(__name__)
+
+
+class RunAdmission(Protocol):
+    """Admission for runs that carry ``pilot_program_id``
+    (``tree_options.research.pilot.admission.PilotAdmission``)."""
+
+    def admit(self, run: Mapping[str, Any]) -> tuple[tuple[str, ...], dict[str, Any]]:
+        """``(blockers, fields)``: empty blockers admit the run (and charge
+        it); ``fields`` are added to the run record."""
+        ...
+
+    def settle(self, run: Mapping[str, Any], *, compute_seconds: int, storage_bytes: int) -> None:
+        """Meter an admitted job when it ends."""
+        ...
+
 
 #: Engine identity: sha256 over the comparison modules' source bytes —
 #: the "engine/code version" bound into every result receipt. RL-2
@@ -202,10 +237,14 @@ class ResearchWorker:
         workspace: Path,
         catalog_provider: Callable[[], list[ResearchCandidate]],
         engine_fn: Callable[..., Any] = run_comparison,
+        admission: RunAdmission | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.workspace = workspace
         self.catalog_provider = catalog_provider
         self.engine_fn = engine_fn
+        self.admission = admission
+        self.monotonic = monotonic
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -254,7 +293,25 @@ class ResearchWorker:
             if latest is None or latest.get("status") != "queued":
                 return
             run = latest
+            if PILOT_PROGRAM_FIELD in run:
+                blockers, admitted = self._admit(run)
+                if blockers:
+                    store.replace(
+                        "run",
+                        {
+                            **run,
+                            "status": "failed",
+                            "error": f"{PILOT_ADMISSION_REFUSED}: {', '.join(blockers)}",
+                            "error_code": PILOT_ADMISSION_REFUSED,
+                            "admission_blockers": list(blockers),
+                            "completed_at": datetime.now().isoformat(),
+                        },
+                        key=run_id,
+                    )
+                    return
+                run = {**run, **admitted}
             store.replace("run", {**run, "status": "running", "started_at": now}, key=run_id)
+        started = self.monotonic()
         try:
             spec_payload = store.get("spec", run_id)
             if spec_payload is None:
@@ -276,6 +333,7 @@ class ResearchWorker:
                 # different job than the record describes.
                 raise RunstateStoreError(f"unknown run kind {kind!r} for run {run_id}")
         except Exception as exc:
+            self._settle(run, self.monotonic() - started, None)
             halted = (
                 run.get("kind") == "quant_campaign"
                 and (self.workspace / "quant-jobs" / run_id / "STOP").exists()
@@ -303,6 +361,7 @@ class ResearchWorker:
                     key=run_id,
                 )
             return
+        elapsed = self.monotonic() - started
         replace_fields = {
             "completed_at": datetime.now().isoformat(),
             "result_sha256": result_payload["result_sha256"],
@@ -325,9 +384,50 @@ class ResearchWorker:
             )
             if halted:
                 store.replace("run", {**latest, "status": "stopped"}, key=run_id)
-                return
-            store.put("result", result_payload, key=run_id)
-            store.replace("run", {**latest, "status": "completed", **replace_fields}, key=run_id)
+            else:
+                store.put("result", result_payload, key=run_id)
+                store.replace(
+                    "run", {**latest, "status": "completed", **replace_fields}, key=run_id
+                )
+        self._settle(run, elapsed, None if halted else result_payload)
+
+    # -- pilot admission (Wave 4 lane I) ------------------------------------
+
+    def _admit(self, run: dict[str, Any]) -> tuple[tuple[str, ...], dict[str, Any]]:
+        """The pilot admission's verdict; an admission that cannot judge
+        (unreadable pilot dir, malformed owner list) refuses the run."""
+        try:
+            if self.admission is None:
+                from tree_options.research.pilot.admission import PilotAdmission
+
+                self.admission = PilotAdmission.from_env()
+            blockers, fields = self.admission.admit(run)
+        except Exception:
+            log.exception("pilot admission failed for run %s", run.get("run_id"))
+            return (PILOT_ADMISSION_UNAVAILABLE,), {}
+        return tuple(blockers), dict(fields)
+
+    def _settle(
+        self, run: dict[str, Any], elapsed: float, published: dict[str, Any] | None
+    ) -> None:
+        """Meter an admitted pilot job: compute in whole seconds rounded up,
+        storage as the canonical bytes of the result it published. A failed
+        settle leaves the job marker standing, so the program's usage reads
+        unknown (and blocks) until it is resolved."""
+        if PILOT_PROGRAM_FIELD not in run or self.admission is None:
+            return
+        stored = 0
+        if published is not None:
+            body = json.dumps(
+                published, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+            )
+            stored = len(body.encode("utf-8"))
+        try:
+            self.admission.settle(
+                run, compute_seconds=max(0, math.ceil(elapsed)), storage_bytes=stored
+            )
+        except Exception:
+            log.exception("pilot settle failed for run %s", run.get("run_id"))
 
     @contextmanager
     def _queue_control(self) -> Iterator[None]:
@@ -836,7 +936,15 @@ class ResearchWorker:
                     )
 
 
-__all__ = ["RUN_FORMAT_VERSION", "ResearchWorker", "engine_identity_sha", "input_snapshot_sha"]
+__all__ = [
+    "PILOT_ADMISSION_REFUSED",
+    "PILOT_ADMISSION_UNAVAILABLE",
+    "RUN_FORMAT_VERSION",
+    "ResearchWorker",
+    "RunAdmission",
+    "engine_identity_sha",
+    "input_snapshot_sha",
+]
 
 
 # -- module-scope helpers --------------------------------------------------

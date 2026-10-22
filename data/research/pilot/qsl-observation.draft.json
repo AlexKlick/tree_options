@@ -1,0 +1,80 @@
+{
+  "budgets": {
+    "compute_minutes_per_day": 0,
+    "requests_per_day": 0,
+    "storage_mb": 0
+  },
+  "controls": [],
+  "created_at": "2026-10-21T20:00:00Z",
+  "data_sources": [
+    {
+      "dataset": "desk chain recorder snapshots chains/<D>/<SYM>.json.gz (desk-chain/1), one post-close snapshot per session",
+      "license": "cboe-delayed-quote-terms-not-reviewed",
+      "name": "cboe-delayed-chains",
+      "provenance": "Recorded by tree_options.desk.chains (SOURCE cboe-delayed) since 2026-09-22 at about 17:46 ET; raw vendor bytes are hash-addressed under raw/<D>/ for 20 sessions and every chain file is written once; losses are logged in gaps.jsonl (2026-09-23 lost, XLV missing 2026-09-22). Delayed, post-close data only: no intraday fill claim (QSL-PREREGISTRATION.md section 7).",
+      "provider": "CBOE delayed quotes via the desk chain recorder",
+      "realtime": false
+    }
+  ],
+  "decision_rule": {
+    "metric": "fully_crossed_net_per_trade_cents",
+    "minimum_lifecycles": 0,
+    "minimum_sessions": 67,
+    "statement": "Decided only by the cited QSL-20260930 rule, evaluated once: at 120 or more expiry-resolved cohorts per family, fully-crossed net mean above 0 with one-sided sign-flip p below 0.05 (10,000 draws), name-clustered bootstrap 95% CI low above 0, no single dropped name flipping the sign, both expiry halves agreeing in sign. minimum_sessions 67 is the measured projection of recorded sessions the binding family needs (QSL section 6), not a threshold of its own. The lane places no orders, so it has no lifecycles."
+  },
+  "existing_registration": {
+    "path": "docs/desk/QSL-PREREGISTRATION.md",
+    "sha256": "390606d99a3169b085d77e58ed5c02d7529da24c36969ce01b60b62bdef6abc3"
+  },
+  "hypothesis": "The sealed QSL-20260930 quote-bearing shadow ledger continues unchanged under its own pre-registration, owner and timers. This entry only cites it so the pilot roster names all three programs; it re-registers nothing and grants the lane no new requests, compute or storage (every pilot budget below is zero, so no pilot job can run under this program id).",
+  "program_id": "qsl-observation",
+  "role": "observation",
+  "schema": "trex-pilot-registration/1",
+  "sealed_at": null,
+  "sealed_by": null,
+  "sha256": null,
+  "status": "draft",
+  "title": "QSL observation (existing QSL-20260930, cited)",
+  "universe": {
+    "asset_kind": "option",
+    "symbols": [
+      "AAPL",
+      "ADBE",
+      "AMD",
+      "AMZN",
+      "AVGO",
+      "COST",
+      "CRM",
+      "DIS",
+      "GLD",
+      "GOOGL",
+      "HD",
+      "INTC",
+      "IWM",
+      "JPM",
+      "KO",
+      "LLY",
+      "MA",
+      "META",
+      "MSFT",
+      "NFLX",
+      "NVDA",
+      "PEP",
+      "PG",
+      "PLTR",
+      "QCOM",
+      "QQQ",
+      "SMH",
+      "SOXX",
+      "SPCX",
+      "SPY",
+      "TSLA",
+      "UNH",
+      "V",
+      "XLE",
+      "XLF",
+      "XLV",
+      "XOM"
+    ]
+  }
+}

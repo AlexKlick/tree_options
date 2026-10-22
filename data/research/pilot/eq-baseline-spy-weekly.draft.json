@@ -1,0 +1,49 @@
+{
+  "budgets": {
+    "compute_minutes_per_day": 10,
+    "requests_per_day": 20,
+    "storage_mb": 64
+  },
+  "controls": [],
+  "created_at": "2026-10-21T20:00:00Z",
+  "data_sources": [
+    {
+      "dataset": "data/calendar/trex/nyse_sessions_2018_01_02_2028_12_29.json",
+      "license": "repo-internal",
+      "name": "trex-session-calendar",
+      "provenance": "The committed TREX execution calendar (sha256 5c038a891c6ea99580b670518402fef7849ffd7a0f53d268fabdf1263f005f6b, read by tree_options.trex.clock). Schedules entries and exit deadlines; sessions after 2028-12-29 cannot be scheduled until it is extended.",
+      "provider": "tree_options repository",
+      "realtime": false
+    },
+    {
+      "dataset": "IBKR paper account top-of-book quotes for SPY, read by the desk owner at entry and while watching the exit",
+      "license": "ibkr-market-data-terms-not-verified",
+      "name": "ibkr-paper-quotes",
+      "provenance": "Read live through the paper gateway by the desk equity path (Wave 2); not recorded as a dataset. The paper account's market data entitlement is NOT verified by this draft, so quotes are treated as possibly delayed (realtime false). Fills, commissions and positions come from the reconciled paper ledger, not from this feed.",
+      "provider": "IBKR paper gateway",
+      "realtime": false
+    }
+  ],
+  "decision_rule": {
+    "metric": "mean_net_pnl_cents_per_completed_lifecycle",
+    "minimum_lifecycles": 20,
+    "minimum_sessions": 60,
+    "statement": "This control has no signal; it measures what the desk mechanics, the exit policy and paper costs alone produce. Entry: the first NYSE session of each calendar week, a whole-share long SPY DAY limit order sized to at most 1,000.00 USD notional, proposed after 10:00 ET and sent only if the owner approves it. Exit: stop 2% below the entry limit (desk-watched), no target, deadline the third session after entry, forced exit 15:45 ET. Metric: mean net P&L in cents per completed lifecycle (C3.4 definition, commissions included) from the reconciled paper ledger. Read once, together with the challenger, when both have at least 20 completed lifecycles and at least 60 sessions have passed since the later seal."
+  },
+  "existing_registration": null,
+  "hypothesis": "Control: a scheduled, signal-free SPY entry with the pilot's fixed exit policy sets the per-lifecycle outcome the challenger must beat. No edge is expected or claimed for the control itself.",
+  "program_id": "eq-baseline-spy-weekly",
+  "role": "baseline",
+  "schema": "trex-pilot-registration/1",
+  "sealed_at": null,
+  "sealed_by": null,
+  "sha256": null,
+  "status": "draft",
+  "title": "SPY weekly scheduled entry (equity control)",
+  "universe": {
+    "asset_kind": "equity",
+    "symbols": [
+      "SPY"
+    ]
+  }
+}
