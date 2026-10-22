@@ -1,0 +1,10 @@
+[Unit]
+Description=Sweep TREX owner alerts and send the dead-man heartbeat when due
+[Timer]
+OnBootSec=60s
+# Two sweeps fit in the 60 s approval warning; the ping keeps its own interval.
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Persistent=false
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,36 @@
+[Unit]
+Description=TREX Wave 4 owner alerts and dead-man heartbeat (no broker effects)
+[Service]
+Type=oneshot
+WorkingDirectory=@SOURCE@
+Environment=PYTHONPATH=@SOURCE@/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
+Environment=TREX_DESK_STATE=@DESK_STATE@
+# Release code, so the release identity check gates the start (as the
+# publishers). Its failure report is best effort under this sandbox.
+ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
+# Sweep the owner alerts, then ping the owner's external check when due. The
+# check URL lives in ~/.config/trex/deadman.env (read only, by name; absent
+# means disabled). Desk files are read, never written; the alert book and the
+# heartbeat record go to <desk state>/alerts.
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.trex.deadman --state-dir @DESK_STATE@/alerts
+# Exit 3: a degraded tick (a push or the ping failed); logged, never retried in a loop.
+SuccessExitStatus=3
+# Direct interpreter, no admission wrapper (it would drop this sandbox; see the
+# publishers). Memory caps borrowed from the publishers; unmeasured, confirm on
+# the first supervised run.
+Slice=host-work.slice
+MemoryHigh=384M
+MemoryMax=512M
+Nice=10
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DESK_STATE@
+# Outbound HTTPS only (the ntfy push and the heartbeat), plus DNS.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

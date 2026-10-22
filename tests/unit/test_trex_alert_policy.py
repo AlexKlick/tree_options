@@ -197,3 +197,75 @@ class TestCodexFixes:
         """P2: a recovery deferred by quiet hours said notify_held=false."""
         _, book = _push("ok", {"last_notified_status": "down", "last_notified_at": NOW}, HUSH)
         assert book["notify_held"] is True and book["last_notified_status"] == "down"
+
+
+class TestSafetyAlarms:
+    """Wave 4 (lane J): quiet hours are respected EXCEPT for safety alerts,
+    the ones where an exit may be blocked or blind until the owner looks
+    (``alert_policy.SAFETY_ALERTS``). They go out at any hour, never below
+    ``high``; their recoveries still wait for the morning."""
+
+    @staticmethod
+    def _safety_push(status: str, prior: dict[str, object], urg: Urgency):  # type: ignore[no-untyped-def]
+        return next_push(
+            status=status,
+            now=NOW,
+            prior=prior,
+            urgency=urg,
+            bad=frozenset({status, "down"}),
+            healthy=HEALTHY,
+            alarm=lambda: ("t: blind", "exit is blind"),
+            recovery=lambda: ("t: back", "exit is back"),
+        )
+
+    @pytest.mark.parametrize(
+        "status", ["reconciliation_required", "exit_quote_blind", "quote_blind"]
+    )
+    def test_safety_alarm_is_not_held_by_quiet_hours(self, status: str) -> None:
+        push, book = self._safety_push(status, {}, HUSH)
+        assert push is not None and push.status == status
+        assert push.priority == "high"  # HUSH is "default": safety never goes below high
+        assert book["notify_held"] is False and book["last_notified_status"] == status
+
+    def test_safety_alarm_keeps_the_urgency_priority_when_higher(self) -> None:
+        loudest = Urgency("urgent", REMIND_MARKET_S, quiet=True)
+        push, _ = self._safety_push("exit_quote_blind", {}, loudest)
+        assert push is not None and push.priority == "urgent"
+
+    def test_a_non_safety_alarm_is_still_held(self) -> None:
+        push, book = self._safety_push("down", {}, HUSH)
+        assert push is None and book["notify_held"] is True
+
+    def test_a_safety_recovery_still_waits_for_quiet_hours_to_end(self) -> None:
+        prior = {"last_notified_status": "quote_blind", "last_notified_at": NOW - 600}
+        push, book = next_push(
+            status="ok",
+            now=NOW,
+            prior=prior,
+            urgency=HUSH,
+            bad=frozenset({"quote_blind"}),
+            healthy=HEALTHY,
+            alarm=lambda: ("t", "m"),
+            recovery=lambda: ("t: back", "back"),
+        )
+        assert push is None and book["notify_held"] is True
+
+    def test_exit_watch_quote_blind_goes_out_in_quiet_hours(self) -> None:
+        """The exit watch's ``quote_blind`` (a held equity with no real-time
+        quote) is the monitor.json face of exit_quote_blind: a safety alarm."""
+        from tests.unit.test_trex_exit_watch import NOON, _obs, _quote_blind_book
+        from tree_options.trex import exit_watch
+
+        quiet = Urgency("default", REMIND_EVERY_S, quiet=True)
+        state, actions = exit_watch.decide(_obs([_quote_blind_book(NOON - 900)]), {}, urgency=quiet)
+        (note,) = actions
+        assert note.detail == "quote_blind" and note.priority == "high"
+        assert state["notify_held"] is False
+
+    def test_exit_watch_touch_blind_is_not_safety_and_still_waits(self) -> None:
+        from tests.unit.test_trex_exit_watch import NOON, _blind_book, _obs
+        from tree_options.trex import exit_watch
+
+        quiet = Urgency("high", REMIND_MARKET_S, quiet=True)
+        state, actions = exit_watch.decide(_obs([_blind_book(NOON - 900)]), {}, urgency=quiet)
+        assert actions == [] and state["notify_held"] is True
