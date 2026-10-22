@@ -272,7 +272,9 @@ Module `contracts.risk`. Produced by D from one broker session; read by A
 `RiskSnapshot`: `account_id`, `as_of`, `status` (`complete` = every figure
 read; `unavailable` = all figures null), `open_loss_cents` (>= 0),
 `day_realized_loss_cents` (>= 0), `cash_cents` (settled; negative =
-borrowing), `equity_gross_cents` (>= 0), `outside_positions` (rows in
+borrowing; W2c: net of the booked stock cash the broker's settled figure
+does not show yet, see the amendment log), `equity_gross_cents` (>= 0),
+`outside_positions` (rows in
 contracts the Wave 2 ledger never touched), `stale_after_s` = 120.
 `risk_snapshot_blockers`: absent, unavailable, older than 120 s or
 future-dated gives `risk_snapshot_stale`.
@@ -582,3 +584,16 @@ added the two codes its own fixes emit. Nothing renamed or removed.
   disjoint from the earlier sets; every W2c code round-trips; every value
   but `commands_failed` (whose producer spells the member) is a literal of
   its producer module; the producers' constants equal the members.
+
+### 2026-10-21: C2.5 `cash_cents` after same-day stock buys (W2c integration)
+
+No schema change. IBKR's `SettledCash` moves only when a trade settles
+(US stocks T+1), so the snapshot's cash overstated what a second same-day
+purchase could spend. The books now publish `cash_cents` = `SettledCash`
+minus every booked stock execution whose settlement session (the first
+session after its ET trade date; an unplaceable date counts as unsettled)
+is after the snapshot's ET date: a purchase's price net of corrections plus
+its commission, a sale's commission alone (a sale's proceeds are never
+added early). Conservative by construction: a double count could only
+understate cash and refuse an entry (`insufficient_cash`), never admit one;
+exits never read it (`trex.risk_snapshot` module docstring).

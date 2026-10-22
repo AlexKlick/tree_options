@@ -36,6 +36,7 @@ from tree_options.trex.contracts import (
 from tree_options.trex.desk_commands import CommandQueue
 from tree_options.trex.ledger import HoldingsDocument, fold_ledger, read_ledger
 from tree_options.trex.pause import pause_entries
+from tree_options.trex.risk_snapshot import settled_cash_cents
 from tree_options.trex.state import Status
 
 pytest.importorskip("ib_async")
@@ -167,6 +168,12 @@ def test_compose_approve_partial_fill_stop_exit_flat_reconciled_with_commissions
     assert (reconciliation.status, reconciliation.mismatches) == ("clean", ())
     risk = _risk(rig)
     assert risk.status == "complete" and risk.open_loss_cents == 0
+    # W2c item 8: the broker's SettledCash shows neither of today's trades;
+    # the published cash takes the share bought (1 x 671.50) and both 1.00
+    # commissions out, and never adds the unsettled sale proceeds
+    broker = settled_cash_cents(rig.gw.accountValues(), account_id=ACCOUNT)
+    assert broker is not None
+    assert risk.cash_cents == broker - (67_150 + 2 * 100)
     holdings = HoldingsDocument.model_validate_json(rig.ledger_file("holdings.json").read_bytes())
     assert holdings.holdings == ()
     # replaying the broker facts books nothing new (append-only, idempotent)
@@ -450,6 +457,30 @@ def roomy(tmp_path: Path) -> Iterator[OwnerRig]:
     assert r.step() == 0
     yield r
     r.close()
+
+
+def test_a_same_day_buy_counts_against_cash_before_it_settles(roomy):
+    """W2c item 8: the broker's SettledCash (2,000.00 here) does not show a
+    stock purchase until it settles (T+1). After 2 SPY are bought at 671.50
+    the published cash is 2,000.00 - 1,343.00 - its commission, so a second
+    same-day purchase of 1 share (671.50) is refused insufficient_cash
+    instead of being sent against cash already spent."""
+    rig = roomy
+    rig.gw.account_values["SettledCash"] = "2000.00"
+    rig.desk.books.request_refresh()
+    assert rig.step() == 0
+    _open(rig)
+    rig.gw.deliver_commissions()
+    rig.clock.advance(61)
+    assert rig.step() == 0
+    assert _risk(rig).cash_cents == 200_000 - (2 * 67_150 + 100)
+    rig.draft_equity(equity_effect(intent_id="eq-spy-2", quantity=1))
+    rig.quote()
+    composed = rig.compose("eq-spy-2")
+    assert (composed.status, composed.reason) == ("refused", Blocker.INSUFFICIENT_CASH.value), (
+        composed
+    )
+    assert len(rig.orders("BUY")) == 1
 
 
 def test_a_standing_flatten_refuses_compose_and_approve(roomy):

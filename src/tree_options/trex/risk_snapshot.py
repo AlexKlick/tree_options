@@ -19,7 +19,20 @@ every rounding toward MORE risk:
     value| (stocks may use |quantity| x mark);
 - ``day_realized_loss_cents``: the ledger's realized losses on the ET
   session date of ``as_of`` (``LedgerFold.day_realized_loss_micros``);
-- ``cash_cents``: IBKR ``SettledCash`` (``settled_cash_cents``);
+- ``cash_cents``: IBKR ``SettledCash`` (``settled_cash_cents``) minus the
+  stock cash the broker figure does not show yet (W2c,
+  ``unsettled_stock_cents``). Settled cash moves only when a trade settles
+  (US stocks: T+1, the next session), so a same-day purchase is not in it
+  and a second same-day entry would spend the same cash twice. The rule,
+  conservative by construction: every booked stock execution whose
+  settlement session (``equity_settlement_date`` of its ET trade date) is
+  after the snapshot's ET date, or cannot be placed, takes out a purchase's
+  price (net of its corrections) plus its commission, a sale its
+  commission alone; a sale's proceeds are never added early. From the
+  settlement session on the broker figure includes the trade and nothing
+  is subtracted. Should a broker figure ever already include an unsettled
+  purchase, the double count UNDERSTATES cash: it can only refuse an
+  entry (``insufficient_cash``), never admit one, and exits never read it;
 - ``equity_gross_cents``: market value of every long stock row;
 - ``outside_positions``: broker rows in contracts the ledger never touched.
 
@@ -63,8 +76,9 @@ vocabulary lane adds the ``Blocker`` member).
 
 from __future__ import annotations
 
+import bisect
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
@@ -91,9 +105,11 @@ __all__ = [
     "UndefinedRisk",
     "build_risk_snapshot",
     "equity_open_loss_cents",
+    "equity_settlement_date",
     "option_open_loss_cents",
     "read_risk_snapshot",
     "settled_cash_cents",
+    "unsettled_stock_cents",
     "write_risk_snapshot",
 ]
 
@@ -358,6 +374,43 @@ def _undefined_risk(
     return tuple(found[con_id] for con_id in sorted(found))
 
 
+def equity_settlement_date(trade_date: date) -> date | None:
+    """The session a US stock trade of ``trade_date`` settles on (T+1: the
+    first session after it, by the trex calendar); None when the calendar
+    cannot place it (the caller counts the trade as unsettled)."""
+    from tree_options.time.calendar import CalendarError
+    from tree_options.trex.clock import session_calendar
+
+    try:
+        sessions = session_calendar().sessions()
+    except (CalendarError, OSError, ValueError):
+        return None
+    index = bisect.bisect_right(sessions, trade_date)
+    return sessions[index] if index < len(sessions) else None
+
+
+def unsettled_stock_cents(
+    fold: LedgerFold,
+    account_id: str,
+    as_of: datetime,
+    *,
+    settlement_date: Callable[[date], date | None] = equity_settlement_date,
+) -> int:
+    """What the account's booked stock executions took out of cash that the
+    broker's settled cash does not show yet, in cents rounded up: every
+    ``LedgerFold.stock_cash_out`` whose settlement session (from its ET
+    trade date) is after the ET date of ``as_of``, or cannot be placed."""
+    day = as_of.astimezone(SESSION_TIMEZONE).date()
+    micros = 0
+    for out in fold.stock_cash_out:
+        if out.account_id != account_id:
+            continue
+        settles = settlement_date(out.at.astimezone(SESSION_TIMEZONE).date())
+        if settles is None or day < settles:
+            micros += out.micros
+    return _ceil_div(micros, MICROS_PER_CENT)
+
+
 def _specs_by_intent(specs: Iterable[AnyDeskSpec]) -> dict[str, AnyDeskSpec]:
     out: dict[str, AnyDeskSpec] = {}
     for spec in specs:
@@ -376,8 +429,11 @@ def build_risk_snapshot(
     settled_cash_cents: int | None,
     session_day: date | None = None,
     gap_reserve_bps: int = EQUITY_GAP_RESERVE_BPS,
+    settlement_date: Callable[[date], date | None] = equity_settlement_date,
 ) -> RiskSnapshotBuild:
-    """The account's risk from one broker session read at ``as_of``."""
+    """The account's risk from one broker session read at ``as_of``.
+    ``cash_cents`` is ``settled_cash_cents`` minus the ledger's unsettled
+    stock cash (``unsettled_stock_cents``; module docstring)."""
     problems = []
     if broker_rows is None:
         problems.append("broker positions unreadable")
@@ -422,7 +478,8 @@ def build_risk_snapshot(
         status="complete",
         open_loss_cents=open_loss,
         day_realized_loss_cents=_ceil_div(day_loss_micros, MICROS_PER_CENT),
-        cash_cents=settled_cash_cents,
+        cash_cents=settled_cash_cents
+        - unsettled_stock_cents(fold, account_id, as_of, settlement_date=settlement_date),
         equity_gross_cents=equity_gross,
         outside_positions=outside,
     )

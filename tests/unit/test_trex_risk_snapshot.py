@@ -79,6 +79,13 @@ def nvda(**kw: Any) -> c.BrokerPortfolioItem:
     return portfolio_item(**fields)
 
 
+#: the fixture fill (2 SPY bought at 671.48 with a 1.00 commission at
+#: 2026-10-22 14:03:05Z) by hand: what it takes out of cash, in cents
+FIXTURE_BUY_CENTS = 2 * 67_148 + 100
+#: the fixture snapshot's published cash
+FIXTURE_CASH = contract_fixture("risk_snapshot.json")["cash_cents"]
+
+
 def snapshot(**kw: Any) -> Any:
     args: dict[str, Any] = {
         "account_id": ACCOUNT,
@@ -86,7 +93,9 @@ def snapshot(**kw: Any) -> Any:
         "fold": fold_of([execution()]),
         "specs": SPECS,
         "broker_rows": [portfolio_item(), nvda()],
-        "settled_cash_cents": 4_865_704,
+        # IBKR's SettledCash does not show the fixture's same-day buy yet
+        # (W2c item 8): the published cash is the fixture's
+        "settled_cash_cents": FIXTURE_CASH + FIXTURE_BUY_CENTS,
     }
     args.update(kw)
     return build_risk_snapshot(**args)
@@ -96,6 +105,62 @@ def test_reproduces_the_fixture_snapshot() -> None:
     build = snapshot()
     assert build.problems == ()
     assert c.model_document(build.snapshot) == contract_fixture("risk_snapshot.json")
+
+
+# ------------------------------------------- W2c item 8: unsettled stock cash
+
+
+def test_a_same_day_stock_buy_leaves_the_published_cash_until_it_settles() -> None:
+    """IBKR's SettledCash shows a stock purchase only once it settles (T+1,
+    the next session): until then the snapshot publishes settled cash minus
+    the purchase and its commission. From the settlement session on, the
+    broker figure includes it and nothing is subtracted (no double count)."""
+    broker = 1_000_000
+    assert snapshot(settled_cash_cents=broker).snapshot.cash_cents == broker - FIXTURE_BUY_CENTS
+    settled = snapshot(as_of=at("2026-10-23T13:31:00+00:00"), settled_cash_cents=broker)
+    assert settled.snapshot.cash_cents == broker
+    # a negative result is published as such: admission reads it as borrowing
+    short = snapshot(settled_cash_cents=FIXTURE_BUY_CENTS - 1).snapshot
+    assert short.cash_cents == -1
+
+
+def test_a_friday_buy_stays_unsettled_over_the_weekend() -> None:
+    friday = execution(time="2026-10-23T14:03:05Z")
+    fold = fold_of([friday])
+    broker = 1_000_000
+    for when, expected in (
+        ("2026-10-23T19:00:00+00:00", broker - FIXTURE_BUY_CENTS),  # Friday
+        ("2026-10-24T15:00:00+00:00", broker - FIXTURE_BUY_CENTS),  # Saturday
+        ("2026-10-26T13:31:00+00:00", broker),  # Monday: settled
+    ):
+        build = snapshot(fold=fold, as_of=at(when), settled_cash_cents=broker)
+        assert build.snapshot.cash_cents == expected, when
+
+
+def test_a_same_day_sale_adds_nothing_but_its_commission_is_taken() -> None:
+    """Conservative: a sale's proceeds are unsettled too and never added
+    early; its commission is taken at once like a purchase's."""
+    yesterday = execution(time="2026-10-21T14:03:05Z")
+    today = execution(
+        exec_id="0000e0d5.6576d6b0.01.01",
+        side="SLD",
+        price_micros=672_000_000,
+        time="2026-10-22T14:03:30Z",
+        order_ref="trex:desk:eq-spy-001",
+        perm_id=1234567891,
+    )
+    build = snapshot(fold=fold_of([yesterday, today]), broker_rows=[nvda()], settled_cash_cents=0)
+    assert build.problems == ()
+    assert build.snapshot.cash_cents == -100
+
+
+def test_an_unplaceable_settlement_date_counts_as_unsettled() -> None:
+    build = snapshot(
+        as_of=at("2026-10-23T13:31:00+00:00"),
+        settled_cash_cents=1_000_000,
+        settlement_date=lambda trade_date: None,
+    )
+    assert build.snapshot.cash_cents == 1_000_000 - FIXTURE_BUY_CENTS
 
 
 # ------------------------------------------------------------ the open-loss rule
@@ -617,7 +682,9 @@ def test_gateway_session_snapshot() -> None:
     snap = build.snapshot
     # 2 x (680.00 - 665.00) = 30.00 < 20% of 1360.00 = 272.00
     assert (snap.open_loss_cents, snap.equity_gross_cents) == (27_200, 136_000)
-    assert snap.cash_cents == 100_000_000
+    # the fake's SettledCash (1,000,000.00) does not show today's buy of
+    # 2 x 671.50 and its 1.00 commission yet (W2c item 8)
+    assert snap.cash_cents == 100_000_000 - (2 * 67_150 + 100)
     assert snap.day_realized_loss_cents == 0
 
 

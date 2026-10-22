@@ -112,6 +112,7 @@ __all__ = [
     "LedgerFold",
     "Lot",
     "Realization",
+    "StockCashOut",
     "append_events",
     "append_executions",
     "append_ledger",
@@ -499,6 +500,21 @@ class Realization:
 
 
 @dataclass(frozen=True)
+class StockCashOut:
+    """What one booked stock execution took out of cash (micros, >= 0): a
+    purchase its price net of its corrections plus its booked commission, a
+    sale its commission alone (its proceeds are never counted before they
+    settle). The risk snapshot subtracts the ones the broker's settled cash
+    does not show yet (W2c)."""
+
+    account_id: str
+    con_id: int
+    #: the broker time of the fill (its ET date is the trade date)
+    at: datetime
+    micros: int
+
+
+@dataclass(frozen=True)
 class AttributionTotals:
     open_quantity: dict[int, int]
     realized_micros: int = 0
@@ -528,6 +544,8 @@ class LedgerFold:
     #: exec ids booked as a fill or correction whose commission has not been
     #: booked yet: realized figures are provisional (never zero-fee) until empty
     pending_commissions: tuple[str, ...] = ()
+    #: every booked stock execution's cash out, in broker-time order (W2c)
+    stock_cash_out: tuple[StockCashOut, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -781,6 +799,23 @@ def fold_ledger(events: Iterable[LedgerEvent]) -> LedgerFold:
             sorted(e.event_id for e in by_id.values() if e.detail.startswith(UNATTRIBUTED_PREFIX))
         ),
         pending_commissions=_pending_commissions(by_id.values()),
+        stock_cash_out=tuple(
+            _cash_out(fill)
+            for fill in sorted(effective.values(), key=lambda f: (f.at, f.base))
+            if fill.sec_type == "STK"
+        ),
+    )
+
+
+def _cash_out(fill: _Effective) -> StockCashOut:
+    """A purchase's price (net of corrections) plus its commission; a
+    sale's commission alone."""
+    paid = -fill.cash if fill.quantity > 0 and fill.cash < 0 else 0
+    return StockCashOut(
+        account_id=fill.account_id,
+        con_id=fill.con_id,
+        at=fill.at,
+        micros=paid + max(fill.fee, 0),
     )
 
 
