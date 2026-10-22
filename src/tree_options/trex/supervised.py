@@ -741,6 +741,41 @@ def invalidate_entry_mandates(
     return retired
 
 
+def retire_entry_mandate(
+    paths: SupervisedPaths,
+    intent_id: str,
+    *,
+    now: datetime,
+    reason: str,
+    proposal_id: str | None = None,
+) -> SupervisedMandateV2 | None:
+    """Retire the intent's unconsumed per-trade mandate (W2c: the public
+    retirement the owner's reject flow uses). Under the state lock, like
+    every mandate write: it moves to ``retired/`` with a retirement record
+    naming ``reason``, so it can never mint a permit; the retired mandate is
+    returned. None, touching nothing, when there is no unconsumed mandate,
+    it does not read (left in place: loading it refuses anyway) or, with
+    ``proposal_id``, it was granted for another proposal. A consumed
+    mandate is history and never retired."""
+    _require_aware(now, "now")
+    if not _entry_intent_ok(intent_id):
+        raise SupervisedRefused("intent_id_not_path_safe", intent_id)
+    with _locked(paths):
+        path = paths.entry_mandate(intent_id)
+        if not path.exists():
+            return None
+        try:
+            mandate = _load_entry_mandate(path)
+        except (OSError, ValueError):
+            return None
+        if mandate.intent_id != intent_id:
+            return None
+        if proposal_id is not None and mandate.proposal_id != proposal_id:
+            return None
+        _retire_entry_mandate(paths, mandate, now=now, reason=reason)
+        return mandate
+
+
 def entry_mandates(paths: SupervisedPaths, *, now: datetime) -> list[dict[str, Any]]:
     """Read-only inventory of per-trade mandates (never raises on a bad file).
 

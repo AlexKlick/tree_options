@@ -9,6 +9,7 @@ web store), kill files on disk, the pause audit, and the claim files.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 
 from tests.unit.trex_fakes import FakeCommandAuthority, SessionClock
 from tree_options.time.sessions import shift_instant
-from tree_options.trex import desk_commands
+from tree_options.trex import desk_commands, pause
 from tree_options.trex.contracts import (
     AnyCommand,
     CommandResult,
@@ -148,7 +149,8 @@ def test_a_queued_command_is_claimed_applied_and_answered_once(rig):
     assert (audit["actor"], audit["command"], audit["reason"]) == ("family:owner", key, "lunch")
     folder = rig.root / "commands"
     assert not (folder / f"{key}.json").exists()
-    assert (folder / f"{key}{CLAIMED_SUFFIX}").exists()
+    assert not (folder / f"{key}{CLAIMED_SUFFIX}").exists(), "answered: archived"
+    assert (folder / desk_commands.ARCHIVE_DIR / f"{key}{CLAIMED_SUFFIX}").exists()
     assert rig.queue.process() == [], "processed exactly once"
     assert ("command_applied", "pause_entries") in [(n, p.get("kind")) for n, p in rig.events]
 
@@ -158,7 +160,8 @@ def test_the_web_reads_the_desk_answer_and_a_retry_is_a_duplicate(rig):
     rig.queue.process()
     stored = rig.result(key)
     assert (stored.status, stored.kind, stored.result["kill_file"]) == ("applied", "halt", "HALT")
-    command = parse_command(json.loads((rig.root / "commands" / f"{key}.claimed.json").read_text()))
+    archived = rig.root / "commands" / desk_commands.ARCHIVE_DIR / f"{key}.claimed.json"
+    command = parse_command(json.loads(archived.read_text()))
     retry = rig.store.submit(command, now=rig.clock.utc())
     assert retry.result.status == "duplicate"
     assert retry.result.result["first_status"] == "applied"
@@ -402,11 +405,57 @@ def test_a_second_file_for_a_claimed_key_is_set_aside_unprocessed(rig):
     key = rig.submit("halt", {"reason": ""})
     rig.queue.process()
     first = rig.result(key)
-    claimed = rig.root / "commands" / f"{key}.claimed.json"
+    done = rig.root / "commands" / desk_commands.ARCHIVE_DIR
+    claimed = done / f"{key}.claimed.json"
     (rig.root / "commands" / f"{key}.json").write_bytes(claimed.read_bytes())
     assert rig.queue.process() == []
-    assert (rig.root / "commands" / f"{key}.duplicate-1.json").exists()
+    assert (done / f"{key}.duplicate-1.json").exists(), "set aside into the archive"
     assert rig.result(key) == first, "the desk's answer is never replaced"
+    # the same once more: the next free slot, never a replacement
+    (rig.root / "commands" / f"{key}.json").write_bytes(claimed.read_bytes())
+    assert rig.queue.process() == []
+    assert (done / f"{key}.duplicate-2.json").exists()
+    assert sorted(p.name for p in (rig.root / "commands").glob("*.json")) == [f"{key}.result.json"]
+
+
+def test_a_claim_still_in_hand_sets_a_second_file_aside_too(rig):
+    """A claim not yet archived (its answer still unwritten) is still a
+    claim: a second ``<key>.json`` is set aside, never processed."""
+    key = rig.submit("compose_entry", _COMPOSE)
+    folder = rig.root / "commands"
+    (folder / f"{key}.json").rename(folder / f"{key}{CLAIMED_SUFFIX}")
+    (folder / f"{key}.json").write_bytes((folder / f"{key}{CLAIMED_SUFFIX}").read_bytes())
+    assert rig.queue.process() == []
+    assert rig.flows.calls == []
+    assert (folder / desk_commands.ARCHIVE_DIR / f"{key}.duplicate-1.json").exists()
+
+
+def test_recovery_archives_answered_claims_and_set_aside_duplicates(rig):
+    """The claims and duplicates an earlier owner left beside answered
+    commands (written before the archive existed, or a crash between the
+    answer and the archive) move to ``done/`` at the next start; an
+    unanswered claim is answered first, then archived."""
+    folder = rig.root / "commands"
+    answered = rig.submit("pause_entries", {"reason": ""})
+    rig.queue.process()
+    done = folder / desk_commands.ARCHIVE_DIR
+    (done / f"{answered}{CLAIMED_SUFFIX}").rename(folder / f"{answered}{CLAIMED_SUFFIX}")
+    (folder / f"{answered}.duplicate-1.json").write_text("{}")
+    open_claim = rig.submit("resume_all", {"reason": ""})
+    (folder / f"{open_claim}.json").rename(folder / f"{open_claim}{CLAIMED_SUFFIX}")
+    (recovered,) = rig.new_queue().recover_interrupted()
+    assert (recovered.idempotency_key, recovered.status) == (open_claim, "failed")
+    assert sorted(p.name for p in folder.glob("*.json")) == sorted(
+        [f"{answered}.result.json", f"{open_claim}.result.json"]
+    )
+    assert sorted(p.name for p in done.iterdir()) == sorted(
+        [
+            f"{answered}{CLAIMED_SUFFIX}",
+            f"{answered}.duplicate-1.json",
+            f"{open_claim}{CLAIMED_SUFFIX}",
+        ]
+    )
+    assert rig.store.pending_kinds() == frozenset()
 
 
 def test_any_error_while_the_session_is_down_propagates(rig):
@@ -431,3 +480,352 @@ def test_results_carry_utc_instants(rig):
     key = rig.submit("resume_entries", {"reason": ""})
     rig.queue.process()
     assert rig.result(key).at.tzinfo == UTC
+
+
+# ------------------------------------------------- W2c item 3: containment
+
+
+def _failures(rig: Rig) -> list[dict[str, Any]]:
+    return [p for n, p in rig.events if n == "commands_failed"]
+
+
+def test_a_too_deeply_nested_queued_command_is_refused_never_raised(rig):
+    """A queued file nested past the JSON parser's recursion limit (inside
+    the size bound) used to escape the listing as a RecursionError and stop
+    the owner loop; it is a ``command_invalid`` refusal on its intake record
+    like any unparsable command, and the next command still runs."""
+    junk = rig.submit("halt", {"reason": ""})
+    depth = desk_commands.MAX_COMMAND_BYTES // 2 - 1
+    (rig.root / "commands" / f"{junk}.json").write_text("[" * depth + "]" * depth)
+    rig.clock.advance(1)
+    pause_key = rig.submit("pause_entries", {"reason": ""})
+    answers = {a.idempotency_key: a for a in rig.queue.process()}
+    assert (answers[junk].status, answers[junk].reason) == ("refused", "command_invalid")
+    assert answers[junk].kind == "halt", "answered on the web's intake record"
+    assert answers[pause_key].status == "applied"
+    assert not (rig.root / "HALT").exists()
+
+
+def test_an_answer_that_cannot_be_written_is_contained_and_retried(rig, monkeypatch):
+    """The answer write (store lock, atomic file) fails for one command: the
+    pass goes on with the next command (one ``commands_failed`` event naming
+    the stage and the error class), and the applied command's answer is
+    written by the next pass once the store is writable again; never
+    re-applied."""
+    halt = rig.submit("halt", {"reason": ""})
+    rig.clock.advance(1)
+    pause_key = rig.submit("pause_entries", {"reason": ""})
+    real_write = desk_commands._write_atomic
+    broken = {halt}
+
+    def flaky(path: Path, payload: bytes) -> None:
+        if any(path.name == f"{key}.result.json" for key in broken):
+            raise PermissionError(13, "read-only")
+        real_write(path, payload)
+
+    monkeypatch.setattr(desk_commands, "_write_atomic", flaky)
+    answers = rig.queue.process()
+    assert [a.idempotency_key for a in answers] == [pause_key]
+    assert (rig.root / "HALT").exists(), "applied once"
+    assert rig.result(halt).status == "accepted", "its answer is not written yet"
+    (failure,) = _failures(rig)
+    assert (failure["stage"], failure["error"], failure["command"]) == (
+        "answer",
+        "PermissionError",
+        halt,
+    )
+    assert rig.queue.process() == [], "still unwritable: nothing new, noted once"
+    assert len(_failures(rig)) == 1
+    broken.clear()
+    (late,) = rig.queue.process()
+    assert (late.idempotency_key, late.status) == (halt, "applied")
+    assert rig.result(halt).status == "applied"
+    assert rig.result(halt).result["answered_by"] == ANSWERED_BY
+
+
+def test_a_claim_that_cannot_be_renamed_is_contained_and_left_queued(rig, monkeypatch):
+    stuck = rig.submit("compose_entry", _COMPOSE)
+    rig.clock.advance(1)
+    pause_key = rig.submit("pause_entries", {"reason": ""})
+    real_rename = desk_commands.rename_noreplace
+
+    def refuse_one(src: Path, dst: Path) -> None:
+        if src.name == f"{stuck}.json":
+            raise PermissionError(13, "read-only")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(desk_commands, "rename_noreplace", refuse_one)
+    answers = rig.queue.process()
+    assert [a.idempotency_key for a in answers] == [pause_key]
+    assert (rig.root / "commands" / f"{stuck}.json").exists(), "left queued, unclaimed"
+    assert rig.flows.calls == []
+    assert [(f["stage"], f["command"]) for f in _failures(rig)] == [("claim", stuck)]
+    monkeypatch.setattr(desk_commands, "rename_noreplace", real_rename)
+    (later,) = rig.queue.process()
+    assert later.idempotency_key == stuck and rig.flows.calls == [("compose", stuck)]
+
+
+def test_a_lost_session_in_the_command_stage_still_propagates(rig, monkeypatch):
+    """Containment never hides a lost session: a ConnectionError anywhere in
+    the stage (here the answer's store lock) still reaches the loop (exit 6)."""
+    rig.submit("pause_entries", {"reason": ""})
+
+    def gone(path: Path, payload: bytes) -> None:
+        raise ConnectionError("gone")
+
+    monkeypatch.setattr(desk_commands, "_write_atomic", gone)
+    with pytest.raises(ConnectionError):
+        rig.queue.process()
+
+
+def test_an_unlistable_queue_is_contained_in_the_file_pass_only(rig, monkeypatch):
+    """Listing ``commands/`` is a file operation: the kill-switch pass that
+    runs with the gateway down (on the way out, before connecting) records
+    the failure and returns; a full pass with the session down propagates
+    it as before (the loop exits 6)."""
+
+    def unlistable(self: CommandQueue, kinds: Any = None) -> Any:
+        raise PermissionError(13, "commands/ unreadable")
+
+    monkeypatch.setattr(CommandQueue, "_queued", unlistable)
+    rig.up = False
+    assert rig.queue.process(kinds=desk_commands.FILE_KINDS) == []
+    assert [(f["stage"], f["error"]) for f in _failures(rig)] == [("list", "PermissionError")]
+    with pytest.raises(PermissionError):
+        rig.queue.process()
+    rig.up = True
+    assert rig.queue.process() == [], "contained while the session is up"
+
+
+def test_a_broken_claim_never_stops_recovery_of_the_others(rig, monkeypatch):
+    folder = rig.root / "commands"
+    bad = rig.submit("resume_all", {"reason": ""}, ttl_s=60)
+    rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": "owner died"}, ttl_s=60)
+    for key in (bad, halt):
+        (folder / f"{key}.json").rename(folder / f"{key}{CLAIMED_SUFFIX}")
+    real_write = desk_commands._write_atomic
+
+    def flaky(path: Path, payload: bytes) -> None:
+        if path.name == f"{bad}.result.json":
+            raise OSError(28, "no space")
+        real_write(path, payload)
+
+    monkeypatch.setattr(desk_commands, "_write_atomic", flaky)
+    queue = rig.new_queue()
+    answers = queue.recover_interrupted()
+    assert [a.idempotency_key for a in answers] == [halt]
+    assert (rig.root / "HALT").exists()
+    assert [(f["stage"], f["command"]) for f in _failures(rig)] == [("answer", bad)]
+
+
+def test_kill_switches_go_first_and_a_burst_is_spread_over_passes(rig):
+    """A burst of entry commands cannot starve the owner's tick: one pass
+    takes every queued kill switch first (issued last, still first), then at
+    most ``MAX_COMMANDS_PER_PASS`` other commands in issue order; the rest
+    wait, queued, for the next pass."""
+    limit = desk_commands.MAX_COMMANDS_PER_PASS
+    burst = []
+    for _ in range(limit + 3):
+        burst.append(rig.submit("compose_entry", _COMPOSE))
+        rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": ""})
+    rig.clock.advance(1)
+    flatten = rig.submit("flatten", {"reason": ""})
+    first = [a.idempotency_key for a in rig.queue.process()]
+    assert first == [halt, flatten, *burst[:limit]]
+    assert [key for _, key in rig.flows.calls] == burst[:limit]
+    for key in burst[limit:]:
+        assert (rig.root / "commands" / f"{key}.json").exists(), "deferred, still queued"
+    second = [a.idempotency_key for a in rig.queue.process()]
+    assert second == burst[limit:]
+
+
+def test_a_slow_pass_stops_taking_commands_at_its_wall_time_budget(rig):
+    """Each entry command takes 60 % of the pass budget: the first starts at
+    0, the second at 0.6 (inside), the third would start at 1.2 (past it) and
+    waits for the next pass. A command slower than the whole budget still
+    makes progress, one per pass."""
+    budget = desk_commands.COMMAND_PASS_BUDGET_S
+    ticks = [0.0]
+    rig.queue.monotonic = lambda: ticks[0]
+    step = [0.6 * budget]
+
+    def slow(command: Any, now: datetime) -> Outcome:
+        rig.flows.calls.append(("compose", command.idempotency_key))
+        ticks[0] += step[0]
+        return applied()
+
+    rig.flows.compose = slow  # type: ignore[method-assign]
+    keys = []
+    for _ in range(4):
+        keys.append(rig.submit("compose_entry", _COMPOSE))
+        rig.clock.advance(1)
+    assert [a.idempotency_key for a in rig.queue.process()] == keys[:2]
+    step[0] = 3 * budget
+    assert [a.idempotency_key for a in rig.queue.process()] == keys[2:3]
+    assert [a.idempotency_key for a in rig.queue.process()] == keys[3:]
+
+
+# ------------------------------- W2c refix: a resume never lifts a newer stop
+
+_STOP_FILE = {"halt": "HALT", "flatten": "FLATTEN", "pause_entries": "PAUSE_ENTRIES"}
+_RESUME_STOP = [
+    ("resume_all", "halt"),
+    ("resume_all", "flatten"),
+    ("resume_all", "pause_entries"),
+    ("resume_entries", "pause_entries"),
+]
+
+
+def _standing(rig: Rig) -> set[str]:
+    return {name for name in _STOP_FILE.values() if os.path.lexists(rig.root / name)}
+
+
+def _late(rig: Rig, kind: str, seconds_ago: float) -> str:
+    """A command issued ``seconds_ago`` (a slow client, a retried claim),
+    accepted by the web now: it reaches the desk after newer ones."""
+    issued = shift_instant(rig.clock.utc(), -seconds_ago)
+    command = rig.command(
+        kind,
+        {"reason": "late"},
+        issued_at=issued.isoformat(),
+        expires_at=shift_instant(issued, 120).isoformat(),
+    )
+    assert rig.store.submit(command, now=rig.clock.utc()).result.status == "accepted"
+    return command.idempotency_key
+
+
+@pytest.mark.parametrize("file_pass", [False, True], ids=["full_pass", "file_pass"])
+@pytest.mark.parametrize(("resume", "stop"), _RESUME_STOP)
+def test_an_older_resume_never_lifts_a_newer_stop_in_one_pass(
+    rig: Rig, resume: str, stop: str, file_pass: bool
+) -> None:
+    """Review probes A-C: the owner resumed, then stopped. Both wait in one
+    pass (a gateway outage, a slow approve). The stop is the owner's last
+    word: it stands after the pass, and both answers say what happened."""
+    rig.up = not file_pass
+    first = rig.submit(resume, {"reason": "lift"})
+    rig.clock.advance(2)
+    last = rig.submit(stop, {"reason": "stop"})
+    answers = rig.queue.process(kinds=desk_commands.FILE_KINDS if file_pass else None)
+    assert [a.idempotency_key for a in answers] == [first, last], "issue order"
+    assert _standing(rig) == {_STOP_FILE[stop]}
+    assert answers[1].status == "applied"
+    assert answers[1].result["changed"] is True
+
+
+def test_a_deferred_entry_burst_never_carries_a_resume_past_a_newer_halt(rig):
+    """Review probe D: eight older entry commands, then resume_all, then
+    halt. Every kill-switch kind goes before the entry kinds and is never
+    deferred, so the resume runs in the first pass, before the newer HALT."""
+    burst = []
+    for _ in range(desk_commands.MAX_COMMANDS_PER_PASS + 1):
+        burst.append(rig.submit("compose_entry", _COMPOSE))
+        rig.clock.advance(1)
+    resume = rig.submit("resume_all", {"reason": "lift"})
+    rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": "stop"})
+    first = [a.idempotency_key for a in rig.queue.process()]
+    assert first[:2] == [resume, halt]
+    assert not (rig.root / "commands" / f"{resume}.json").exists(), "never deferred"
+    assert rig.queue.deferred == 1
+    assert _standing(rig) == {"HALT"}
+    rig.queue.process()
+    assert _standing(rig) == {"HALT"}
+
+
+def test_halt_resume_halt_in_one_outage_pass_ends_halted(rig):
+    """Review probe E: the natural outage sequence. The last HALT is placed
+    again (``changed: True``), never answered as a no-op over a HALT the
+    resume then lifts."""
+    rig.up = False
+    rig.submit("halt", {"reason": "first"})
+    rig.clock.advance(1)
+    rig.submit("resume_all", {"reason": "lift"})
+    rig.clock.advance(1)
+    last = rig.submit("halt", {"reason": "again"})
+    answers = rig.queue.process(kinds=desk_commands.FILE_KINDS)
+    assert [a.status for a in answers] == ["applied"] * 3
+    assert answers[-1].idempotency_key == last and answers[-1].result["changed"] is True
+    assert _standing(rig) == {"HALT"}
+
+
+def test_a_stop_and_a_resume_issued_at_the_same_instant_end_stopped(rig):
+    """A tie in one pass: the stop is applied last (the safe direction)."""
+    rig.submit("halt", {"reason": "stop"})
+    rig.submit("resume_all", {"reason": "lift"})
+    rig.submit("pause_entries", {"reason": "stop"})
+    rig.submit("resume_entries", {"reason": "lift"})
+    rig.queue.process()
+    assert _standing(rig) == {"HALT", "PAUSE_ENTRIES"}
+
+
+@pytest.mark.parametrize(("resume", "stop"), _RESUME_STOP)
+def test_a_resume_delivered_after_a_newer_stop_leaves_it_standing(rig, resume, stop):
+    """Ordering alone cannot cover a resume that reaches the desk late (a
+    slow client, a claim retried by a later pass): the stop records its
+    command's issue time, and a resume issued before it leaves it in place
+    and says so (``superseded_by_newer_stop``)."""
+    rig.clock.advance(5)
+    rig.submit(stop, {"reason": "stop"})
+    rig.queue.process()
+    key = _late(rig, resume, seconds_ago=2)
+    (answer,) = rig.queue.process()
+    assert answer.idempotency_key == key and answer.status == "applied"
+    assert _standing(rig) == {_STOP_FILE[stop]}
+    assert answer.result["superseded_by_newer_stop"] == [_STOP_FILE[stop]]
+    assert _STOP_FILE[stop] not in answer.result.get("removed", [])
+    assert "issued after" in answer.detail
+
+
+def test_a_late_resume_lifts_the_older_stops_and_keeps_the_newer(rig):
+    """HALT at t0, resume_all at t1 (late), FLATTEN at t2: by issue order the
+    owner's word is FLATTEN alone, so the late resume lifts only the HALT."""
+    rig.submit("halt", {"reason": "first"})
+    rig.queue.process()
+    rig.clock.advance(4)
+    rig.submit("flatten", {"reason": "close"})
+    rig.queue.process()
+    _late(rig, "resume_all", seconds_ago=2)
+    (answer,) = rig.queue.process()
+    assert _standing(rig) == {"FLATTEN"}
+    assert answer.result["removed"] == ["HALT"]
+    assert answer.result["superseded_by_newer_stop"] == ["FLATTEN"]
+
+
+@pytest.mark.parametrize("stop", ["halt", "flatten", "pause_entries"])
+def test_a_repeated_stop_restamps_the_standing_one(rig, stop):
+    """A stop at t0, the same stop again at t2 (a no-op on the file), then
+    a resume issued at t1 arrives: the owner's last word is the t2 stop, so
+    the standing file carries t2 and the late resume leaves it."""
+    rig.submit(stop, {"reason": "first"})
+    rig.queue.process()
+    rig.clock.advance(4)
+    rig.submit(stop, {"reason": "again"})
+    (again,) = rig.queue.process()
+    assert again.result["changed"] is False, "placed once"
+    record = json.loads((rig.root / _STOP_FILE[stop]).read_text())
+    assert record["reason"] == "first", "the placing record is kept"
+    resume = "resume_entries" if stop == "pause_entries" else "resume_all"
+    _late(rig, resume, seconds_ago=2)
+    rig.queue.process()
+    assert _standing(rig) == {_STOP_FILE[stop]}
+
+
+def test_a_stop_without_a_recorded_issue_time_is_lifted_as_before(rig):
+    """The CLI's HALT (an empty ``touch``) and its pause record no issue
+    time: any resume lifts them, as before. A queued HALT applied over the
+    CLI's file records its own time, so a resume issued before it leaves it."""
+    (rig.root / "HALT").touch()
+    pause.pause_entries(rig.root, actor="operator-cli", now=rig.clock.utc())
+    _late(rig, "resume_all", seconds_ago=30)
+    (answer,) = rig.queue.process()
+    assert answer.result["removed"] == ["HALT"] and answer.result["pause_lifted"] is True
+    assert _standing(rig) == set()
+    (rig.root / "HALT").touch()
+    rig.submit("halt", {"reason": "web"})
+    rig.queue.process()
+    _late(rig, "resume_all", seconds_ago=1)
+    rig.queue.process()
+    assert _standing(rig) == {"HALT"}

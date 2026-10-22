@@ -288,6 +288,61 @@ def test_unresolved_trex_tags_book_as_outside_and_are_listed() -> None:
     assert fold_ledger([fill, commission]).unattributed == (commission.event_id, fill.event_id)
 
 
+def _v1_spec(intent_id: str, *, entry_order_ref: str | None = None) -> Any:
+    """A ``trex-desk-spec/1`` the v1 inbox registers (no Wave 2 proposal)."""
+    from tree_options.trex.desk_spec import DeskSpec
+    from tree_options.trex.plan import LegStructure
+
+    option = c.parse_desk_spec(contract_fixture("desk_spec_v2_option.json"))
+    structure = LegStructure.model_validate(
+        {**option.structure.model_dump(mode="json"), "id": intent_id}
+    )
+    return DeskSpec(
+        intent_id=intent_id,
+        account_id=ACCOUNT,
+        structure=structure,
+        entry_order_ref=entry_order_ref or f"trex:sup:{intent_id}",
+        registered_at=at("2026-10-22T14:00:00+00:00"),
+    )
+
+
+def test_a_v1_spec_without_a_proposal_attributes_its_fills_to_the_desk() -> None:
+    """W2c item 5: the v1 inbox registers a desk spec but writes no Wave 2
+    proposal, so its fills (``trex:sup:<iid>`` entries, ``trex:desk:<sid>``
+    exits) used to book OUTSIDE ``unattributed:<ref>``. A known v1 option
+    spec whose entry tag is ``trex:sup:<its intent>`` now owns them under the
+    fixed desk-v1 attribution; a proposal still wins for its own intent, and
+    a tag no spec or proposal explains stays unattributed."""
+    from tree_options.trex.ledger import V1_DESK_PROGRAM, V1_DESK_STRATEGY
+
+    proposal = entry_proposal()
+    v1 = _v1_spec("v1-canary-001")
+    foreign = _v1_spec("v1-foreign", entry_order_ref="trex:sup:someone-else")
+    index = AttributionIndex.build(proposals=[proposal], specs=[v1, foreign])
+    owned = index.resolve("trex:sup:v1-canary-001")
+    assert owned is not None and owned != OUTSIDE
+    assert (owned.intent_id, owned.program_id, owned.strategy_version) == (
+        "v1-canary-001",
+        V1_DESK_PROGRAM,
+        V1_DESK_STRATEGY,
+    )
+    assert index.resolve("trex:desk:v1-canary-001") == owned, "its desk exits too"
+    assert index.resolve("trex:sup:v1-foreign") is None, "a spec not tagged as its intent"
+    assert index.resolve("trex:sup:ghost") is None
+    pid = proposal.effect.intent_id
+    assert index.resolve(f"trex:sup:{pid}") == attribution_for_proposal(proposal)
+    # a proposal for the same intent as a spec: the proposal's attribution
+    both = AttributionIndex.build(proposals=[proposal], specs=[_v1_spec(pid)])
+    assert both.resolve(f"trex:sup:{pid}") == attribution_for_proposal(proposal)
+    fill, commission = fill_events(
+        fold_executions([execution(order_ref="trex:sup:v1-canary-001")]),
+        index,
+        recorded_at=RECORDED,
+    )
+    assert fill.attribution == owned == commission.attribution
+    assert fill.detail == "" and fold_ledger([fill, commission]).unattributed == ()
+
+
 def test_outside_executions_are_booked_as_outside() -> None:
     fill, _ = book([execution(order_ref="")])
     assert fill.attribution == OUTSIDE

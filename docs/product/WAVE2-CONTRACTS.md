@@ -272,7 +272,9 @@ Module `contracts.risk`. Produced by D from one broker session; read by A
 `RiskSnapshot`: `account_id`, `as_of`, `status` (`complete` = every figure
 read; `unavailable` = all figures null), `open_loss_cents` (>= 0),
 `day_realized_loss_cents` (>= 0), `cash_cents` (settled; negative =
-borrowing), `equity_gross_cents` (>= 0), `outside_positions` (rows in
+borrowing; W2c: net of the booked stock cash the broker's settled figure
+does not show yet, see the amendment log), `equity_gross_cents` (>= 0),
+`outside_positions` (rows in
 contracts the Wave 2 ledger never touched), `stale_after_s` = 120.
 `risk_snapshot_blockers`: absent, unavailable, older than 120 s or
 future-dated gives `risk_snapshot_stale`.
@@ -380,6 +382,17 @@ Module `contracts.vocabulary`. `Blocker` (wire strings, frozen by a test):
     `reconciliation_unavailable`, `account_mismatch`, `non_paper_account`;
   - reserved for the Wave 2b lanes (coordinator, not yet emitted):
     `entry_window_closed`, `outside_undefined_risk`, `exit_quote_blind`.
+- added by the W2c integration amendment (2026-10-21; see the amendment
+  log): `flatten` (`trex.admission`: a standing FLATTEN blocks entries);
+  the owner entry flows' (`trex.desk_entries`) `outside_regular_session`,
+  `profile_absent`, `profile_invalid`, `account_unbound`,
+  `candidate_unknown`, `candidate_blocked`, `candidate_invalid`,
+  `candidate_program_mismatch`, `candidate_kind_mismatch`,
+  `candidate_expired`, `intent_already_used`, `quote_unavailable`,
+  `proposal_rejected`, `broker_rejected`, `send_uncertain`,
+  `desk_book_unreadable`; the owner command consumer's
+  (`trex.desk_commands`) `command_invalid`, `command_key_mismatch`,
+  `apply_error`, `owner_stopped_before_result`.
 
 `DeskEvent` (names for `events.jsonl`): `proposal_composed`,
 `entry_approved`, `entry_rejected`, `entries_paused`, `entries_resumed`,
@@ -389,7 +402,9 @@ Module `contracts.vocabulary`. `Blocker` (wire strings, frozen by a test):
 added by the 2026-10-21 amendment (the desk runtime's equity path):
 `equity_contract_mismatch`, `equity_unqualified`,
 `exit_evidence_inconclusive`, `holdings_unverifiable`,
-`structure_tick_failed`.
+`structure_tick_failed`; added by the W2c integration amendment:
+`commands_failed` (a contained command-stage failure), `gateway_connected`,
+`books_problem`, `books_failed`.
 
 Both enums are `@unique` (no two members share a value) and every member
 name is its value spelled as an identifier (`:` becomes `_`, so
@@ -439,7 +454,7 @@ The 2026-10-14 plan is silent on these; each default is in
 | 8 | Entries per session | 3, both asset kinds combined (`MAX_ENTRIES_PER_SESSION`; `session_entry_limit_reached`). Open: per asset kind instead? |
 | 9 | Proposal lifetime | `send_deadline <= proposed_at + 900 s` (`PROPOSAL_MAX_TTL_S`). |
 | 10 | Command lifetime and who applies what | `expires_at <= issued_at + 300 s`. `pause_entries` and `halt` (safety direction) may be applied by whichever process receives them by writing the kill file; `resume_entries`, `resume_all`, `flatten`, compose/approve/reject are applied only by the desk process. |
-| 11 | `resume_all` | Removes `HALT`, `FLATTEN` and `PAUSE_ENTRIES` (superset of `desk_cli resume`); does not revive approvals. |
+| 11 | `resume_all` | Removes `HALT`, `FLATTEN` and `PAUSE_ENTRIES` (superset of `desk_cli resume`); does not revive approvals. W2c amendment: never a stop issued after the resume (see the amendment log). |
 | 12 | `flatten` scope | Every position the desk owns, both asset kinds; never outside positions. |
 | 13 | Early-close sessions | `forced_exit_et` stays `"15:45"` in the schema; C applies min(15:45, close minus 15 min), so 12:45 on a 13:00 close. |
 | 14 | Maximum equity hold | Not bounded beyond `exit_deadline_session >= entry session`. Open: cap it (e.g. 5 sessions)? |
@@ -551,3 +566,57 @@ emits, so no producer changed.
   literal of its producer module (AST scan, independent of the enum); the
   producers' constants equal the members; and the admission, equity review
   and portfolio view outputs of fixed scenarios are all members.
+
+### 2026-10-21: C2.7 vocabulary, additive (W2c integration)
+
+The Wave 2c integration lane (branch `w2c/seams`) made the plain strings
+the Wave 2b owner lane introduced additive members, values unchanged, and
+added the two codes its own fixes emit. Nothing renamed or removed.
+
+- `Blocker`: `flatten` (new: `admission.entry_send_blockers` now refuses
+  every entry sender while `FLATTEN` stands) and the owner lane's 20
+  refusal codes listed under C2.7 (`command_not_yet_valid` was already a
+  member).
+- `DeskEvent`: `commands_failed` (new: the owner contains a command-stage
+  failure and records it), `gateway_connected`, `books_problem`,
+  `books_failed`.
+- Tests (`tests/contracts/test_wave2_contracts.py`): the W2c set is pinned
+  disjoint from the earlier sets; every W2c code round-trips; every value
+  but `commands_failed` (whose producer spells the member) is a literal of
+  its producer module; the producers' constants equal the members.
+
+### 2026-10-21: C2.5 `cash_cents` after same-day stock buys (W2c integration)
+
+No schema change. IBKR's `SettledCash` moves only when a trade settles
+(US stocks T+1), so the snapshot's cash overstated what a second same-day
+purchase could spend. The books now publish `cash_cents` = `SettledCash`
+minus every booked stock execution whose settlement session (the first
+session after its ET trade date; an unplaceable date counts as unsettled)
+is after the snapshot's ET date: a purchase's price net of corrections plus
+its commission, a sale's commission alone (a sale's proceeds are never
+added early). Conservative by construction: a double count could only
+understate cash and refuse an entry (`insufficient_cash`), never admit one;
+exits never read it (`trex.risk_snapshot` module docstring).
+
+### 2026-10-21: default 11, a resume never lifts a newer stop (W2c refix)
+
+Additive; no schema or vocabulary change. A W2c review P1 found that the
+first W2c command budget applied every queued stop before an OLDER queued
+resume, which then lifted it while the stop's own answer read `applied`.
+Now:
+
+- The owner applies the kill-switch kinds (`halt`, `flatten`,
+  `pause_entries`, `resume_all`, `resume_entries`, `backup_state`) first,
+  in `issued_at` order among themselves (on a tie the resume before the
+  stop), never deferred by the pass budget; then the entry kinds.
+- A stop placed by a command records its `issued_at` in the file (`HALT` /
+  `FLATTEN`: beside `placed_by`, `reason`, `command`, `at`;
+  `trex-pause-entries/1`: an added optional `issued_at`). A stop applied
+  while its file stands re-stamps it when newer.
+- `resume_all` / `resume_entries` leave any stop recorded as issued after
+  them, and answer `applied` with `superseded_by_newer_stop` (a list of
+  the file names kept; empty when none) beside `removed`. A stop without a
+  recorded time (the terminal's, an older record) lifts as before.
+- Tests: `tests/unit/test_desk_commands.py` (the review's probes A-E plus
+  late delivery, re-stamp and terminal-stop cases) and
+  `tests/unit/test_trex_pause.py`.

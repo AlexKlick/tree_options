@@ -349,8 +349,12 @@ files), `trex/desk_runtime.py` (exits, unchanged, plus the reconnect hook).
    Anything unreadable or unrepresentable makes them `unavailable` (entries
    blocked, never exits); a status change is a `reconciliation_clean` /
    `reconciliation_required` event (urgent push) and a ledger marker.
-3. Commands, in `issued_at` order, in or out of the session (a kill switch
-   never waits for the open): claim by a no-replace rename to
+3. Commands, in or out of the session (a kill switch never waits for the
+   open): every kill-switch kind first, in `issued_at` order among
+   themselves (on a tie the resume before the stop) and never deferred,
+   then at most 8 entry commands in `issued_at` order inside a 2 s pass
+   budget (the rest wait for the next iteration). Per command: claim by a
+   no-replace rename to
    `<key>.claimed.json` (exactly once), validate (the contract shape, the
    key, the web's intake result with the same kind and body hash, which
    binds the actor; `command_expired`; `command_not_yet_valid`), apply,
@@ -383,6 +387,20 @@ a later RESUME_ALL both queued through an outage longer than the resume's
 TTL end with the FLATTEN applied and the resume refused `command_expired`
 (the safety direction wins; resume again).
 
+### A resume never lifts a newer stop (W2c refix)
+
+The owner's latest word wins. Stops and resumes are applied in issue
+order (a first W2c cut put every stop ahead of an older resume, which then
+lifted it). Every stop a command places records that command's
+`issued_at` in its file (`HALT`, `FLATTEN`, `PAUSE_ENTRIES`), and a stop
+applied while its file stands re-stamps it when newer. A `resume_all` or
+`resume_entries` issued before a standing stop's recorded time (it reached
+the desk late, or its claim was retried by a later pass) leaves that stop
+in place and answers `applied` with `superseded_by_newer_stop` naming it
+(and the older stops it did lift under `removed`). A stop with no recorded
+time (the terminal's `desk_cli halt` / `pause-entries`, an older record)
+and the terminal's own resume behave as before.
+
 ### The commands
 
 | Kind | Applied as |
@@ -391,8 +409,8 @@ TTL end with the FLATTEN applied and the resume refused `command_expired`
 | `approve_entry` | the stored proposal (`proposal_unknown`), not rejected; an already SENT proposal answers the stored result of the approval that sent it (`duplicate_of`, nothing re-sent); `approval_blockers` against the LIVE owner epoch and profile digest; kill files; fresh books and owner facts; preflight and screening again; `grant_entry_mandate` (or the live, unconsumed mandate an earlier approval of the same proposal left when a kill file stopped it); kill files; intent; permit (consumes the mandate); `register`; kill files; exactly one `send`; `entry_approved` |
 | `reject_entry` | `proposals/<id>.rejected.json` tombstone and any unconsumed mandate of that proposal retired; a sent proposal refuses `mandate_already_consumed` |
 | `pause_entries` / `resume_entries` | `trex.pause` with the actor `<ingress>:<sub>` and the command key in its audit; `entries_paused` / `entries_resumed` |
-| `halt` / `flatten` | the existing kill files (a record of who and why inside); FLATTEN beside a HALT reports that exits wait |
-| `resume_all` | removes HALT and FLATTEN and lifts the pause (audited); approvals are not revived |
+| `halt` / `flatten` | the existing kill files (a record of who, why and the command's `issued_at` inside); FLATTEN beside a HALT reports that exits wait |
+| `resume_all` | removes HALT and FLATTEN and lifts the pause (audited), except a stop issued after it (`superseded_by_newer_stop`); approvals are not revived |
 | `backup_state` | `BACKUP-REQUEST` (label inside), taken by the owner's next beat outside 09:30-16:15 ET |
 
 ### Facts the screens read

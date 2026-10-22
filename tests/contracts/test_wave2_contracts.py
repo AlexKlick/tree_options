@@ -1024,6 +1024,46 @@ AMENDED_BLOCKERS = frozenset(
 )
 #: Amendment 2026-10-21: reserved for the Wave 2b lanes (not yet emitted).
 RESERVED_BLOCKERS = frozenset({"entry_window_closed", "outside_undefined_risk", "exit_quote_blind"})
+#: Amendment 2026-10-21 (W2c integration): additive members, each spelled
+#: exactly as its producer emits it (``W2C_PRODUCERS``): the owner lane's
+#: plain-string refusal codes, and a standing FLATTEN.
+W2C_BLOCKERS = frozenset(
+    {
+        # kill files (trex.admission)
+        "flatten",
+        # the owner's entry flows (trex.desk_entries)
+        "outside_regular_session",
+        "profile_absent",
+        "profile_invalid",
+        "account_unbound",
+        "candidate_unknown",
+        "candidate_blocked",
+        "candidate_invalid",
+        "candidate_program_mismatch",
+        "candidate_kind_mismatch",
+        "candidate_expired",
+        "intent_already_used",
+        "quote_unavailable",
+        "proposal_rejected",
+        "broker_rejected",
+        "send_uncertain",
+        "desk_book_unreadable",
+        # the owner's command consumer (trex.desk_commands)
+        "command_invalid",
+        "command_key_mismatch",
+        "apply_error",
+        "owner_stopped_before_result",
+    }
+)
+#: The modules whose string literals the W2c members must match.
+W2C_PRODUCERS = (
+    "trex/admission.py",
+    "trex/desk_entries.py",
+    "trex/desk_commands.py",
+    "trex/desk_books.py",
+    "trex/desk_runtime.py",
+    "trex/supervised_desk.py",
+)
 #: Built by the portfolio view as ``f"{label}_<state>"``, so never a literal.
 PORTFOLIO_LABEL_REASONS = frozenset(
     f"{label}_{state}"
@@ -1059,6 +1099,8 @@ AMENDED_EVENTS = frozenset(
         "structure_tick_failed",
     }
 )
+#: Amendment 2026-10-21 (W2c integration): additive event names.
+W2C_EVENTS = frozenset({"commands_failed", "gateway_connected", "books_problem", "books_failed"})
 #: The strings the coordinator and the lane handoffs named (2026-10-21).
 NAMED_LANE_CODES: list[tuple[type[c.Blocker] | type[c.DeskEvent], str]] = [
     (c.Blocker, "entry_mandate_already_granted"),
@@ -1105,16 +1147,20 @@ def _member_name(value: str) -> str:
 
 
 def test_blocker_wire_strings_are_frozen() -> None:
-    assert {b.value for b in c.Blocker} == PLAN_BLOCKERS | AMENDED_BLOCKERS | RESERVED_BLOCKERS
-    # the amendment is additive: no plan value is re-added or renamed
-    assert not PLAN_BLOCKERS & (AMENDED_BLOCKERS | RESERVED_BLOCKERS)
-    assert not AMENDED_BLOCKERS & RESERVED_BLOCKERS
+    assert {b.value for b in c.Blocker} == (
+        PLAN_BLOCKERS | AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS
+    )
+    # the amendments are additive: no earlier value is re-added or renamed
+    assert not PLAN_BLOCKERS & (AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS)
+    assert not AMENDED_BLOCKERS & (RESERVED_BLOCKERS | W2C_BLOCKERS)
+    assert not RESERVED_BLOCKERS & W2C_BLOCKERS
     assert PORTFOLIO_LABEL_REASONS <= AMENDED_BLOCKERS
 
 
 def test_desk_event_wire_strings_are_frozen() -> None:
-    assert {e.value for e in c.DeskEvent} == PLAN_EVENTS | AMENDED_EVENTS
-    assert not PLAN_EVENTS & AMENDED_EVENTS
+    assert {e.value for e in c.DeskEvent} == PLAN_EVENTS | AMENDED_EVENTS | W2C_EVENTS
+    assert not PLAN_EVENTS & (AMENDED_EVENTS | W2C_EVENTS)
+    assert not AMENDED_EVENTS & W2C_EVENTS
 
 
 @pytest.mark.parametrize("vocabulary", [c.Blocker, c.DeskEvent], ids=["Blocker", "DeskEvent"])
@@ -1143,11 +1189,39 @@ def test_named_lane_codes_round_trip(vocabulary: Any, code: str) -> None:
     assert vocabulary(json.loads(json.dumps(member))) is member
 
 
-def _producer_literals() -> set[str]:
+@pytest.mark.parametrize(
+    ("vocabulary", "code"),
+    [
+        *((c.Blocker, code) for code in sorted(W2C_BLOCKERS)),
+        *((c.DeskEvent, code) for code in sorted(W2C_EVENTS)),
+    ],
+    ids=[*sorted(W2C_BLOCKERS), *sorted(W2C_EVENTS)],
+)
+def test_w2c_codes_round_trip(vocabulary: Any, code: str) -> None:
+    """W2c item 7: the owner lane's plain strings are members, values unchanged."""
+    test_named_lane_codes_round_trip(vocabulary, code)
+
+
+def test_w2c_values_are_their_producers_literals() -> None:
+    literals = _producer_literals(W2C_PRODUCERS)
+    # ``commands_failed`` is new in W2c: its producer spells the member itself
+    plain = (W2C_BLOCKERS | W2C_EVENTS) - {c.DeskEvent.COMMANDS_FAILED.value}
+    assert sorted(plain - literals) == []
+
+
+def test_w2c_producer_constants_are_vocabulary_members() -> None:
+    from tree_options.trex import desk_books, desk_commands
+
+    assert desk_commands.COMMAND_NOT_YET_VALID == c.Blocker.COMMAND_NOT_YET_VALID
+    assert desk_commands.INTERRUPTED == c.Blocker.OWNER_STOPPED_BEFORE_RESULT
+    assert desk_books.BOOKS_PROBLEM_EVENT == c.DeskEvent.BOOKS_PROBLEM
+
+
+def _producer_literals(producers: tuple[str, ...] = PRODUCERS) -> set[str]:
     import ast
 
     found: set[str] = set()
-    for relative in PRODUCERS:
+    for relative in producers:
         tree = ast.parse((REPO / "src" / "tree_options" / relative).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -1169,6 +1243,7 @@ def test_producer_constants_are_vocabulary_members() -> None:
 
     assert pause.HALTED == c.Blocker.HALT
     assert admission.HALTED == c.Blocker.HALT
+    assert admission.FLATTENING == c.Blocker.FLATTEN
     assert admission.EXIT_OWNER_NOT_READY == c.Blocker.EXIT_OWNER_NOT_READY
     assert supervised_canary.CREDIT_OPEN_BLOCKER == c.Blocker.CREDIT_OPEN_NOT_SUPPORTED_V1
     assert supervised_ibkr.EQUITY_CON_ID_MISMATCH == c.Blocker.EQUITY_CON_ID_MISMATCH
@@ -1185,10 +1260,12 @@ def test_admission_blockers_are_vocabulary(tmp_path: Path) -> None:
 
     (tmp_path / "PAUSE_ENTRIES").write_text("{}")
     (tmp_path / "HALT").write_text("{}")
+    (tmp_path / "FLATTEN").write_text("{}")
     blockers = entry_blockers(tmp_path, at("2026-10-22T14:04:30+00:00"))
     assert set(blockers) == {
         c.Blocker.ENTRIES_PAUSED,
         c.Blocker.HALT,
+        c.Blocker.FLATTEN,
         c.Blocker.RISK_SNAPSHOT_STALE,
         c.Blocker.RECONCILIATION_REQUIRED,
         c.Blocker.EXIT_OWNER_NOT_READY,

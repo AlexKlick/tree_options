@@ -18,7 +18,10 @@ Broker facts to events (``fill_events``):
   ``trex:desk:<sid>`` through the desk spec (an equity's sid IS its
   intent id); an untagged or foreign tag is ``OUTSIDE``; a trex tag no
   proposal explains books as ``OUTSIDE`` with ``detail`` =
-  ``unattributed:<order_ref>`` and is listed by the fold.
+  ``unattributed:<order_ref>`` and is listed by the fold. W2c: the v1
+  entry inbox writes no proposal, so an option desk spec tagged
+  ``trex:sup:<its intent>`` explains its intent as a desk-owned structure
+  (``v1_desk_attribution``; a proposal still wins for its own intent).
 
 The fold (``fold_ledger``) is a pure sum where the contract says so
 (position = sum of ``quantity_delta``, cash = sum of
@@ -97,6 +100,8 @@ __all__ = [
     "MAX_HOLDINGS_BYTES",
     "OUTSIDE",
     "UNATTRIBUTED_PREFIX",
+    "V1_DESK_PROGRAM",
+    "V1_DESK_STRATEGY",
     "AnyDeskSpec",
     "AppendResult",
     "AttributionIndex",
@@ -107,6 +112,7 @@ __all__ = [
     "LedgerFold",
     "Lot",
     "Realization",
+    "StockCashOut",
     "append_events",
     "append_executions",
     "append_ledger",
@@ -120,6 +126,7 @@ __all__ = [
     "read_ledger",
     "spec_structure_id",
     "symbols_from_executions",
+    "v1_desk_attribution",
     "write_atomic",
     "write_holdings",
 ]
@@ -127,6 +134,11 @@ __all__ = [
 #: Not ours: an untagged order, another book's tag, a manual trade.
 OUTSIDE = Attribution(intent_id=None, strategy_version=None, program_id=None)
 UNATTRIBUTED_PREFIX = "unattributed:"
+#: the program and strategy a v1 desk structure books under (W2c; the v1
+#: inbox has no Wave 2 program, and its request's strategy is not a fact the
+#: books read)
+V1_DESK_PROGRAM = "trex-desk-v1"
+V1_DESK_STRATEGY = "trex-desk-v1"
 #: ``ledger/holdings.json`` (the layout names the file; C2.4 has no schema
 #: for the projection document, so the books lane versions it here and the
 #: module doc is its schema note).
@@ -164,10 +176,29 @@ def spec_structure_id(spec: AnyDeskSpec) -> str:
     return spec.structure.id
 
 
+def v1_desk_attribution(intent_id: str) -> Attribution:
+    """The attribution of a v1 desk structure (W2c): an option spec the v1
+    entry inbox registered, whose entry carries ``trex:sup:<intent_id>`` and
+    which no Wave 2 proposal explains. Fixed program and strategy, so every
+    fill of the intent books under one lot whatever the run reads later."""
+    return Attribution(
+        intent_id=intent_id, strategy_version=V1_DESK_STRATEGY, program_id=V1_DESK_PROGRAM
+    )
+
+
+def _v1_desk_spec(spec: AnyDeskSpec) -> bool:
+    """A desk-owned defined-risk option spec tagged as its own intent's
+    supervised entry (``trex:sup:<intent_id>``): the v1 inbox's shape."""
+    if isinstance(spec, EquityDeskSpecV2):
+        return False
+    owner = parse_order_ref(spec.entry_order_ref)
+    return owner is not None and owner.kind == "sup" and owner.ident == spec.intent_id
+
+
 @dataclass(frozen=True)
 class AttributionIndex:
-    """intent id -> attribution (from proposals); desk sid -> intent id
-    (from specs)."""
+    """intent id -> attribution (from proposals, else a v1 desk spec); desk
+    sid -> intent id (from specs)."""
 
     intents: Mapping[str, Attribution] = field(default_factory=dict)
     structures: Mapping[str, str] = field(default_factory=dict)
@@ -176,6 +207,12 @@ class AttributionIndex:
     def build(
         cls, proposals: Iterable[EntryProposal] = (), specs: Iterable[AnyDeskSpec] = ()
     ) -> AttributionIndex:
+        """A proposal attributes its intent. W2c: an option desk spec of the
+        v1 entry inbox (no proposal: the v1 path writes none) attributes its
+        intent to the desk (``v1_desk_attribution``), so the v1 canary's
+        fills are a DESK-owned defined-risk structure, never ``OUTSIDE``
+        ``unattributed:<ref>`` (whose short leg failed every Wave 2 entry
+        closed). A tag neither explains stays unattributed."""
         intents: dict[str, Attribution] = {}
         for proposal in proposals:
             attribution = attribution_for_proposal(proposal)
@@ -183,11 +220,14 @@ class AttributionIndex:
             if intents.setdefault(intent, attribution) != attribution:
                 raise LedgerConflict(f"intent {intent}: proposals attribute it differently")
         structures: dict[str, str] = {}
+        v1: dict[str, Attribution] = {}
         for spec in specs:
             sid = spec_structure_id(spec)
             if structures.setdefault(sid, spec.intent_id) != spec.intent_id:
                 raise LedgerConflict(f"structure {sid}: specs name different intents")
-        return cls(intents=intents, structures=structures)
+            if spec.intent_id not in intents and _v1_desk_spec(spec):
+                v1[spec.intent_id] = v1_desk_attribution(spec.intent_id)
+        return cls(intents={**v1, **intents}, structures=structures)
 
     def resolve(self, order_ref: str | None) -> Attribution | None:
         """``OUTSIDE`` for an untagged or foreign order; None for a trex
@@ -460,6 +500,21 @@ class Realization:
 
 
 @dataclass(frozen=True)
+class StockCashOut:
+    """What one booked stock execution took out of cash (micros, >= 0): a
+    purchase its price net of its corrections plus its booked commission, a
+    sale its commission alone (its proceeds are never counted before they
+    settle). The risk snapshot subtracts the ones the broker's settled cash
+    does not show yet (W2c)."""
+
+    account_id: str
+    con_id: int
+    #: the broker time of the fill (its ET date is the trade date)
+    at: datetime
+    micros: int
+
+
+@dataclass(frozen=True)
 class AttributionTotals:
     open_quantity: dict[int, int]
     realized_micros: int = 0
@@ -489,6 +544,8 @@ class LedgerFold:
     #: exec ids booked as a fill or correction whose commission has not been
     #: booked yet: realized figures are provisional (never zero-fee) until empty
     pending_commissions: tuple[str, ...] = ()
+    #: every booked stock execution's cash out, in broker-time order (W2c)
+    stock_cash_out: tuple[StockCashOut, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -742,6 +799,23 @@ def fold_ledger(events: Iterable[LedgerEvent]) -> LedgerFold:
             sorted(e.event_id for e in by_id.values() if e.detail.startswith(UNATTRIBUTED_PREFIX))
         ),
         pending_commissions=_pending_commissions(by_id.values()),
+        stock_cash_out=tuple(
+            _cash_out(fill)
+            for fill in sorted(effective.values(), key=lambda f: (f.at, f.base))
+            if fill.sec_type == "STK"
+        ),
+    )
+
+
+def _cash_out(fill: _Effective) -> StockCashOut:
+    """A purchase's price (net of corrections) plus its commission; a
+    sale's commission alone."""
+    paid = -fill.cash if fill.quantity > 0 and fill.cash < 0 else 0
+    return StockCashOut(
+        account_id=fill.account_id,
+        con_id=fill.con_id,
+        at=fill.at,
+        micros=paid + max(fill.fee, 0),
     )
 
 

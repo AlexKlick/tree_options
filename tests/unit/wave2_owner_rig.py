@@ -18,12 +18,14 @@ from pathlib import Path
 from typing import Any
 
 from tests.unit.trex_fakes import (
+    CLOCK_START,
     SPY_CON_ID,
     FakeCommandAuthority,
     SessionClock,
     Wave2Gateway,
     equity_effect,
 )
+from tree_options.action_graph.canary import EQUITY_ENTRY_OPEN_DELAY_S
 from tree_options.desk.enter_supervised import DRAFT_SCHEMA, LIVE_BINDINGS, draft_directory
 from tree_options.time.sessions import shift_instant
 from tree_options.trex.account import AccountSnapshot
@@ -75,6 +77,11 @@ PROFILE: dict[str, Any] = {
     "max_daily_loss": "600",
     "horizon_days": 30,
 }
+#: the shared fakes' clock opens AT the session open (09:30 ET), five
+#: minutes before the equity entry window (lane E2: open + 5 min to close -
+#: 30 min); the rig starts five minutes INSIDE the window, so every scenario
+#: may enter unless it moves the clock out on purpose
+RIG_START = shift_instant(CLOCK_START, EQUITY_ENTRY_OPEN_DELAY_S + 5 * 60)
 
 
 class ClockedIbkr(IbkrTrex):
@@ -104,7 +111,7 @@ class OwnerRig:
     def __init__(
         self, tmp: Path, *, profile: dict[str, Any] | None = None, start: datetime | None = None
     ) -> None:
-        self.clock = SessionClock() if start is None else SessionClock(start)
+        self.clock = SessionClock(RIG_START if start is None else start)
         self.gw = Wave2Gateway(con_ids=dict(OPTION_CON_IDS), clock=self.clock)
         self.gw.add_stock("QQQ", QQQ_CON_ID)  # the option underlying's spot stream
         self.ib = ClockedIbkr(client_id=SUPERVISED_CLIENT_ID)

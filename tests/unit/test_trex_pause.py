@@ -208,3 +208,24 @@ def test_the_run_dir_is_created_on_demand(tmp_path):
     run_dir = tmp_path / "not" / "yet"
     pause.pause_entries(run_dir, actor="a", now=T0)
     assert pause.is_paused(run_dir)
+
+
+def test_a_resume_issued_before_the_pause_command_leaves_it(tmp_path):
+    """W2c refix: a pause placed by a queued command records its issue time;
+    a queued resume issued earlier (delivered late) leaves it standing and
+    says so, audited. The terminal's resume (no issue time) lifts it."""
+    issued = datetime(2026, 10, 22, 14, 59, 50, tzinfo=UTC)
+    pause.pause_entries(tmp_path, actor="web:owner", now=T0, issued_at=issued)
+    assert pause.pause_record(tmp_path)["issued_at"] == "2026-10-22T14:59:50Z"
+    older = datetime(2026, 10, 22, 14, 59, 40, tzinfo=UTC)
+    doc = pause.resume_entries(tmp_path, actor="web:owner", now=T1, issued_at=older)
+    assert doc == {"entries_paused": True, "changed": False, "superseded_by_newer_stop": True}
+    assert pause.is_paused(tmp_path)
+    assert _audit(tmp_path)[-1]["superseded_by_newer_stop"] is True
+    newer = datetime(2026, 10, 22, 15, 0, 0, tzinfo=UTC)
+    pause.pause_entries(tmp_path, actor="web:owner", now=T1, issued_at=newer)
+    record = pause.pause_record(tmp_path)
+    assert record["issued_at"] == "2026-10-22T15:00:00Z", "restamped"
+    assert datetime.fromisoformat(record["at"]) == T0, "placed once, at T0"
+    doc = pause.resume_entries(tmp_path, actor="operator", now=T1)
+    assert doc["changed"] is True and not pause.is_paused(tmp_path)

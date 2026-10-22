@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.unit.trex_fakes import SPY_CON_ID, FillStep, equity_effect
-from tests.unit.wave2_owner_rig import ACCOUNT, EQUITY_PROGRAM, OwnerRig
+from tests.unit.trex_fakes import CLOCK_START, SPY_CON_ID, FillStep, equity_effect
+from tests.unit.wave2_owner_rig import ACCOUNT, EQUITY_PROGRAM, PROFILE, OwnerRig
 
+from tree_options.action_graph.canary import equity_entry_window
+from tree_options.trex import desk_commands
 from tree_options.trex import supervised as supervised_core
 from tree_options.trex.contracts import (
     Blocker,
@@ -31,8 +33,10 @@ from tree_options.trex.contracts import (
     SupervisedMandateV2,
     equity_max_loss_cents,
 )
+from tree_options.trex.desk_commands import CommandQueue
 from tree_options.trex.ledger import HoldingsDocument, fold_ledger, read_ledger
 from tree_options.trex.pause import pause_entries
+from tree_options.trex.risk_snapshot import settled_cash_cents
 from tree_options.trex.state import Status
 
 pytest.importorskip("ib_async")
@@ -164,6 +168,12 @@ def test_compose_approve_partial_fill_stop_exit_flat_reconciled_with_commissions
     assert (reconciliation.status, reconciliation.mismatches) == ("clean", ())
     risk = _risk(rig)
     assert risk.status == "complete" and risk.open_loss_cents == 0
+    # W2c item 8: the broker's SettledCash shows neither of today's trades;
+    # the published cash takes the share bought (1 x 671.50) and both 1.00
+    # commissions out, and never adds the unsettled sale proceeds
+    broker = settled_cash_cents(rig.gw.accountValues(), account_id=ACCOUNT)
+    assert broker is not None
+    assert risk.cash_cents == broker - (67_150 + 2 * 100)
     holdings = HoldingsDocument.model_validate_json(rig.ledger_file("holdings.json").read_bytes())
     assert holdings.holdings == ()
     # replaying the broker facts books nothing new (append-only, idempotent)
@@ -304,6 +314,35 @@ def test_reject_tombstones_the_proposal_and_the_web_shows_it(rig):
     assert rig.orders() == []
 
 
+def test_an_equity_entry_before_the_window_opens_is_refused_then_allowed(tmp_path):
+    """The one scenario that starts at the session open (09:30 ET), before
+    the equity entry window (open + 5 min): compose refuses
+    ``entry_window_closed`` and places nothing; at 09:35 the same candidate
+    composes and its approval sends exactly one BUY."""
+    early = OwnerRig(tmp_path, start=CLOCK_START)
+    try:
+        assert early.step() == 0
+        effect = early.draft_equity()
+        early.quote()
+        refused = early.compose(effect.intent_id)
+        assert (refused.status, refused.reason) == (
+            "refused",
+            Blocker.ENTRY_WINDOW_CLOSED.value,
+        ), refused
+        assert early.orders() == []
+        window_start, _ = equity_entry_window(early.clock.today())
+        early.clock.to(window_start)
+        early.quote()
+        composed = early.compose(effect.intent_id)
+        assert composed.status == "applied", composed
+        early.quote()
+        approved = early.approve(composed)
+        assert approved.status == "applied" and approved.result["sent"] is True, approved
+        assert len(early.orders("BUY")) == 1
+    finally:
+        early.close()
+
+
 # ------------------------------------------------------------- facts
 
 
@@ -411,6 +450,69 @@ def test_halt_blocks_entries_and_exits_as_before(rig):
     assert sell.order.totalQuantity == 2
 
 
+@pytest.fixture()
+def roomy(tmp_path: Path) -> Iterator[OwnerRig]:
+    """A rig whose open-loss cap fits two fixture entries ($268.60 + $134.30)."""
+    r = OwnerRig(tmp_path, profile={**PROFILE, "max_open_loss": "1000"})
+    assert r.step() == 0
+    yield r
+    r.close()
+
+
+def test_a_same_day_buy_counts_against_cash_before_it_settles(roomy):
+    """W2c item 8: the broker's SettledCash (2,000.00 here) does not show a
+    stock purchase until it settles (T+1). After 2 SPY are bought at 671.50
+    the published cash is 2,000.00 - 1,343.00 - its commission, so a second
+    same-day purchase of 1 share (671.50) is refused insufficient_cash
+    instead of being sent against cash already spent."""
+    rig = roomy
+    rig.gw.account_values["SettledCash"] = "2000.00"
+    rig.desk.books.request_refresh()
+    assert rig.step() == 0
+    _open(rig)
+    rig.gw.deliver_commissions()
+    rig.clock.advance(61)
+    assert rig.step() == 0
+    assert _risk(rig).cash_cents == 200_000 - (2 * 67_150 + 100)
+    rig.draft_equity(equity_effect(intent_id="eq-spy-2", quantity=1))
+    rig.quote()
+    composed = rig.compose("eq-spy-2")
+    assert (composed.status, composed.reason) == ("refused", Blocker.INSUFFICIENT_CASH.value), (
+        composed
+    )
+    assert len(rig.orders("BUY")) == 1
+
+
+def test_a_standing_flatten_refuses_compose_and_approve(roomy):
+    """W2c item 2: with FLATTEN standing an approval would send a BUY the
+    runtime unwinds at once. A proposal composed before the FLATTEN is
+    refused at approval (nothing granted, nothing sent), a new compose is
+    refused, and the open position is still flattened."""
+    rig = roomy
+    _open(rig)
+    second = rig.draft_equity(equity_effect(intent_id="eq-spy-2", quantity=1))
+    rig.quote()
+    composed = rig.compose(second.intent_id)
+    assert composed.status == "applied", composed
+    flattened = rig.run("flatten", {"reason": "close it all"})
+    assert flattened.status == "applied" and (rig.paths.root / "FLATTEN").exists()
+    rig.quote()
+    refused = rig.approve(composed)
+    assert (refused.status, refused.reason) == ("refused", Blocker.FLATTEN.value), refused
+    assert not rig.sup.entry_mandate("eq-spy-2").exists(), "a refused approval grants nothing"
+    assert len(rig.orders("BUY")) == 1, "only the first entry was ever sent"
+    rig.draft_equity(equity_effect(intent_id="eq-spy-3", quantity=1))
+    rig.quote()
+    again = rig.compose("eq-spy-3")
+    assert (again.status, again.reason) == ("refused", Blocker.FLATTEN.value), again
+    rig.quote()
+    assert rig.step() == 0
+    sells = rig.orders("SELL")
+    assert [(s.order.orderRef, s.order.totalQuantity) for s in sells] == [
+        ("trex:desk:eq-spy-001", 2)
+    ]
+
+
 def test_a_flatten_accepted_through_a_gateway_outage_is_applied_not_expired(rig):
     """W2b review P1. The gateway drops with a position open. The operator
     clicks PAUSE (the web answers 202 accepted); the owner applies it on its
@@ -447,6 +549,60 @@ def test_a_halt_accepted_through_a_gateway_outage_still_gates_the_exits(rig):
     _confirm_stop(rig)
     assert rig.step() == 0
     assert rig.orders("SELL") == [], "the late HALT gates the stop exit as before"
+
+
+def test_a_command_stage_failure_never_stops_the_exits(rig, monkeypatch):
+    """W2c item 3: a command-stage error while the session is up (a file
+    error, a bug) is one ``commands_failed`` event per error class and the
+    loop goes on: the stop exit still fires. A lost session is still exit 6."""
+    _open(rig)
+
+    def unreadable(self: CommandQueue, kinds: Any = None) -> Any:
+        raise PermissionError(13, "commands/ unreadable")
+
+    monkeypatch.setattr(CommandQueue, "process", unreadable)
+    rig.gw.script_fills("trex:desk:eq-spy-001", [FillStep()])
+    _confirm_stop(rig)
+    assert rig.step() == 0
+    (sell,) = rig.orders("SELL")
+    assert (sell.order.orderRef, sell.order.totalQuantity) == ("trex:desk:eq-spy-001", 2)
+    failures = [e for e in rig.events() if e["event"] == DeskEvent.COMMANDS_FAILED.value]
+    assert [(e["stage"], e["error"]) for e in failures] == [("commands", "PermissionError")]
+
+    def bug(self: CommandQueue, kinds: Any = None) -> Any:
+        raise ValueError("a bug")
+
+    monkeypatch.setattr(CommandQueue, "process", bug)
+    assert rig.step() == 0
+
+    def lost(self: CommandQueue, kinds: Any = None) -> Any:
+        rig.gw.is_connected = False
+        raise ConnectionError("gone")
+
+    monkeypatch.setattr(CommandQueue, "process", lost)
+    assert rig.step() == 6
+
+
+def test_a_burst_of_entry_commands_never_delays_a_kill_switch(rig):
+    """A burst of compose commands queued before a HALT: the HALT is applied
+    in the same loop iteration, ahead of them, and at most
+    ``MAX_COMMANDS_PER_PASS`` composes run per iteration."""
+    limit = desk_commands.MAX_COMMANDS_PER_PASS
+    rig.draft_equity()
+    rig.quote()
+    keys = []
+    for _ in range(limit + 2):  # issued one second apart: issue order is defined
+        args = {"program_id": EQUITY_PROGRAM, "candidate_id": IID, "asset_kind": "equity"}
+        keys.append(rig.submit("compose_entry", args))
+        rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": "stop everything"})
+    assert rig.step() == 0
+    assert rig.result(halt).status == "applied" and (rig.paths.root / "HALT").exists()
+    answered = [k for k in keys if rig.result(k).status != "accepted"]
+    assert answered == keys[:limit], "the rest wait, queued, for the next iteration"
+    assert {rig.result(k).reason for k in answered} == {"halt"}, "applied first: HALT refuses"
+    assert rig.step() == 0
+    assert all(rig.result(k).status != "accepted" for k in keys)
 
 
 def test_pause_blocks_entries_but_a_stop_exit_still_fires(rig):
