@@ -394,7 +394,10 @@ class CommandQueue:
         try:
             queued = self._queued(kinds)
         except Exception as error:
-            if self._session_lost(error, ""):
+            # listing is a file operation: a file kinds pass contains it
+            # even with the session down
+            file_pass = kinds is not None and kinds <= FILE_KINDS
+            if isinstance(error, _SESSION_ERRORS) or (not file_pass and not self.connected()):
                 raise
             self._note(error, None)
             return answered

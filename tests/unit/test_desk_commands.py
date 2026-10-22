@@ -577,6 +577,25 @@ def test_a_lost_session_in_the_command_stage_still_propagates(rig, monkeypatch):
         rig.queue.process()
 
 
+def test_an_unlistable_queue_is_contained_in_the_file_pass_only(rig, monkeypatch):
+    """Listing ``commands/`` is a file operation: the kill-switch pass that
+    runs with the gateway down (on the way out, before connecting) records
+    the failure and returns; a full pass with the session down propagates
+    it as before (the loop exits 6)."""
+
+    def unlistable(self: CommandQueue, kinds: Any = None) -> Any:
+        raise PermissionError(13, "commands/ unreadable")
+
+    monkeypatch.setattr(CommandQueue, "_queued", unlistable)
+    rig.up = False
+    assert rig.queue.process(kinds=desk_commands.FILE_KINDS) == []
+    assert [(f["stage"], f["error"]) for f in _failures(rig)] == [("list", "PermissionError")]
+    with pytest.raises(PermissionError):
+        rig.queue.process()
+    rig.up = True
+    assert rig.queue.process() == [], "contained while the session is up"
+
+
 def test_a_broken_claim_never_stops_recovery_of_the_others(rig, monkeypatch):
     folder = rig.root / "commands"
     bad = rig.submit("resume_all", {"reason": ""}, ttl_s=60)
