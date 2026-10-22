@@ -1228,8 +1228,21 @@ def _drills(adir: AcceptanceDir, problems: list[str]) -> list[DrillRecord]:
         if record.id != drill_id:
             problems.append(f"drill_record_invalid:{drill_id}")
             continue
+        if record.status == "passed" and not _passed_with_check(adir, record):
+            # integration fix (review P2): the write path's rule, applied at
+            # compute time too, so a hand-written "passed" never counts
+            problems.append(f"drill_evidence_invalid:{drill_id}")
+            continue
         records.append(record)
     return records
+
+
+def _passed_with_check(adir: AcceptanceDir, record: DrillRecord) -> bool:
+    """A stored ``passed`` drill cites an ok machine check of the same drill
+    whose bytes match its hash (``drills.record_drill``'s own rule)."""
+    from tree_options.trex.drills import _ok_check  # lazy: drills imports this module
+
+    return any(_ok_check(adir, ref, record.id) for ref in record.evidence)
 
 
 def publish(

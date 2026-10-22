@@ -901,13 +901,35 @@ def test_publish_follows_consumed_mandates_into_lifecycles(tmp_path, sources) ->
     assert json.loads(facts.read_bytes())["mandate"]["intent_id"] == INTENT
 
 
+def _ok_drill_check(adir: AcceptanceDir, drill_id: str) -> contract.EvidenceRef:
+    """An ok ``trex-drill-check/1`` under the evidence root (as the drills CLI writes)."""
+    from tree_options.trex.drills import DrillCheck, Requirement
+
+    check = DrillCheck(
+        drill_id=drill_id,
+        since=Z("2026-11-16T21:00:00Z"),
+        until=Z("2026-11-16T21:30:00Z"),
+        checked_at=Z("2026-11-16T21:31:00Z"),
+        requirements=(Requirement(name="relogged_in", met=True, detail="seen"),),
+        findings=(),
+        artifacts=(),
+        ok=True,
+        live_authorized=False,
+    )
+    data = model_bytes(check)
+    path = f"drills/{drill_id}/20261116T213100Z-check.json"
+    (adir.evidence() / path).parent.mkdir(parents=True, exist_ok=True)
+    (adir.evidence() / path).write_bytes(data)
+    return contract.EvidenceRef(path=path, sha256=hashlib.sha256(data).hexdigest())
+
+
 def test_drill_records_reach_the_document(tmp_path, sources) -> None:
     adir = AcceptanceDir(tmp_path / "acceptance")
     write_session_samples(adir, every_30s(NOV16))
     drill = contract.DrillRecord(
         id="relogin",
         status="passed",
-        evidence=(contract.EvidenceRef(path="drills/relogin/notes.md", sha256="d" * 64),),
+        evidence=(_ok_drill_check(adir, "relogin"),),
         attested_by=OWNER,
         at=Z("2026-11-16T22:00:00Z"),
         note="",
@@ -920,6 +942,49 @@ def test_drill_records_reach_the_document(tmp_path, sources) -> None:
     assert out.document.drill_results[0].passed is True
     assert out.document.drills[2].status == "not_run"
     assert out.problems == ("drill_record_invalid:gateway_outage",)
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    ["missing", "wrong_hash", "other_drill", "not_ok"],
+)
+def test_a_stored_passed_drill_without_its_ok_check_never_counts(
+    tmp_path, sources, evidence: str
+) -> None:
+    """Integration fix (review P2): the publisher applies the drills CLI's
+    rule at compute time, so a hand-written "passed" record with no ok
+    machine check of the same drill is reported and counted as not run."""
+    adir = AcceptanceDir(tmp_path / "acceptance")
+    write_session_samples(adir, every_30s(NOV16))
+    if evidence == "missing":
+        ref = contract.EvidenceRef(path="drills/never/written.json", sha256="0" * 64)
+    elif evidence == "wrong_hash":
+        ref = _ok_drill_check(adir, "relogin").model_copy(update={"sha256": "0" * 64})
+    elif evidence == "other_drill":
+        ref = _ok_drill_check(adir, "backup_restore")
+    else:
+        ref = _ok_drill_check(adir, "relogin")
+        doc = json.loads((adir.evidence() / ref.path).read_bytes())
+        doc["ok"] = False
+        doc["requirements"][0]["met"] = False
+        data = json.dumps(doc).encode()
+        (adir.evidence() / ref.path).write_bytes(data)
+        ref = contract.EvidenceRef(path=ref.path, sha256=hashlib.sha256(data).hexdigest())
+    forged = contract.DrillRecord(
+        id="relogin",
+        status="passed",
+        evidence=(ref,),
+        attested_by=OWNER,
+        at=Z("2026-11-16T22:00:00Z"),
+        note="",
+    )
+    adir.drill("relogin").parent.mkdir(parents=True, exist_ok=True)
+    adir.drill("relogin").write_bytes(model_bytes(forged))
+    out = publish(adir, sources, "2026-11-16T22:10:00Z")
+    assert out.problems == ("drill_evidence_invalid:relogin",)
+    assert out.document.drills[0].status == "not_run"
+    assert out.document.drill_results[0].passed is False
+    assert out.document.drills_passed == 0
 
 
 def test_publish_takes_a_sample_inside_the_window(tmp_path, sources) -> None:

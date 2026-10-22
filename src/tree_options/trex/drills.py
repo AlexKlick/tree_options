@@ -116,6 +116,7 @@ ALERTING_DESK_EVENTS: Final = frozenset(
         "equity_contract_mismatch",
         "equity_unqualified",
         "structure_tick_failed",
+        "exit_quote_blind",
         "backup_failed",
         "entry_request",
         "entry_filled",

@@ -80,12 +80,18 @@ which is the honest answer.
 - `GET /trex/api/acceptance` (Activity & settings, Acceptance) shows the
   verified document, or `unavailable` with one of `acceptance_missing`,
   `acceptance_invalid`, `acceptance_calendar_mismatch`,
-  `acceptance_window_mismatch`.
+  `acceptance_window_mismatch`, or (Wave 3/4 integration, when
+  `TREX_OWNER_EMAILS` is set for the web) `acceptance_owners_mismatch`: a
+  document whose `owners` differ from that list is never served. Today and
+  the alert sweep refuse the same documents.
 - From a terminal: `python -m tree_options.trex.acceptance show` prints the
   summary; `publish --no-sample` recomputes without sampling.
 - Exit codes: 0 published; 3 degraded (the `problems` list names each one, for
   example `ledger_unreadable`, `drill_record_invalid:<drill>`,
-  `samples_invalid_lines:<date>`, `owners_not_configured`); 2 refused
+  `drill_evidence_invalid:<drill>` (a stored `passed` record that cites no ok
+  machine check of the same drill: counted as not run, the write path's rule
+  applied at compute time too), `samples_invalid_lines:<date>`,
+  `owners_not_configured`); 2 refused
   configuration (`owners_invalid`); 1 failure.
 - Rebuild: delete `sessions/` (or run `publish --no-sample --rebuild`) and every
   session record is re-derived from `evidence/samples/`. Never edit a record by

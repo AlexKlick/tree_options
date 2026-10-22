@@ -155,14 +155,14 @@ instead.
 2. Lane E router: `pilot` renders `<PilotPage />` (or `<PilotPanel />` in the
    new shell), `pilot-program` renders `<PilotPage programId={param} />`
    (import from `./components/PilotPage`).
-3. The `seal_registration` amendment: `git apply
-   docs/product/pilot-seal-command.patch` (additive: the kind and
-   `SealRegistrationCommand` in `contracts/commands.py`,
+3. The `seal_registration` amendment: APPLIED by the Wave 3/4 integration
+   (the patch file is removed; see WAVE34-INTEGRATION.md). Additive: the kind
+   and `SealRegistrationCommand` in `contracts/commands.py`,
    `SealRegistrationArgs` moved there and re-exported unchanged by
    `contracts/wave3.py`, the desk applying it as a file kind in
    `trex/desk_commands.py`, `CommandArgs.seal_registration` in
-   `web/src/lib/contracts.ts`). `tests/research/test_pilot_seal_command.py`
-   skips until then and runs the full web-queue to desk-apply path after.
+   `web/src/lib/contracts.ts`. `tests/research/test_pilot_seal_command.py`
+   now runs the full web-queue to desk-apply path.
 4. The desk owner's unit needs `TREX_OWNER_EMAILS` (and `TREX_PILOT_DIR` if
    not the default) in its environment and write access to the pilot dir;
    without them a seal is refused (`sealer_not_owner`) or fails (`apply_error`).
