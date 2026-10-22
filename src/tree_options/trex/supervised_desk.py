@@ -37,6 +37,36 @@ process needs a fresh grant. The capital profile is the operator-authored
 
 v1 supports debit kinds only: the execution records represent BUY-to-open
 (``OrderIntent``), and a credit package opens with a SELL.
+
+Wave 2b (lane F, owner orchestration): the same process is the supervised
+paper desk the owner drives by commands. PAPER ONLY; the owner approves
+every entry; exits stay automatic and the runtime's.
+
+- **Each loop iteration**: the runtime's tick (in session) or beat, then the
+  books (``trex.desk_books``: executions and late commission reports into
+  the append-only ledger, the ``trex-holdings/1`` projection, and the
+  reconciliation and risk snapshot every 60 s and at once after a
+  (re)connect), then the commands (``trex.desk_commands``: every kind,
+  kill switches included, is applied HERE; the web only queues), then the
+  v1 entry inbox (in session). A books or command problem never stops the
+  exits; a lost gateway is still exit 6.
+- **Kill switches never wait for the gateway** (W2b review P1): the
+  queued HALT / FLATTEN / PAUSE / resume / backup commands are file
+  operations, applied on the way out with exit 6, by ``main`` before it
+  connects, by ``start`` before the first tick, and by the unit's
+  ExecStartPre (``apply-commands``) while it waits for the gateway. A HALT,
+  FLATTEN or PAUSE the web accepted never expires in the queue.
+- **Entry commands** (``trex.desk_entries``): compose -> preflight +
+  screening -> ``proposals/<id>.json``; approve -> approval binding, kill
+  files, fresh owner facts, screening with the session's entry count and the
+  pending-entry reservation -> per-trade mandate -> exactly one send.
+- **At start** (``start``): every unconsumed per-trade mandate of another
+  owner epoch is retired (``approvals_invalidated``; proposals composed
+  under it no longer match the live epoch), and a command the previous
+  owner claimed but never answered is answered ``failed``, never re-applied.
+- **Loss facts** count the desk's EQUITY positions beside the options:
+  entries at full size, open shares at the contract's max-loss arithmetic
+  at their entry limit, and today's realized equity losses.
 """
 
 from __future__ import annotations
@@ -44,6 +74,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
+import fcntl
 import functools
 import hashlib
 import json
@@ -69,6 +100,14 @@ from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.trex import notify
 from tree_options.trex.admission import entry_send_blockers
 from tree_options.trex.clock import ET, is_session
+from tree_options.trex.contracts.commands import CommandResult
+from tree_options.trex.contracts.desk_spec_v2 import EquityDeskSpecV2
+from tree_options.trex.contracts.layout import Wave2RunDir
+from tree_options.trex.contracts.proposals import EntryProposal
+from tree_options.trex.contracts.vocabulary import DeskEvent
+from tree_options.trex.desk_books import DeskBooks
+from tree_options.trex.desk_commands import FILE_KINDS, NO_SESSION_ENTRIES, CommandQueue
+from tree_options.trex.desk_entries import OwnerEntries, equity_loss_cents
 from tree_options.trex.desk_runtime import (
     DeskPaths,
     DeskRuntime,
@@ -78,6 +117,7 @@ from tree_options.trex.desk_runtime import (
     exit_owner_ready,
 )
 from tree_options.trex.ibkr import GATEWAY_PAPER_PORT, IbkrTrex
+from tree_options.trex.ledger import AnyDeskSpec
 from tree_options.trex.plan import LegStructure, PutSpread, load_plan
 from tree_options.trex.state import ENTRY_LANE, BookState, Status
 from tree_options.trex.supervised import (
@@ -85,6 +125,7 @@ from tree_options.trex.supervised import (
     SupervisedPaths,
     SupervisedRefused,
     active_mandate,
+    invalidate_entry_mandates,
     issue_permit,
     project_intent,
     record_intent,
@@ -284,6 +325,47 @@ def realized_day_loss(
     return loss
 
 
+def equity_open_loss_reservation(
+    book: BookState, equities: Mapping[str, EquityDeskSpecV2]
+) -> Decimal:
+    """What the desk's equity positions can still lose, in dollars: an entry
+    (PLANNED or working) at its full quantity, an open position at its open
+    shares, both at the entry LIMIT (never below a buy's fill) with the
+    contract's max-loss arithmetic; CLOSED holds nothing."""
+    cents = 0
+    for sid, spec in equities.items():
+        st = book.structures.get(sid)
+        if st is None or st.status is Status.CLOSED:
+            continue
+        pos = spec.position
+        qty = pos.quantity if st.status in ENTRY_LANE else max(st.open_qty, 0)
+        cents += equity_loss_cents(qty, pos.entry_limit_cents, pos.exit_policy.stop_price_cents)
+    return Decimal(cents) / 100
+
+
+def equity_realized_day_loss(
+    book: BookState, equities: Mapping[str, EquityDeskSpecV2], today: date
+) -> Decimal | None:
+    """Equity losses realized by exits recorded today (per share, x1); None
+    when any of them is unpriced."""
+    loss = Decimal(0)
+    for sid in equities:
+        st = book.structures.get(sid)
+        if st is None or not st.exit_filled_qty or st.updated_at is None:
+            continue
+        if st.updated_at.astimezone(ET).date() != today:
+            continue
+        if (
+            st.entry_fill is None
+            or st.exit_fill is None
+            or st.entry_unpriced_qty
+            or st.exit_unpriced_qty
+        ):
+            return None
+        loss += max(Decimal(0), st.entry_fill - st.exit_fill) * st.exit_filled_qty
+    return loss
+
+
 @dataclass(frozen=True)
 class LegacyBook:
     """A legacy trex plan whose book counts toward the open/day loss (3b)."""
@@ -316,6 +398,7 @@ class SupervisedDesk:
         dividends: DividendSource | None = None,
         legacy: Sequence[LegacyBook] = (),
         clock: Callable[[], datetime] | None = None,
+        account_id: str | None = None,
     ) -> None:
         self.ib = ib
         self.runtime = runtime
@@ -325,6 +408,27 @@ class SupervisedDesk:
         self.dividends = dividends
         self.legacy = tuple(legacy)
         self.clock = clock or (lambda: datetime.now(ET))
+        # Wave 2b: the books, the entry flows and the command consumer
+        self.books = DeskBooks(
+            ib,
+            runtime.paths.root,
+            supervised,
+            specs=self._desk_specs,
+            clock=self.clock,
+            event=runtime._event,
+            account_id=account_id,
+        )
+        runtime.connect_hooks.append(self.books.request_refresh)
+        self.entries = OwnerEntries(self)
+        self.commands = CommandQueue(
+            runtime.paths.root,
+            flows=self.entries,
+            clock=self.clock,
+            owner_epoch=owner_epoch,
+            event=runtime._event,
+            connected=lambda: _connected(self),
+        )
+        self._books_noted: set[str] = set()
 
     @property
     def paths(self) -> DeskPaths:
@@ -354,18 +458,20 @@ class SupervisedDesk:
     # -- loss facts ------------------------------------------------------------
 
     def loss_facts(self, today: date) -> tuple[Decimal | None, Decimal | None]:
-        """(open-loss reservation, realized day loss) over the E5 book and
-        every legacy book; None for either when any book cannot be read."""
+        """(open-loss reservation, realized day loss) over the E5 book (its
+        option structures AND its equity positions) and every legacy book;
+        None for either when any book cannot be read."""
         views: list[tuple[BookState, dict[str, RiskView]]] = []
         try:
-            specs = self.runtime.specs()
-            e5_risks = {sid: RiskView.of(s.structure) for sid, s in specs.items()}
-            views.append((BookState.load(self.paths.book(), list(e5_risks)), e5_risks))
+            options, equities = self.runtime.owned_specs()
+            e5_risks = {sid: RiskView.of(s.structure) for sid, s in options.items()}
+            e5_book = BookState.load(self.paths.book(), [*e5_risks, *equities])
+            views.append((e5_book, e5_risks))
             views.extend(book.load() for book in self.legacy)
         except (OSError, ValueError, KeyError, TypeError):
             return None, None
-        open_loss: Decimal | None = Decimal(0)
-        day_loss: Decimal | None = Decimal(0)
+        open_loss: Decimal | None = equity_open_loss_reservation(e5_book, equities)
+        day_loss: Decimal | None = equity_realized_day_loss(e5_book, equities, today)
         for book, risks in views:
             open_loss = (
                 None if open_loss is None else open_loss + open_loss_reservation(book, risks, today)
@@ -373,6 +479,83 @@ class SupervisedDesk:
             realized = realized_day_loss(book, risks, today)
             day_loss = None if day_loss is None or realized is None else day_loss + realized
         return open_loss, day_loss
+
+    def _desk_specs(self) -> list[AnyDeskSpec]:
+        """Every desk spec (both kinds): what the books attribute and price by."""
+        options, equities = self.runtime.owned_specs()
+        return [*options.values(), *equities.values()]
+
+    # -- Wave 2b: start, books, commands ------------------------------------------
+
+    def start(self) -> dict[str, Any]:
+        """The owner's start (lock held, owner.json written): retire every
+        unconsumed per-trade mandate of an earlier owner epoch
+        (``approvals_invalidated``, also naming the pending proposals composed
+        under another epoch, which can no longer be approved), then answer
+        the commands a previous owner claimed but never answered."""
+        if self.runtime._lock_handle is None:
+            raise RuntimeLocked("start requires the runtime lock")
+        now = self.clock()
+        retired = invalidate_entry_mandates(self.supervised, now=now, owner_epoch=self.owner_epoch)
+        stale = self._stale_proposals(now)
+        self.runtime._event(
+            DeskEvent.APPROVALS_INVALIDATED.value,
+            owner_epoch=self.owner_epoch,
+            retired_mandates=retired,
+            stale_proposals=stale,
+        )
+        recovered = self.commands.recover_interrupted()
+        # the kill switches queued while no owner ran are in place before the
+        # first tick (W2b review P1); entry kinds wait for the loop
+        switched = self.commands.process(kinds=FILE_KINDS)
+        self.books.request_refresh()
+        return {
+            "retired_mandates": retired,
+            "stale_proposals": stale,
+            "recovered_commands": [r.idempotency_key for r in recovered],
+            "kill_switch_commands": [r.idempotency_key for r in switched],
+        }
+
+    def _stale_proposals(self, now: datetime) -> list[str]:
+        """Pending proposals (not rejected, not past their deadline) composed
+        under another owner epoch: no approval can match them any more."""
+        layout = Wave2RunDir(self.paths.root)
+        folder = layout.proposals()
+        if not folder.is_dir():
+            return []
+        stale: list[str] = []
+        for path in sorted(folder.glob("*.json")):
+            if path.name.endswith(".rejected.json"):
+                continue
+            try:
+                proposal = EntryProposal.model_validate_json(path.read_bytes())
+            except (OSError, ValueError):
+                continue
+            if layout.proposal_rejected(proposal.proposal_id).exists():
+                continue
+            if (now - proposal.send_deadline).total_seconds() >= 0:
+                continue
+            if proposal.review.owner_epoch != self.owner_epoch:
+                stale.append(proposal.proposal_id)
+        return stale
+
+    def books_step(self, now: datetime | None = None) -> None:
+        """One books step; a problem is recorded (class only), never raised
+        into the loop while the session is up (exits must keep running)."""
+        try:
+            self.books.step(now)
+        except Exception as error:
+            if isinstance(error, DISCONNECT_ERRORS) or not _connected(self):
+                raise
+            name = type(error).__name__
+            log.error("books step failed (%s); exits are unaffected", name)
+            if name not in self._books_noted:
+                self._books_noted.add(name)
+                self.runtime._event("books_failed", error=name)
+
+    def process_commands(self) -> list[Any]:
+        """Consume ``commands/`` (``trex.desk_commands``)."""
+        return self.commands.process()
 
     # -- the inbox -------------------------------------------------------------
 
@@ -733,11 +916,16 @@ def run_loop(
     """Tick until ``stop()``; 6 when the gateway connection is lost.
 
     The loss is caught where it surfaces: at the loop top, or as an error
-    out of the tick, the inbox, the beat or the sleep (``DISCONNECT_ERRORS``,
-    or anything once the session reads disconnected). Either way one
-    ``gateway_lost`` event and exit 6; any other error propagates. A
-    request claimed when the gateway went is answered at the next start
-    (``recover_interrupted_requests``), never re-sent."""
+    out of the tick, the books, the commands, the inbox, the beat or the
+    sleep (``DISCONNECT_ERRORS``, or anything once the session reads
+    disconnected). Either way one ``gateway_lost`` event, the queued
+    kill-switch commands applied, and exit 6; any other error propagates.
+    A request or command claimed when the gateway went is answered at the
+    next start, never re-sent.
+
+    Order per iteration: tick (in session) or beat, books, commands, then
+    the v1 inbox (in session). Commands run outside the session too: a
+    kill switch never waits for the open (the entry kinds refuse there)."""
     ticks = 0
     while not stop():
         if not _connected(desk):
@@ -745,17 +933,23 @@ def run_loop(
         stage = "clock"
         try:
             now = desk.clock()
-            if in_session(now):
+            session = in_session(now)
+            if session:
                 # tick FIRST: the arm gate (exit_owner_ready) reads this beat,
                 # so the first request after a restart is not refused for a
                 # stale one
                 stage = "tick"
                 desk.runtime.tick()
-                stage = "requests"
-                desk.process_requests()
             else:
                 stage = "beat"
                 desk.runtime.beat()
+            stage = "books"
+            desk.books_step()
+            stage = "commands"
+            desk.process_commands()
+            if session:
+                stage = "requests"
+                desk.process_requests()
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 break
@@ -776,10 +970,13 @@ def _connected(desk: SupervisedDesk) -> bool:
 
 
 def _gateway_lost(desk: SupervisedDesk, stage: str, error: BaseException | None = None) -> int:
-    """Record the loss and return the restart code. The error CLASS only
-    (as desk_runtime does): broker errors can carry account details. The
-    record is best-effort, so a failed write cannot turn exit 6 into a
-    crash."""
+    """Record the loss, apply the queued kill-switch commands, and return
+    the restart code. The error CLASS only (as desk_runtime does): broker
+    errors can carry account details. Both steps are best-effort, so a
+    failed write cannot turn exit 6 into a crash.
+
+    The kill switches are file operations (``FILE_KINDS``): an accepted
+    HALT, FLATTEN or PAUSE never waits for the gateway (W2b review P1)."""
     detail: dict[str, str] = {"stage": stage}
     if error is not None:
         detail["error"] = type(error).__name__
@@ -788,7 +985,67 @@ def _gateway_lost(desk: SupervisedDesk, stage: str, error: BaseException | None 
         desk.runtime._event("gateway_lost", **detail)
     except Exception as failure:
         log.error("gateway_lost event not recorded: %s", type(failure).__name__)
+    try:
+        desk.commands.process(kinds=FILE_KINDS)
+    except Exception as failure:
+        log.error("kill-switch commands not applied on exit: %s", type(failure).__name__)
     return EXIT_DISCONNECTED
+
+
+def _run_dir_event(paths: DeskPaths, clock: Callable[[], datetime]) -> Callable[..., None]:
+    """``events.jsonl`` records in ``DeskRuntime._event``'s shape, for a
+    command pass that runs without a runtime (no notification)."""
+
+    def write(event: str, **payload: Any) -> None:
+        record = {"ts": clock().astimezone(ET).isoformat(), "event": event, **payload}
+        with paths.events().open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, default=str, sort_keys=True) + "\n")
+
+    return write
+
+
+def apply_file_commands(
+    paths: DeskPaths,
+    *,
+    owner_epoch: str | None,
+    clock: Callable[[], datetime] | None = None,
+) -> list[CommandResult] | None:
+    """Apply the queued kill-switch commands (``FILE_KINDS``) with no broker
+    session: in ``main`` before it connects, and from the unit's
+    ExecStartPre while it waits for the gateway (``apply-commands``). An
+    entry kind stays queued for a live owner.
+
+    Under the run-dir lock, taken without waiting: None when a live owner
+    holds it (its own loop applies them). No claim a dead owner left is
+    touched here; ``start`` answers those."""
+    if not Wave2RunDir(paths.root).commands().is_dir():
+        return []
+    now = clock or (lambda: datetime.now(ET))
+    with open(paths.lock(), "a+b") as handle:  # closing it releases the lock
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        queue = CommandQueue(
+            paths.root,
+            flows=NO_SESSION_ENTRIES,
+            clock=now,
+            owner_epoch=owner_epoch,
+            event=_run_dir_event(paths, now),
+            connected=lambda: False,
+        )
+        return queue.process(kinds=FILE_KINDS)
+
+
+def _apply_before_connect(paths: DeskPaths, owner_epoch: str) -> None:
+    """``apply_file_commands`` for ``main``: best-effort, the class only."""
+    try:
+        answered = apply_file_commands(paths, owner_epoch=owner_epoch)
+    except Exception as error:
+        log.error("kill-switch commands not applied before connect: %s", type(error).__name__)
+        return
+    if answered:
+        log.info("%d kill-switch command(s) applied before connect", len(answered))
 
 
 def _dividend_source() -> DividendSource:
@@ -818,6 +1075,23 @@ def qualify_owned_account(
     return qualify_read_only(
         desk, matching[0], account_id=account_id, account_alias=account_alias, output=output
     )
+
+
+def _apply_commands_cli() -> int:
+    """``apply-commands``: one ``apply_file_commands`` pass over the desk
+    run dir, a JSON summary on stdout (keys, kinds, statuses only); 1 on an
+    error (its class), 0 otherwise, a run dir a live owner holds included."""
+    try:
+        answered = apply_file_commands(DeskPaths.default(), owner_epoch=None)
+    except Exception as error:
+        print(json.dumps({"error": type(error).__name__}))
+        return 1
+    if answered is None:
+        print(json.dumps({"skipped": "run_dir_locked"}))
+        return 0
+    summary = [{"command": r.idempotency_key, "kind": r.kind, "status": r.status} for r in answered]
+    print(json.dumps({"answered": summary}, sort_keys=True))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -856,7 +1130,16 @@ def main(argv: list[str] | None = None) -> int:
     digest.add_argument(
         "--path", type=Path, default=None, help="profile.json (default: the desk run dir's)"
     )
+    sub.add_parser(
+        "apply-commands",
+        help=(
+            "apply the queued kill-switch commands (file operations only, no broker "
+            "contact); the unit's ExecStartPre, while no owner runs"
+        ),
+    )
     args = ap.parse_args(argv)
+    if args.command == "apply-commands":
+        return _apply_commands_cli()
     if args.command == "profile-digest":
         path = args.path or DeskPaths.default().root / "profile.json"
         try:
@@ -882,6 +1165,10 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     ib = IbkrTrex(host=args.host, port=args.port, client_id=SUPERVISED_CLIENT_ID)
+    epoch = f"desk{SUPERVISED_CLIENT_ID}-{int(wall.time()):x}"
+    paths = DeskPaths.default()
+    # the kill switches queued while no owner ran never wait for the gateway
+    _apply_before_connect(paths, epoch)
     try:
         ib.connect()
     except Exception as error:  # the unit's ExecStartPre waits for the API first
@@ -905,13 +1192,11 @@ def main(argv: list[str] | None = None) -> int:
             notify.send(notify_cfg, title, message, priority)
 
         notify_fn = _push
-    paths = DeskPaths.default()
     supervised = SupervisedPaths.default()
     runtime = DeskRuntime(
         ib, paths, supervised=supervised, spots=spots, dividends=dividends, notify=notify_fn
     )
     runtime.acquire()
-    epoch = f"desk{SUPERVISED_CLIENT_ID}-{int(wall.time()):x}"
     # One process-lifetime alias fence across execution providers. Existing
     # managed IBKR paper accounts remain the broker binding; an operator may
     # give a single account a common alias when another runtime uses that alias.
@@ -944,6 +1229,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     desk.write_owner()
     log.info("supervised desk up: owner epoch %s (grant the mandate for it)", epoch)
+    try:
+        started = desk.start()
+        log.info(
+            "approvals invalidated: %d mandate(s), %d stale proposal(s); %d command(s) recovered",
+            len(started["retired_mandates"]),
+            len(started["stale_proposals"]),
+            len(started["recovered_commands"]),
+        )
+    except Exception as error:
+        # the exit owner must still come up; entries stay refused (each
+        # approval is checked against the live epoch anyway)
+        log.error("owner start bookkeeping failed: %s", type(error).__name__)
     stopping = False
 
     def _stop(*_: Any) -> None:
