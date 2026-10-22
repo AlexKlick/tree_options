@@ -164,3 +164,6 @@ class DeskEvent(StrEnum):
     EXIT_EVIDENCE_INCONCLUSIVE = "exit_evidence_inconclusive"
     HOLDINGS_UNVERIFIABLE = "holdings_unverifiable"
     STRUCTURE_TICK_FAILED = "structure_tick_failed"
+    # --- amendment 2026-10-21 (W2c integration): additive ---------------
+    # a contained command-stage failure (trex.desk_commands, supervised_desk)
+    COMMANDS_FAILED = "commands_failed"

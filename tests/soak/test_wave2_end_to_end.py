@@ -22,6 +22,7 @@ from tests.unit.trex_fakes import CLOCK_START, SPY_CON_ID, FillStep, equity_effe
 from tests.unit.wave2_owner_rig import ACCOUNT, EQUITY_PROGRAM, PROFILE, OwnerRig
 
 from tree_options.action_graph.canary import equity_entry_window
+from tree_options.trex import desk_commands
 from tree_options.trex import supervised as supervised_core
 from tree_options.trex.contracts import (
     Blocker,
@@ -32,6 +33,7 @@ from tree_options.trex.contracts import (
     SupervisedMandateV2,
     equity_max_loss_cents,
 )
+from tree_options.trex.desk_commands import CommandQueue
 from tree_options.trex.ledger import HoldingsDocument, fold_ledger, read_ledger
 from tree_options.trex.pause import pause_entries
 from tree_options.trex.state import Status
@@ -516,6 +518,60 @@ def test_a_halt_accepted_through_a_gateway_outage_still_gates_the_exits(rig):
     _confirm_stop(rig)
     assert rig.step() == 0
     assert rig.orders("SELL") == [], "the late HALT gates the stop exit as before"
+
+
+def test_a_command_stage_failure_never_stops_the_exits(rig, monkeypatch):
+    """W2c item 3: a command-stage error while the session is up (a file
+    error, a bug) is one ``commands_failed`` event per error class and the
+    loop goes on: the stop exit still fires. A lost session is still exit 6."""
+    _open(rig)
+
+    def unreadable(self: CommandQueue, kinds: Any = None) -> Any:
+        raise PermissionError(13, "commands/ unreadable")
+
+    monkeypatch.setattr(CommandQueue, "process", unreadable)
+    rig.gw.script_fills("trex:desk:eq-spy-001", [FillStep()])
+    _confirm_stop(rig)
+    assert rig.step() == 0
+    (sell,) = rig.orders("SELL")
+    assert (sell.order.orderRef, sell.order.totalQuantity) == ("trex:desk:eq-spy-001", 2)
+    failures = [e for e in rig.events() if e["event"] == DeskEvent.COMMANDS_FAILED.value]
+    assert [(e["stage"], e["error"]) for e in failures] == [("commands", "PermissionError")]
+
+    def bug(self: CommandQueue, kinds: Any = None) -> Any:
+        raise ValueError("a bug")
+
+    monkeypatch.setattr(CommandQueue, "process", bug)
+    assert rig.step() == 0
+
+    def lost(self: CommandQueue, kinds: Any = None) -> Any:
+        rig.gw.is_connected = False
+        raise ConnectionError("gone")
+
+    monkeypatch.setattr(CommandQueue, "process", lost)
+    assert rig.step() == 6
+
+
+def test_a_burst_of_entry_commands_never_delays_a_kill_switch(rig):
+    """A burst of compose commands queued before a HALT: the HALT is applied
+    in the same loop iteration, ahead of them, and at most
+    ``MAX_COMMANDS_PER_PASS`` composes run per iteration."""
+    limit = desk_commands.MAX_COMMANDS_PER_PASS
+    rig.draft_equity()
+    rig.quote()
+    keys = []
+    for _ in range(limit + 2):  # issued one second apart: issue order is defined
+        args = {"program_id": EQUITY_PROGRAM, "candidate_id": IID, "asset_kind": "equity"}
+        keys.append(rig.submit("compose_entry", args))
+        rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": "stop everything"})
+    assert rig.step() == 0
+    assert rig.result(halt).status == "applied" and (rig.paths.root / "HALT").exists()
+    answered = [k for k in keys if rig.result(k).status != "accepted"]
+    assert answered == keys[:limit], "the rest wait, queued, for the next iteration"
+    assert {rig.result(k).reason for k in answered} == {"halt"}, "applied first: HALT refuses"
+    assert rig.step() == 0
+    assert all(rig.result(k).status != "accepted" for k in keys)
 
 
 def test_pause_blocks_entries_but_a_stop_exit_still_fires(rig):

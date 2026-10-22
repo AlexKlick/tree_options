@@ -431,3 +431,169 @@ def test_results_carry_utc_instants(rig):
     key = rig.submit("resume_entries", {"reason": ""})
     rig.queue.process()
     assert rig.result(key).at.tzinfo == UTC
+
+
+# ------------------------------------------------- W2c item 3: containment
+
+
+def _failures(rig: Rig) -> list[dict[str, Any]]:
+    return [p for n, p in rig.events if n == "commands_failed"]
+
+
+def test_a_too_deeply_nested_queued_command_is_refused_never_raised(rig):
+    """A queued file nested past the JSON parser's recursion limit (inside
+    the size bound) used to escape the listing as a RecursionError and stop
+    the owner loop; it is a ``command_invalid`` refusal on its intake record
+    like any unparsable command, and the next command still runs."""
+    junk = rig.submit("halt", {"reason": ""})
+    depth = desk_commands.MAX_COMMAND_BYTES // 2 - 1
+    (rig.root / "commands" / f"{junk}.json").write_text("[" * depth + "]" * depth)
+    rig.clock.advance(1)
+    pause_key = rig.submit("pause_entries", {"reason": ""})
+    answers = {a.idempotency_key: a for a in rig.queue.process()}
+    assert (answers[junk].status, answers[junk].reason) == ("refused", "command_invalid")
+    assert answers[junk].kind == "halt", "answered on the web's intake record"
+    assert answers[pause_key].status == "applied"
+    assert not (rig.root / "HALT").exists()
+
+
+def test_an_answer_that_cannot_be_written_is_contained_and_retried(rig, monkeypatch):
+    """The answer write (store lock, atomic file) fails for one command: the
+    pass goes on with the next command (one ``commands_failed`` event naming
+    the stage and the error class), and the applied command's answer is
+    written by the next pass once the store is writable again; never
+    re-applied."""
+    halt = rig.submit("halt", {"reason": ""})
+    rig.clock.advance(1)
+    pause_key = rig.submit("pause_entries", {"reason": ""})
+    real_write = desk_commands._write_atomic
+    broken = {halt}
+
+    def flaky(path: Path, payload: bytes) -> None:
+        if any(path.name == f"{key}.result.json" for key in broken):
+            raise PermissionError(13, "read-only")
+        real_write(path, payload)
+
+    monkeypatch.setattr(desk_commands, "_write_atomic", flaky)
+    answers = rig.queue.process()
+    assert [a.idempotency_key for a in answers] == [pause_key]
+    assert (rig.root / "HALT").exists(), "applied once"
+    assert rig.result(halt).status == "accepted", "its answer is not written yet"
+    (failure,) = _failures(rig)
+    assert (failure["stage"], failure["error"], failure["command"]) == (
+        "answer",
+        "PermissionError",
+        halt,
+    )
+    assert rig.queue.process() == [], "still unwritable: nothing new, noted once"
+    assert len(_failures(rig)) == 1
+    broken.clear()
+    (late,) = rig.queue.process()
+    assert (late.idempotency_key, late.status) == (halt, "applied")
+    assert rig.result(halt).status == "applied"
+    assert rig.result(halt).result["answered_by"] == ANSWERED_BY
+
+
+def test_a_claim_that_cannot_be_renamed_is_contained_and_left_queued(rig, monkeypatch):
+    stuck = rig.submit("compose_entry", _COMPOSE)
+    rig.clock.advance(1)
+    pause_key = rig.submit("pause_entries", {"reason": ""})
+    real_rename = desk_commands.rename_noreplace
+
+    def refuse_one(src: Path, dst: Path) -> None:
+        if src.name == f"{stuck}.json":
+            raise PermissionError(13, "read-only")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(desk_commands, "rename_noreplace", refuse_one)
+    answers = rig.queue.process()
+    assert [a.idempotency_key for a in answers] == [pause_key]
+    assert (rig.root / "commands" / f"{stuck}.json").exists(), "left queued, unclaimed"
+    assert rig.flows.calls == []
+    assert [(f["stage"], f["command"]) for f in _failures(rig)] == [("claim", stuck)]
+    monkeypatch.setattr(desk_commands, "rename_noreplace", real_rename)
+    (later,) = rig.queue.process()
+    assert later.idempotency_key == stuck and rig.flows.calls == [("compose", stuck)]
+
+
+def test_a_lost_session_in_the_command_stage_still_propagates(rig, monkeypatch):
+    """Containment never hides a lost session: a ConnectionError anywhere in
+    the stage (here the answer's store lock) still reaches the loop (exit 6)."""
+    rig.submit("pause_entries", {"reason": ""})
+
+    def gone(path: Path, payload: bytes) -> None:
+        raise ConnectionError("gone")
+
+    monkeypatch.setattr(desk_commands, "_write_atomic", gone)
+    with pytest.raises(ConnectionError):
+        rig.queue.process()
+
+
+def test_a_broken_claim_never_stops_recovery_of_the_others(rig, monkeypatch):
+    folder = rig.root / "commands"
+    bad = rig.submit("resume_all", {"reason": ""}, ttl_s=60)
+    rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": "owner died"}, ttl_s=60)
+    for key in (bad, halt):
+        (folder / f"{key}.json").rename(folder / f"{key}{CLAIMED_SUFFIX}")
+    real_write = desk_commands._write_atomic
+
+    def flaky(path: Path, payload: bytes) -> None:
+        if path.name == f"{bad}.result.json":
+            raise OSError(28, "no space")
+        real_write(path, payload)
+
+    monkeypatch.setattr(desk_commands, "_write_atomic", flaky)
+    queue = rig.new_queue()
+    answers = queue.recover_interrupted()
+    assert [a.idempotency_key for a in answers] == [halt]
+    assert (rig.root / "HALT").exists()
+    assert [(f["stage"], f["command"]) for f in _failures(rig)] == [("answer", bad)]
+
+
+def test_kill_switches_go_first_and_a_burst_is_spread_over_passes(rig):
+    """A burst of entry commands cannot starve the owner's tick: one pass
+    takes every queued kill switch first (issued last, still first), then at
+    most ``MAX_COMMANDS_PER_PASS`` other commands in issue order; the rest
+    wait, queued, for the next pass."""
+    limit = desk_commands.MAX_COMMANDS_PER_PASS
+    burst = []
+    for _ in range(limit + 3):
+        burst.append(rig.submit("compose_entry", _COMPOSE))
+        rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": ""})
+    rig.clock.advance(1)
+    flatten = rig.submit("flatten", {"reason": ""})
+    first = [a.idempotency_key for a in rig.queue.process()]
+    assert first == [halt, flatten, *burst[:limit]]
+    assert [key for _, key in rig.flows.calls] == burst[:limit]
+    for key in burst[limit:]:
+        assert (rig.root / "commands" / f"{key}.json").exists(), "deferred, still queued"
+    second = [a.idempotency_key for a in rig.queue.process()]
+    assert second == burst[limit:]
+
+
+def test_a_slow_pass_stops_taking_commands_at_its_wall_time_budget(rig):
+    """Each entry command takes 60 % of the pass budget: the first starts at
+    0, the second at 0.6 (inside), the third would start at 1.2 (past it) and
+    waits for the next pass. A command slower than the whole budget still
+    makes progress, one per pass."""
+    budget = desk_commands.COMMAND_PASS_BUDGET_S
+    ticks = [0.0]
+    rig.queue.monotonic = lambda: ticks[0]
+    step = [0.6 * budget]
+
+    def slow(command: Any, now: datetime) -> Outcome:
+        rig.flows.calls.append(("compose", command.idempotency_key))
+        ticks[0] += step[0]
+        return applied()
+
+    rig.flows.compose = slow  # type: ignore[method-assign]
+    keys = []
+    for _ in range(4):
+        keys.append(rig.submit("compose_entry", _COMPOSE))
+        rig.clock.advance(1)
+    assert [a.idempotency_key for a in rig.queue.process()] == keys[:2]
+    step[0] = 3 * budget
+    assert [a.idempotency_key for a in rig.queue.process()] == keys[2:3]
+    assert [a.idempotency_key for a in rig.queue.process()] == keys[3:]

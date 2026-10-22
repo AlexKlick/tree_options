@@ -1062,6 +1062,8 @@ AMENDED_EVENTS = frozenset(
         "structure_tick_failed",
     }
 )
+#: Amendment 2026-10-21 (W2c integration): additive event names.
+W2C_EVENTS = frozenset({"commands_failed"})
 #: The strings the coordinator and the lane handoffs named (2026-10-21).
 NAMED_LANE_CODES: list[tuple[type[c.Blocker] | type[c.DeskEvent], str]] = [
     (c.Blocker, "entry_mandate_already_granted"),
@@ -1119,8 +1121,9 @@ def test_blocker_wire_strings_are_frozen() -> None:
 
 
 def test_desk_event_wire_strings_are_frozen() -> None:
-    assert {e.value for e in c.DeskEvent} == PLAN_EVENTS | AMENDED_EVENTS
-    assert not PLAN_EVENTS & AMENDED_EVENTS
+    assert {e.value for e in c.DeskEvent} == PLAN_EVENTS | AMENDED_EVENTS | W2C_EVENTS
+    assert not PLAN_EVENTS & (AMENDED_EVENTS | W2C_EVENTS)
+    assert not AMENDED_EVENTS & W2C_EVENTS
 
 
 @pytest.mark.parametrize("vocabulary", [c.Blocker, c.DeskEvent], ids=["Blocker", "DeskEvent"])

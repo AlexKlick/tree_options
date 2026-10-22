@@ -154,6 +154,10 @@ EXIT_DISCONNECTED = 6
 #: for the reader). Anything raised once the session reads disconnected
 #: counts too; anything else while connected is a bug and propagates.
 DISCONNECT_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError, OSError)
+#: what the COMMAND stage treats as a lost session while the SDK still
+#: reports connected: its other errors (a file error included) are its own
+#: and contained (W2c), unlike the tick's and the books'
+COMMAND_SESSION_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError)
 #: an interrupted request whose order the outbox cannot prove either way
 _UNKNOWN: Mapping[str, str] = {"order_sent": "unknown", "note": "reconciliation_required"}
 #: what the desk writes beside a request (claims, results, a duplicate set
@@ -429,6 +433,7 @@ class SupervisedDesk:
             connected=lambda: _connected(self),
         )
         self._books_noted: set[str] = set()
+        self._commands_noted: set[str] = set()
 
     @property
     def paths(self) -> DeskPaths:
@@ -554,8 +559,24 @@ class SupervisedDesk:
                 self.runtime._event("books_failed", error=name)
 
     def process_commands(self) -> list[Any]:
-        """Consume ``commands/`` (``trex.desk_commands``)."""
-        return self.commands.process()
+        """Consume ``commands/`` (``trex.desk_commands``: kill switches first,
+        then a bounded share of the rest; each command's failure contained
+        there). Whatever still escapes the stage while the session is up is
+        recorded (``commands_failed``, the class only, once per class) and
+        never raised into the loop: exits must keep running. A lost session
+        (``ConnectionError`` / ``TimeoutError``, or anything once the session
+        reads disconnected) still propagates: exit 6."""
+        try:
+            return self.commands.process()
+        except Exception as error:
+            if isinstance(error, COMMAND_SESSION_ERRORS) or not _connected(self):
+                raise
+            name = type(error).__name__
+            log.error("command stage failed (%s); exits are unaffected", name)
+            if name not in self._commands_noted:
+                self._commands_noted.add(name)
+                self.runtime._event(DeskEvent.COMMANDS_FAILED.value, stage="commands", error=name)
+            return []
 
     # -- the inbox -------------------------------------------------------------
 
@@ -919,9 +940,10 @@ def run_loop(
     out of the tick, the books, the commands, the inbox, the beat or the
     sleep (``DISCONNECT_ERRORS``, or anything once the session reads
     disconnected). Either way one ``gateway_lost`` event, the queued
-    kill-switch commands applied, and exit 6; any other error propagates.
-    A request or command claimed when the gateway went is answered at the
-    next start, never re-sent.
+    kill-switch commands applied, and exit 6. The books and command stages
+    contain their own other errors (``books_failed`` / ``commands_failed``);
+    any other error propagates. A request or command claimed when the
+    gateway went is answered at the next start, never re-sent.
 
     Order per iteration: tick (in session) or beat, books, commands, then
     the v1 inbox (in session). Commands run outside the session too: a

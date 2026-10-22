@@ -45,6 +45,26 @@ the next start by ``recover_interrupted``: ``failed``,
 the supervised outbox proves about its order). A safety kind is the
 exception: validated and applied again (a kill file is placed only when
 absent).
+
+**Containment and budget** (W2c): the command stage runs inside the
+owner loop beside the exits, so no command can stop them.
+
+- Every failure of one command (listing, claim, validation, apply, answer)
+  is contained: logged, one ``commands_failed`` event per stage, error
+  class and command (the class only), and the pass goes on. A command left
+  unclaimed is retried by the next pass; an answer the store refused to
+  take is kept and written by the next pass (never re-applied). A lost
+  session is never contained: a ``ConnectionError`` / ``TimeoutError``, or
+  any error of a session kind while the session reads down, propagates
+  (the loop exits 6). ``recover_interrupted`` contains per claim the same
+  way.
+- One full pass takes every queued kill switch (``SAFETY_KINDS``) FIRST,
+  whatever its issue time, then at most ``MAX_COMMANDS_PER_PASS`` other
+  commands in issue order, and starts none of them once the pass has run
+  ``COMMAND_PASS_BUDGET_S`` (monotonic; the first always starts, so a slow
+  command still progresses). The rest stay queued for the next iteration,
+  so a burst of compose/approve commands cannot starve the runtime tick.
+  The kill switches are file operations and are never deferred.
 """
 
 from __future__ import annotations
@@ -55,6 +75,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -92,7 +113,9 @@ __all__ = [
     "ANSWERED_BY",
     "CLAIMED_SUFFIX",
     "COMMAND_NOT_YET_VALID",
+    "COMMAND_PASS_BUDGET_S",
     "FILE_KINDS",
+    "MAX_COMMANDS_PER_PASS",
     "NO_SESSION_ENTRIES",
     "SAFETY_KINDS",
     "CommandQueue",
@@ -132,6 +155,12 @@ FILE_KINDS = frozenset(
 #: answered is applied again (idempotent). Resume and entry kinds keep their
 #: expiry: a stale resume never lifts a newer stop, a stale entry never trades.
 SAFETY_KINDS = frozenset({"halt", "flatten", "pause_entries"})
+#: one full pass takes at most this many commands other than the kill
+#: switches (the rest wait, queued, for the next loop iteration) ...
+MAX_COMMANDS_PER_PASS = 8
+#: ... and starts none of them once it has run this long (monotonic seconds;
+#: the first always starts). The owner loop sleeps 5 s between iterations.
+COMMAND_PASS_BUDGET_S = 2.0
 
 EventFn = Callable[..., None]
 Status = Literal["applied", "refused", "failed"]
@@ -225,10 +254,33 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _strict_json(raw: bytes) -> Any:
-    """JSON with no duplicate keys and no NaN/Infinity (the web's rule)."""
-    return json.loads(
-        raw.decode("utf-8"), parse_constant=_reject_constant, object_pairs_hook=_unique_object
-    )
+    """JSON with no duplicate keys and no NaN/Infinity (the web's rule).
+    Nesting past the parser's recursion limit is a ValueError like any
+    other malformed document (W2c: it used to escape as a RecursionError)."""
+    try:
+        return json.loads(
+            raw.decode("utf-8"), parse_constant=_reject_constant, object_pairs_hook=_unique_object
+        )
+    except RecursionError as error:
+        raise ValueError("nested too deeply") from error
+
+
+def _parse_queued(raw: bytes) -> AnyCommand:
+    """One command document: a strict JSON object of a known kind (ValueError)."""
+    document = _strict_json(raw)
+    if not isinstance(document, dict):
+        raise ValueError("a command is a JSON object")
+    return parse_command(document)
+
+
+@dataclass(frozen=True)
+class _Answer:
+    """A desk answer decided (and its effect applied) but maybe not yet
+    written: the result, and its desk event."""
+
+    result: CommandResult
+    event: str
+    payload: Mapping[str, Any]
 
 
 def _write_atomic(path: Path, payload: bytes) -> None:
@@ -281,6 +333,9 @@ class CommandQueue:
         owner_epoch: str | None,
         event: EventFn | None = None,
         connected: Callable[[], bool] = lambda: True,
+        monotonic: Callable[[], float] = time.monotonic,
+        max_per_pass: int = MAX_COMMANDS_PER_PASS,
+        pass_budget_s: float = COMMAND_PASS_BUDGET_S,
     ) -> None:
         self.layout = Wave2RunDir(Path(run_dir))
         self.flows = flows
@@ -288,6 +343,18 @@ class CommandQueue:
         self.owner_epoch = owner_epoch
         self.event = event
         self.connected = connected
+        self.monotonic = monotonic
+        self.max_per_pass = max_per_pass
+        self.pass_budget_s = pass_budget_s
+        #: how many queued commands the last full pass left for the next one
+        self.deferred = 0
+        #: answers applied but not yet written (the store refused the write):
+        #: every pass writes them first; never re-applied
+        self._unwritten: dict[str, _Answer] = {}
+        #: (stage, error class, command) already recorded as commands_failed
+        self._noted: set[tuple[str, str, str | None]] = set()
+        #: the stage of the command in hand (for the containment record)
+        self._stage = "list"
 
     # -- paths --------------------------------------------------------------------
 
@@ -305,20 +372,76 @@ class CommandQueue:
 
         ``kinds`` (``FILE_KINDS`` while the gateway is down): only the queued
         commands of those kinds, by the queued document; anything else, and
-        a document that does not read, stays queued for the full pass."""
-        answered: list[CommandResult] = []
-        for key, path in self._queued(kinds):
-            result = self._process(key, path)
+        a document that does not read, stays queued for the full pass.
+
+        The kill switches go first; a full pass (``kinds`` None) then takes
+        the others within its budget (module docstring). Every failure but a
+        lost session is contained per command."""
+        answered = self._write_unwritten()
+        started = self.monotonic()
+        self._stage = "list"
+        try:
+            queued = self._queued(kinds)
+        except Exception as error:
+            if self._session_lost(error, ""):
+                raise
+            self._note(error, None)
+            return answered
+        taken = 0
+        self.deferred = 0
+        for index, (key, path, kind) in enumerate(queued):
+            urgent = kind in SAFETY_KINDS
+            if kinds is None and not urgent:
+                if taken and self._spent(taken, started):
+                    self.deferred = len(queued) - index  # the kill switches went first
+                    log.info("%d command(s) wait for the next pass", self.deferred)
+                    break
+                taken += 1
+            try:
+                result = self._process(key, path)
+            except Exception as error:
+                if self._session_lost(error, kind):
+                    raise
+                self._note(error, key)
+                continue
             if result is not None:
                 answered.append(result)
         return answered
 
-    def _queued(self, kinds: frozenset[str] | None = None) -> list[tuple[str, Path]]:
-        """Queued commands, oldest ``issued_at`` first (an unreadable one
-        first of all: it is answered, refused, at once)."""
+    def _spent(self, taken: int, started: float) -> bool:
+        """The pass took its count, or ran its wall time."""
+        if taken >= self.max_per_pass:
+            return True
+        return self.monotonic() - started >= self.pass_budget_s
+
+    def _session_lost(self, error: BaseException, kind: str) -> bool:
+        """A failure the loop must see (exit 6), never contained here: a
+        ``ConnectionError`` / ``TimeoutError``, or any error of a session
+        kind while the session reads down (as ``_apply`` decides)."""
+        if isinstance(error, _SESSION_ERRORS):
+            return True
+        return kind not in FILE_KINDS and not self.connected()
+
+    def _note(self, error: BaseException, command: str | None) -> None:
+        """Record one contained failure (the error class only, as the books
+        step does): logged every time, one ``commands_failed`` event per
+        stage, class and command."""
+        stage, name = self._stage, type(error).__name__
+        log.error("command stage %s failed (%s, %s); exits are unaffected", stage, name, command)
+        mark = (stage, name, command)
+        if mark in self._noted:
+            return
+        self._noted.add(mark)
+        self._emit(DeskEvent.COMMANDS_FAILED.value, stage=stage, error=name, command=command)
+
+    def _queued(self, kinds: frozenset[str] | None = None) -> list[tuple[str, Path, str]]:
+        """Queued commands ``(key, path, kind)``: the kill switches
+        (``SAFETY_KINDS``) first, then the others; each group oldest
+        ``issued_at`` first (an unreadable one first of its group: it is
+        answered, refused, at once)."""
         if not self.directory.is_dir():
             return []
-        found: list[tuple[str, str, Path]] = []
+        found: list[tuple[int, str, str, Path, str]] = []
         for path in self.directory.iterdir():
             match = _QUEUED.match(path.name)
             if match is None:
@@ -328,14 +451,16 @@ class CommandQueue:
                 doc = _strict_json(path.read_bytes()[: MAX_COMMAND_BYTES + 1])
                 if isinstance(doc, dict):
                     issued, kind = str(doc.get("issued_at", "")), str(doc.get("kind", ""))
-            except (OSError, ValueError):
-                pass
+            except Exception:  # unreadable: refused by the pass that takes it
+                issued, kind = "", ""
             if kinds is not None and kind not in kinds:
                 continue
-            found.append((issued, match["key"], path))
-        return [(key, path) for _, key, path in sorted(found)]
+            urgent = 0 if kind in SAFETY_KINDS else 1
+            found.append((urgent, issued, match["key"], path, kind))
+        return [(key, path, kind) for _, _, key, path, kind in sorted(found)]
 
     def _process(self, key: str, path: Path) -> CommandResult | None:
+        self._stage = "claim"
         claimed = self.claimed(key)
         if os.path.lexists(claimed):
             self._set_aside(key, path)
@@ -347,6 +472,7 @@ class CommandQueue:
         except FileExistsError:
             self._set_aside(key, path)
             return None
+        self._stage = "validate"
         now = self.clock()
         intake = self._intake(key)
         if intake is not None and _answered_by_desk(intake):
@@ -364,6 +490,7 @@ class CommandQueue:
             return None
         if outcome is None:
             assert command is not None
+            self._stage = "apply"
             outcome = _late(self._apply(command, now), command, intake, now)
         return self._answer(key, kind, body_sha, outcome, now, command)
 
@@ -410,10 +537,7 @@ class CommandQueue:
             raw = claimed.read_bytes()
             if len(raw) > MAX_COMMAND_BYTES:
                 raise ValueError("command too large")
-            document = _strict_json(raw)
-            if not isinstance(document, dict):
-                raise ValueError("a command is a JSON object")
-            command = parse_command(document)
+            command = _parse_queued(raw)
         except (OSError, ValueError) as error:
             return (
                 None,
@@ -546,6 +670,7 @@ class CommandQueue:
         facts = _jsonable(
             {**outcome.facts, "answered_by": ANSWERED_BY, "owner_epoch": self.owner_epoch}
         )
+        self._stage = "answer"
         result = CommandResult.model_validate(
             {
                 "idempotency_key": key,
@@ -558,22 +683,54 @@ class CommandQueue:
                 "at": now,
             }
         )
-        with self._store_lock():
-            _write_atomic(self.layout.command_result(key), model_bytes(result))
         name = (
             DeskEvent.COMMAND_APPLIED if outcome.status == "applied" else DeskEvent.COMMAND_REFUSED
         )
         flags = {f: True for f in ("applied_after_expiry", "recovered") if outcome.facts.get(f)}
-        self._emit(
+        answer = _Answer(
+            result,
             name.value,
-            command=key,
-            kind=kind,
-            status=outcome.status,
-            reason=outcome.reason,
-            actor=None if command is None else actor_label(command.issued_by),
-            **flags,
+            {
+                "command": key,
+                "kind": kind,
+                "status": outcome.status,
+                "reason": outcome.reason,
+                "actor": None if command is None else actor_label(command.issued_by),
+                **flags,
+            },
         )
+        try:
+            self._write(answer)
+        except BaseException:
+            # applied (or refused) already: the next pass writes it, never
+            # re-applies it
+            self._unwritten[key] = answer
+            raise
         return result
+
+    def _write(self, answer: _Answer) -> None:
+        with self._store_lock():
+            _write_atomic(
+                self.layout.command_result(answer.result.idempotency_key),
+                model_bytes(answer.result),
+            )
+        self._emit(answer.event, **answer.payload)
+
+    def _write_unwritten(self) -> list[CommandResult]:
+        """Write the answers a refused store write left (oldest first)."""
+        written: list[CommandResult] = []
+        for key, answer in list(self._unwritten.items()):
+            self._stage = "answer"
+            try:
+                self._write(answer)
+            except Exception as error:
+                if self._session_lost(error, answer.result.kind):
+                    raise
+                self._note(error, key)
+                continue
+            del self._unwritten[key]
+            written.append(answer.result)
+        return written
 
     @contextmanager
     def _store_lock(self) -> Iterator[None]:
@@ -593,45 +750,64 @@ class CommandQueue:
         (placing a kill file is idempotent), so a dead owner never drops a
         HALT, FLATTEN or PAUSE the web accepted."""
         answered: list[CommandResult] = []
-        if not self.directory.is_dir():
+        self._stage = "recover"
+        try:
+            if not self.directory.is_dir():
+                return answered
+            claims = sorted(
+                (match["key"], path)
+                for path in self.directory.iterdir()
+                if (match := _CLAIMED.match(path.name)) is not None
+            )
+        except Exception as error:
+            if self._session_lost(error, ""):
+                raise
+            self._note(error, None)
             return answered
         now = self.clock()
-        for path in sorted(self.directory.iterdir()):
-            match = _CLAIMED.match(path.name)
-            if match is None:
-                continue
-            key = match["key"]
-            intake = self._intake(key)
-            if intake is not None and _answered_by_desk(intake):
-                continue
-            command: AnyCommand | None
+        for key, path in claims:
+            self._stage = "recover"
             try:
-                command = parse_command(_strict_json(path.read_bytes()[:MAX_COMMAND_BYTES]))
-            except (OSError, ValueError):
-                command = None
-            if command is not None:
-                kind, body_sha = command.kind, command_body_sha256(command)
-            elif intake is not None:
-                kind, body_sha = intake.kind, intake.command_body_sha256
-            else:
-                continue  # nothing reads: no answer can be written
-            if command is not None and command.kind in SAFETY_KINDS:
-                _, sha, accepted_kind, refusal = self._validate(key, path, now, intake)
-                outcome = refusal or _late(self._apply(command, now), command, intake, now)
-                outcome = _with(outcome, recovered=True)
-                answered.append(
-                    self._answer(key, accepted_kind or kind, sha or body_sha, outcome, now, command)
-                )
+                result = self._recover(key, path, now)
+            except Exception as error:
+                if self._session_lost(error, ""):
+                    raise
+                self._note(error, key)
                 continue
-            facts: dict[str, Any] = {}
-            if command is not None and command.kind not in FILE_KINDS:
-                try:
-                    facts = self.flows.interrupted(command)
-                except Exception as error:  # reporting only
-                    facts = {"report_error": type(error).__name__}
-            outcome = failed(INTERRUPTED, "the command is never re-applied", **facts)
-            answered.append(self._answer(key, kind, body_sha, outcome, now, command))
+            if result is not None:
+                answered.append(result)
         return answered
+
+    def _recover(self, key: str, path: Path, now: datetime) -> CommandResult | None:
+        """One unanswered claim (``recover_interrupted``)."""
+        intake = self._intake(key)
+        if intake is not None and _answered_by_desk(intake):
+            return None
+        command: AnyCommand | None
+        try:
+            command = _parse_queued(path.read_bytes()[:MAX_COMMAND_BYTES])
+        except (OSError, ValueError):
+            command = None
+        if command is not None:
+            kind, body_sha = command.kind, command_body_sha256(command)
+        elif intake is not None:
+            kind, body_sha = intake.kind, intake.command_body_sha256
+        else:
+            return None  # nothing reads: no answer can be written
+        if command is not None and command.kind in SAFETY_KINDS:
+            _, sha, accepted_kind, refusal = self._validate(key, path, now, intake)
+            self._stage = "apply"
+            outcome = refusal or _late(self._apply(command, now), command, intake, now)
+            outcome = _with(outcome, recovered=True)
+            return self._answer(key, accepted_kind or kind, sha or body_sha, outcome, now, command)
+        facts: dict[str, Any] = {}
+        if command is not None and command.kind not in FILE_KINDS:
+            try:
+                facts = self.flows.interrupted(command)
+            except Exception as error:  # reporting only
+                facts = {"report_error": type(error).__name__}
+        outcome = failed(INTERRUPTED, "the command is never re-applied", **facts)
+        return self._answer(key, kind, body_sha, outcome, now, command)
 
     def _emit(self, name: str, **payload: Any) -> None:
         if self.event is None:
