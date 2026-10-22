@@ -22,7 +22,7 @@ for the one C2.7 member, in `WAVE2-CONTRACTS.md`.
 | A | Origins, audience, key files for TREX | Done on the TREX side by name: the production web drop-in reads an optional `~/.config/trex/web.env` (`TREX_OWNER_EMAILS`, `TREX_FAMILY_ORIGINS`, `TREX_FAMILY_AUDIENCE`, `TREX_FAMILY_COMMAND_KEY_FILE`, `TREX_PILOT_DIR`); creating it is an owner step. |
 | B | `create_app` defaults to `dispatching_authority(run_dir=resolve_run_dir, clock=command_clock)` | Done (`trex_web/app.py`); an `x-family-actor` request is judged by the family verifier only, never a loopback fallback. Test: `test_create_app_defaults_to_the_dispatching_authority`. |
 | B | `__main__` runs uvicorn with `proxy_headers=False` | Done; test `test_the_server_never_trusts_forwarded_headers`. |
-| B | `family_ingress_status()` for Today's `family_commands_disabled` | Done: `today_view.attach(..., family_ingress=...)`, wired in `app.py` to `family_ingress_status().problems`. |
+| B | `family_ingress_status()` for Today's `family_commands_disabled` | Done: `today_view.attach(..., family_ingress=...)`, wired in `app.py` to `family_ingress_status(run_dir=resolve_run_dir()).problems` (the configuration and, since the review refix, the replay ledger's writability). |
 | B | Replay-ledger prune | Deferred: optional hygiene (one small file per family command); `FamilyCommandAuthority.prune()` exists. Pruning at `create_app` would touch the run dir of every test app; schedule it on the desk owner's tick or a timer later. |
 | C | `attach_today(app, run_dir, supervised_dir, clock, gateway_state=lambda: gateway_state_path)` | Done (plus `family_ingress`). |
 | C | Timer reader | Not wired, by design (no `systemctl` from the web). |
@@ -97,6 +97,7 @@ registered mutants, the web ones were checked by scratch web mutants):
 | Risk: lane E's App tests asserted stubs; G's Portfolio test collided with the control bar | Tests updated to the wired pages | `App.test.tsx`, `PortfolioPage.test.tsx` |
 | Risk: release.COMMANDS edited by two lanes | One integration commit | `test_trex_product_release.py` in the broad run |
 | e2e: legacy `#/research` tables overflowed a phone by 132 px | Both tables in `TableScroll` | e2e at 390x844 |
+| Review P1 (refix): under the shipped `trex-web.service` (`ProtectHome=read-only`, run-dir grant `commands/` only) the replay ledger `<run dir>/authority/assertions` could not be created, so every family command (Pause and Emergency stop included) was refused `403 assertion_ledger_unavailable` while Today and onboarding read family ingress as enabled | The unit grants `ReadWritePaths=.../desk-paper/authority/assertions` (never `authority/` itself; created first with `install -d -m 0700`, named in its comment and in section 6). `family_ingress_status(run_dir=...)` and `FamilyCommandAuthority.status()` probe the ledger without writing (`access(2)`, which also says no on a read-only mount; `authority`/`assertions` must be real directories) and add `assertion_ledger_unwritable` after the configuration problems; `create_app` wires Today with the resolved run dir; Today's `family_commands_disabled` next step names the grant instead of the key when only the ledger is wrong. No contract change: `IngressProblem` is lane B's module vocabulary, the Today code is unchanged. | `test_the_shipped_web_unit_lets_a_family_command_through_a_read_only_home` replays the unit's own grants on a real read-only mount (bwrap): `commands/` alone gives 403 `assertion_ledger_unavailable` plus the status cause (the old unit failed exactly so), the shipped grants give 202 and a ledger entry; `test_the_repo_web_unit_may_write_only_the_command_queue_and_the_replay_ledger`, the probe tests, Today tests; W34-M15..M18 |
 
 Deferred, with reasons:
 
@@ -124,6 +125,12 @@ family-apps; lanes E, F and G proposed web mutants; the integration's eight
 web mutants (scratch copy, owner test must fail): 8 KILLED
 (`~/.local/state/trex-wave3/evidence/w34-webmut-*`).
 
+Review refix (the replay-ledger P1): four more in the same block,
+W34-M15..M18 (ledger probe gutted, symlinked ledger accepted, Today's probe
+unwired from the run dir, the ledger next step dropped). Harness run
+(`--only <4 ids> --jobs 2`): 4 KILLED, each by its owner test; restoration
+full-suite pass. Evidence: `~/.local/state/trex-wave3/evidence/w34-refix-mut.{json,md,log}`.
+
 ## 5. Verification
 
 Logs: `~/.local/state/trex-wave3/evidence/` (`w34-broad.log`,
@@ -133,11 +140,13 @@ Logs: `~/.local/state/trex-wave3/evidence/` (`w34-broad.log`,
   `tests/contracts`, `tests/soak`, `tests/desk_safety`, `tests/research`,
   `tests/guards` and the 162 `tests/unit` files that touch `trex`,
   `trex_web`, `desk` or `research.pilot`: 6766 passed, 0 failed, 0 skipped
-  (128 s).
+  (128 s). After the review refix (same file set, `w34-refix-broad.log`):
+  6780 passed, 0 failed, 0 skipped (132 s); the bwrap sandbox test ran.
 - Web `npm run check` (tsc, vitest, vite build, bundle check): 61 files,
-  527 tests passed; single relative chunk.
+  527 tests passed; single relative chunk (unchanged after the refix,
+  `w34-refix-web.log`).
 - `ruff format --check`, `ruff check` (src, tests, scripts) and the
-  configured `mypy` (385 source files): clean.
+  configured `mypy` (385 source files): clean (again after the refix).
 - End to end (no live services; fixture state under a temp root and a temp
   HOME; `trex_web` from this worktree on 127.0.0.1:18890 with
   `TREX_WORKSPACE_CONTROLS=1`; Playwright via host-browser): 15 pages
@@ -163,6 +172,18 @@ Logs: `~/.local/state/trex-wave3/evidence/` (`w34-broad.log`,
    `TREX_FAMILY_COMMAND_KEY_FILE` if not the default). Staging needs its own
    audience and key file. Until then Today shows
    `family_commands_disabled` and family commands are refused.
+   The web must also be able to write the replay ledger. Create it first
+   (a `ReadWritePaths` entry that does not exist fails the unit):
+   `install -d -m 0700 ~/.local/state/trex/desk-paper/authority ~/.local/state/trex/desk-paper/authority/assertions`,
+   then install this branch's `deploy/trex/trex-web.service` (it adds
+   `ReadWritePaths=/home/alexk/.local/state/trex/desk-paper/authority/assertions`),
+   `systemctl --user daemon-reload` and restart `trex-web`. The same holds
+   for the installed staging unit (`trex-web-staging.service`, not in this
+   repo): grant `<its desk run dir>/authority/assertions`, created the same
+   way. Removing the legacy `automation.conf` run-dir grant (the cutover
+   note in the unit) is safe only with this grant in place. Check: Today
+   names no `assertion_ledger_unwritable`, and one family Pause from the
+   phone answers 202 and leaves one `<jti>.json` in that directory.
 2. Reseal and re-render the release (COMMANDS changed), then install
    `trex-acceptance-publish` and `trex-deadman` timers and
    `~/.config/trex/deadman.env` / `acceptance.env` as ACCEPTANCE.md and
