@@ -38,21 +38,30 @@ const OLD_VIEWS: Array<[string, string]> = [
   ['#/experiments/qsl:observation', 'view:ExperimentsPage:qsl:observation'],
 ]
 
-// Wave 3 pages and the heading each shows (stubs until lanes F, G and I land).
+// Wave 3 pages (lanes F, G and I, wired at integration) and the page heading
+// each shows. Every fetch answers 404 here, so each page shows its own
+// unavailable state; the heading comes from the page's own AppShell.
 const NEW_PAGES: Array<[string, string]> = [
   ['', 'Today'],
   ['#/', 'Today'],
   ['#/today', 'Today'],
   ['#/trade-review', 'Trade review'],
-  [`#/trade-review/${'b'.repeat(64)}`, 'Proposal'],
+  [`#/trade-review/${'b'.repeat(64)}`, 'Trade review'],
   ['#/portfolio', 'Portfolio'],
   ['#/activity', 'Activity & settings'],
-  ['#/activity/acceptance', 'Paper acceptance'],
-  ['#/activity/settings', 'Settings'],
+  ['#/activity/acceptance', 'Activity & settings'],
+  ['#/activity/settings', 'Activity & settings'],
   ['#/pilot', 'Research pilot'],
-  ['#/pilot/eq-baseline-spy', 'Pilot program'],
+  ['#/pilot/eq-baseline-spy', 'Research pilot'],
   ['#/onboarding', 'Getting started'],
   ['#/no-such-page', 'Today'],
+]
+
+// The Activity & settings sections each mark their own sub-nav entry.
+const ACTIVITY_SECTIONS: Array<[string, string]> = [
+  ['#/activity', 'Activity'],
+  ['#/activity/acceptance', 'Paper acceptance'],
+  ['#/activity/settings', 'Settings'],
 ]
 
 beforeEach(() => {
@@ -76,6 +85,38 @@ describe('App routing', () => {
     render(<App />)
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeTruthy()
     expect(screen.queryByText(/^view:/)).toBeNull()
+    expect(screen.queryByText(/not in this build yet/)).toBeNull()
+  })
+
+  it.each(ACTIVITY_SECTIONS)('%s opens the %s section', (hash, label) => {
+    history.replaceState(null, '', hash)
+    render(<App />)
+    const subnav = screen.getByRole('navigation', { name: 'Activity & settings' })
+    const current = subnav.querySelector('[aria-current="page"]')
+    expect(current?.textContent).toBe(label)
+  })
+
+  it('a proposal hash opens that proposal, a pilot hash that program', async () => {
+    const seen: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        seen.push(String(input))
+        return new Response('', { status: 404 })
+      }),
+    )
+    history.replaceState(null, '', `#/trade-review/${'c'.repeat(64)}`)
+    const { unmount } = render(<App />)
+    await act(async () => {})
+    expect(seen.some((url) => url.startsWith('api/proposals'))).toBe(true)
+    expect(seen.every((url) => !url.startsWith('/'))).toBe(true) // relative: works under /trex/
+    unmount()
+    seen.length = 0
+    history.replaceState(null, '', '#/pilot/eq-baseline-spy')
+    render(<App />)
+    await act(async () => {})
+    expect(seen.some((url) => url.startsWith('api/pilot'))).toBe(true)
+    expect(seen.every((url) => !url.startsWith('/'))).toBe(true)
   })
 
   it('the root no longer opens the Plans list', () => {

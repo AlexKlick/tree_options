@@ -90,8 +90,9 @@ it('raises a non-paper account and a standing emergency stop', async () => {
   render(<PortfolioPage />)
   const alerts = await screen.findAllByRole('alert')
   expect(alerts.map((a) => a.textContent).join(' ')).toMatch(/U7654321.*not a paper account/)
-  expect(screen.getByText(/Exits are stopped/)).toBeTruthy()
-  expect(screen.getByText(/Emergency stop \(also stops exits\)/)).toBeTruthy()
+  // the shell's control bar also offers "Emergency stop (also stops exits)":
+  // match the page's own sentence, which names it as standing
+  expect(screen.getByText(/Exits are stopped: Emergency stop \(also stops exits\) is standing/)).toBeTruthy()
 })
 
 it('shows a failed read as an error, not as an empty portfolio', async () => {

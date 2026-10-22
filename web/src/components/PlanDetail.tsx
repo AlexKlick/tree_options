@@ -98,7 +98,7 @@ export function PlanDetail({ id }: { id: string }) {
           <h2>{poll.error.includes('404') ? 'Plan not found' : 'Cannot reach the cockpit API'}</h2>
           <p className="muted">{poll.error}</p>
           <p>
-            <a className="tap-link" href="#/">
+            <a className="tap-link" href="#/plans">
               ← All plans
             </a>
           </p>
@@ -153,7 +153,7 @@ export function PlanDetail({ id }: { id: string }) {
         </>
       ) : (
         <>
-          <a className="back tap-link" href="#/">
+          <a className="back tap-link" href="#/plans">
             ← All plans
           </a>
           <RunbookBanner d={d} />
