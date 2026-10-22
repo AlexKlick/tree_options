@@ -25,6 +25,10 @@ orders with scripted fills, IBKR exec ids, late commission reports,
 corrections, positions/portfolio with faults), ``SessionClock`` (NYSE
 sessions, early closes, restarts minting owner epochs) and contract
 builders over ``tests/contracts/fixtures``.
+
+Wave 3 (docs/product/WAVE3-CONTRACTS.md, C3.1) adds, again additively, the
+v2 family mode: ``FakeFamilyPortal`` (lane A's ``signTrexCommand`` and the
+request the portal forwards) and ``FakeCommandAuthority(family_mode="v2")``.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -67,6 +72,14 @@ from tree_options.trex.contracts import (
     parse_order_ref,
     proposal_sha256,
     sha256_hex,
+)
+from tree_options.trex.contracts.wave3 import (
+    FAMILY_COMMAND_PATH,
+    PORTAL_ROUTES,
+    FamilyAuthorityConfig,
+    family_config_from_env,
+    mint_family_command,
+    verify_family_command,
 )
 from tree_options.trex.ibkr import (
     DONE_STATES,
@@ -649,6 +662,17 @@ class FakeCommandAuthority:
     ``family_disabled``, or ``refuse_with`` verbatim (forced refusal).
     ``calls`` (every request), ``actors`` (minted) and ``refusals``
     (request, detail) record everything. ``make_request`` builds requests.
+
+    ``family_mode="v2"`` (Wave 3, C3.1) judges an ``x-family-actor`` the
+    way the real family authority does: the contract's
+    ``verify_family_command`` against ``portal`` (default: a
+    ``FakeFamilyPortal`` on this clock), then a single-use ``jti`` kept in
+    memory (``seen_jtis``; a second use is ``assertion_replayed``); the
+    details are ``FamilyRefusal`` values (``allow_family = False`` is
+    ``family_ingress_disabled``). ``make_request(family_sub=...)`` then
+    builds the request as the portal forwards it (public Host and Origin,
+    path ``/api/commands``). The loopback path is the same in both modes;
+    ``"v1"`` (the default) is exactly the Wave 2 behaviour.
     """
 
     def __init__(
@@ -659,12 +683,21 @@ class FakeCommandAuthority:
         loopback_sub: str = "operator",
         clock: Callable[[], datetime] | None = None,
         refuse_with: str | None = None,
+        family_mode: str = "v1",
+        portal: FakeFamilyPortal | None = None,
     ) -> None:
+        if family_mode not in ("v1", "v2"):
+            raise ValueError("family_mode is 'v1' (Wave 2) or 'v2' (Wave 3 C3.1)")
         self.key = key
         self.audience = audience
         self.loopback_sub = loopback_sub
         self.clock: Callable[[], datetime] = clock or SessionClock()
         self.refuse_with = refuse_with
+        self.family_mode = family_mode
+        self.portal: FakeFamilyPortal | None = None
+        if family_mode == "v2":
+            self.portal = portal if portal is not None else FakeFamilyPortal(clock=self.clock)
+        self.seen_jtis: set[str] = set()
         self.allow_loopback = True
         self.allow_family = True
         self.calls: list[RawCommandRequest] = []
@@ -684,9 +717,11 @@ class FakeCommandAuthority:
     def _verify(self, raw: RawCommandRequest) -> Actor:
         if self.refuse_with is not None:
             raise CommandAuthorityRefused(detail=self.refuse_with)
+        token = raw.headers.get(FAMILY_ACTOR_HEADER)
+        if token is not None and self.family_mode == "v2":
+            return self._verify_v2(raw)
         if raw.peer_host not in LOOPBACK_PEERS:
             raise CommandAuthorityRefused(detail="wrong_peer")
-        token = raw.headers.get(FAMILY_ACTOR_HEADER)
         if token is None:
             if not self.allow_loopback:
                 raise CommandAuthorityRefused(detail="loopback_disabled")
@@ -710,6 +745,16 @@ class FakeCommandAuthority:
         if not isinstance(sub, str) or not sub:
             raise CommandAuthorityRefused(detail="bad_signature")
         return self._actor(sub, "family", raw)
+
+    def _verify_v2(self, raw: RawCommandRequest) -> Actor:
+        """C3.1: the contract's pure verifier, then the single-use jti."""
+        if not self.allow_family or self.portal is None:
+            raise CommandAuthorityRefused(detail="family_ingress_disabled")
+        actor, claims = verify_family_command(raw, config=self.portal.config(), now=self.clock())
+        if claims.jti in self.seen_jtis:
+            raise CommandAuthorityRefused(detail="assertion_replayed")
+        self.seen_jtis.add(claims.jti)
+        return actor
 
     def _claims(self, token: str) -> dict[str, Any]:
         payload, dot, signature = token.partition(".")
@@ -754,13 +799,19 @@ class FakeCommandAuthority:
         family_sub: str | None = None,
         peer_host: str = "127.0.0.1",
         method: str = "POST",
-        path: str = FAKE_COMMAND_PATH,
+        path: str | None = None,
         request_id: str = "req-0001",
         headers: Mapping[str, str] | None = None,
     ) -> RawCommandRequest:
-        """A raw request: loopback by default, family-signed with ``family_sub``."""
+        """A raw request: loopback by default, family-signed with ``family_sub``
+        (v1: a route-bound actor; v2: as ``portal`` forwards it). ``path``
+        defaults to ``FAKE_COMMAND_PATH`` (v1) or ``/api/commands`` (v2)."""
+        if path is None:
+            path = FAMILY_COMMAND_PATH if self.family_mode == "v2" else FAKE_COMMAND_PATH
         merged = {k.lower(): v for k, v in (headers or {}).items()}
-        if family_sub is not None:
+        if family_sub is not None and self.portal is not None:
+            merged = {**self.portal.headers(body, sub=family_sub), **merged}
+        elif family_sub is not None:
             merged[FAMILY_ACTOR_HEADER] = self.family_actor(family_sub, method, path.split("?")[0])
         return RawCommandRequest(
             method=method,
@@ -770,6 +821,143 @@ class FakeCommandAuthority:
             peer_host=peer_host,
             request_id=request_id,
         )
+
+
+# -- Wave 3 C3.1: family actor protocol 2 (request-bound), additive -------------
+
+#: The golden fixture's TEST-ONLY key (bytes 0..31); never a real key.
+FAMILY_V2_KEY = bytes(range(32))
+FAMILY_V2_OWNER = "owner@example.com"
+FAMILY_V2_ORIGIN = "https://family.example.net"
+
+
+class FakeFamilyPortal:
+    """The Family Apps portal in front of one TREX instance (``/trex`` or
+    ``/trex-staging``), as lane A's ``signTrexCommand`` behaves (C3.1).
+
+    ``sign`` mints the ``trex-family-command/1`` assertion for a body (the
+    contract's ``mint_family_command``: sub trimmed and lower-cased, ``exp =
+    iat + 60``, ``request_id`` = the body's idempotency key); ``forward``
+    builds the ``RawCommandRequest`` trex_web then sees: loopback peer, the
+    public ``Host`` and ``Origin`` unchanged, the app prefix stripped from
+    the path. ``iat`` defaults to ``clock()``; each assertion gets a fresh,
+    deterministic ``jti``. ``env`` and ``write_key_file`` configure a real
+    ``FamilyCommandAuthority`` for this portal; ``config`` the pure verifier.
+    """
+
+    def __init__(
+        self,
+        *,
+        key: bytes = FAMILY_V2_KEY,
+        origin: str = FAMILY_V2_ORIGIN,
+        prefix: str = "/trex",
+        owners: Iterable[str] = (FAMILY_V2_OWNER,),
+        clock: Callable[[], datetime] | None = None,
+        jti_seed: int = 0,
+    ) -> None:
+        if prefix not in PORTAL_ROUTES:
+            raise ValueError(f"the portal serves TREX only under {sorted(PORTAL_ROUTES)}")
+        self.key = key
+        self.origin = origin
+        self.host = origin.removeprefix("https://")
+        self.prefix = prefix
+        self.audience = PORTAL_ROUTES[prefix][0]
+        self.owners = tuple(owners)
+        self.clock: Callable[[], datetime] = clock or SessionClock()
+        self.jti_seed = jti_seed
+        self.minted = 0
+        self.forwarded = 0
+
+    def next_jti(self) -> str:
+        self.minted += 1
+        seed = f"fake-portal-jti-{self.jti_seed}-{self.minted}".encode()
+        return hashlib.sha256(seed).hexdigest()[:32]
+
+    def sign(
+        self,
+        body: bytes,
+        *,
+        sub: str = FAMILY_V2_OWNER,
+        iat: int | None = None,
+        jti: str | None = None,
+    ) -> str:
+        return mint_family_command(
+            self.key,
+            sub=sub,
+            aud=self.audience,
+            origin=self.origin,
+            body=body,
+            iat=int(self.clock().timestamp()) if iat is None else iat,
+            jti=self.next_jti() if jti is None else jti,
+        )
+
+    def headers(
+        self,
+        body: bytes,
+        *,
+        sub: str = FAMILY_V2_OWNER,
+        iat: int | None = None,
+        jti: str | None = None,
+    ) -> dict[str, str]:
+        """What the portal forwards: Host and Origin unchanged plus the assertion."""
+        return {
+            "host": self.host,
+            "origin": self.origin,
+            "content-type": "application/json",
+            FAMILY_ACTOR_HEADER: self.sign(body, sub=sub, iat=iat, jti=jti),
+        }
+
+    def forward(
+        self,
+        body: bytes,
+        *,
+        sub: str = FAMILY_V2_OWNER,
+        portal_path: str | None = None,
+        method: str = "POST",
+        request_id: str | None = None,
+        peer_host: str = "127.0.0.1",
+        iat: int | None = None,
+        jti: str | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> RawCommandRequest:
+        """The request trex_web receives for a browser POST to ``portal_path``
+        (default ``<prefix>/api/commands``); ``headers`` override the portal's."""
+        portal_path = portal_path if portal_path is not None else self.prefix + FAMILY_COMMAND_PATH
+        if not portal_path.startswith(self.prefix + "/"):
+            raise ValueError(f"{portal_path!r} is not under {self.prefix}/")
+        self.forwarded += 1
+        merged = self.headers(body, sub=sub, iat=iat, jti=jti)
+        merged.update({k.lower(): v for k, v in (headers or {}).items()})
+        return RawCommandRequest(
+            method=method,
+            path=portal_path.removeprefix(self.prefix),
+            headers=merged,
+            body=body,
+            peer_host=peer_host,
+            request_id=request_id or f"web-fake-portal-{self.forwarded:04d}",
+        )
+
+    def env(self) -> dict[str, str]:
+        """The TREX settings that trust this portal (the key file aside)."""
+        return {
+            "TREX_OWNER_EMAILS": ",".join(self.owners),
+            "TREX_FAMILY_ORIGINS": self.origin,
+            "TREX_FAMILY_AUDIENCE": self.audience,
+        }
+
+    def config(self) -> FamilyAuthorityConfig:
+        return family_config_from_env(self.env(), self.key)
+
+    def write_key_file(self, path: Path) -> Path:
+        """The key in the pairing-key format: standard padded base64, 0600."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, base64.b64encode(self.key) + b"\n")
+        finally:
+            os.close(fd)
+        path.chmod(0o600)
+        return path
 
 
 # -- C2.8.5 session clock -----------------------------------------------------
