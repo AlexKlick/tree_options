@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample the desk and refresh the TREX paper acceptance document
+[Timer]
+OnBootSec=20s
+# Two or more samples a minute (20 s plus the gated run): a regular-hours
+# minute counts toward the 99% heartbeat rule only when it was sampled.
+OnUnitInactiveSec=20s
+AccuracySec=1s
+Persistent=false
+[Install]
+WantedBy=timers.target
