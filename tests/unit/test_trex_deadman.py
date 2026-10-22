@@ -44,17 +44,19 @@ class FakeSweep:
     degraded: bool = False
     exc: Exception | None = None
     runs: int = 0
+    book_lost: bool = False
 
     def __call__(self) -> Any:
         self.runs += 1
         if self.exc is not None:
             raise self.exc
-        return _SweepResult(degraded=self.degraded)
+        return _SweepResult(degraded=self.degraded or self.book_lost, book_lost=self.book_lost)
 
 
 @dataclass
 class _SweepResult:
     degraded: bool
+    book_lost: bool = False
 
     def summary(self) -> dict[str, Any]:
         return {"degraded": self.degraded}
@@ -285,6 +287,38 @@ def test_a_degraded_sweep_still_pings_and_reports_degraded(tmp_path: Path) -> No
     )
     assert len(transport.calls) == 1 and rc == 3
     assert summary["heartbeat"] == "sent" and summary["alerts"] == {"degraded": True}
+
+
+def test_a_sweep_that_lost_its_alert_book_suppresses_the_ping(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Integration fix (review P2): without its book the sweep re-pushes on
+    every tick and never reaches a persist threshold, so the external check
+    must see silence, not a green ping."""
+    transport = Transport()
+    summary, rc = _tick(
+        tmp_path,
+        _config(tmp_path, f"DEADMAN_URL={URL}\n"),
+        transport,
+        sweep=FakeSweep(book_lost=True),
+    )
+    assert transport.calls == [] and rc == dm.EXIT_SWEEP_FAILED == 1
+    assert summary["heartbeat"] == "skipped"
+    assert "alert book not written" in capsys.readouterr().err
+
+
+def test_main_with_an_unwritable_alert_book_sends_no_ping(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport = Transport()
+    monkeypatch.setattr(dm, "urllib_ping", transport)
+    cfg = _config(tmp_path, f"DEADMAN_URL={URL}\n")
+    args = _dirs(tmp_path)
+    (tmp_path / "state").write_text("a file where the alerts directory should be")
+    rc = dm.main([*args, "--deadman-config", str(cfg)])
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert rc == 1 and transport.calls == []
+    assert out["heartbeat"] == "skipped" and out["alerts"]["book_written"] is False
 
 
 def test_dry_run_pings_nothing_and_writes_nothing(tmp_path: Path) -> None:

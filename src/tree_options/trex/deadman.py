@@ -6,7 +6,8 @@ sends ONE outbound ping to an external check the owner configured. That
 check (any service that alarms when expected pings stop) tells the owner
 when this host, its timers, the release gate or the alert sweep itself has
 stopped: the one failure no local alert can report. A failed sweep sends no
-ping, on purpose.
+ping, on purpose; so does a sweep whose alert book could not be written
+(its dedupe and persist state is lost, so its alerts are not trustworthy).
 
 Configured by file NAME, never by value (the URL is a capability):
 
@@ -20,8 +21,9 @@ no query, no header but ``User-Agent``; it carries no account data. The URL
 is never logged, printed or stored. A failed ping is logged by class and
 waits for the next interval: it is never retried in a loop.
 
-Exit 0: done; 3: degraded (a push or the ping failed, or a state file could
-not be written); 1: the sweep failed (no ping was sent); 2: usage.
+Exit 0: done; 3: degraded (a push or the ping failed, or the heartbeat state
+file could not be written); 1: the sweep failed or could not write its alert
+book (no ping was sent); 2: usage.
 """
 
 from __future__ import annotations
@@ -64,6 +66,12 @@ class SweepOutcome(Protocol):
     @property
     def degraded(self) -> bool: ...
 
+    @property
+    def book_lost(self) -> bool:
+        """The sweep ran but its alert book was not written: its dedupe and
+        persist state is gone, so it counts as a failed sweep (no ping)."""
+        ...
+
     def summary(self) -> dict[str, Any]: ...
 
 
@@ -84,9 +92,10 @@ def default_state_dir() -> Path:
 
 
 def default_acceptance_dir() -> Path:
-    """``TREX_ACCEPTANCE_DIR`` (WAVE3-CONTRACTS.md C3.7)."""
-    raw = os.environ.get("TREX_ACCEPTANCE_DIR", "").strip()
-    return Path(raw or "~/.local/state/trex/acceptance").expanduser()
+    """``TREX_ACCEPTANCE_DIR`` (WAVE3-CONTRACTS.md C3.7), by the shared resolver."""
+    from tree_options.trex.contracts.wave3 import acceptance_dir_from_env
+
+    return acceptance_dir_from_env(os.environ)
 
 
 def default_run_dir() -> Path:
@@ -232,6 +241,13 @@ def tick(
             summary["heartbeat"] = "skipped"
             return summary, EXIT_SWEEP_FAILED
         summary["alerts"] = outcome.summary()
+        if outcome.book_lost:
+            # integration fix (review P2): without its book the sweep re-pushes
+            # every tick and never reaches a persist threshold; the external
+            # check must see the silence, not a green ping
+            print("deadman: alert book not written; no ping sent", file=sys.stderr)
+            summary["heartbeat"] = "skipped"
+            return summary, EXIT_SWEEP_FAILED
         degraded = outcome.degraded
     cfg, reason = load_config(config_file)
     if cfg is None:

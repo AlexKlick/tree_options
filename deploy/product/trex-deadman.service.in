@@ -8,6 +8,12 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
 Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
 Environment=TREX_DESK_STATE=@DESK_STATE@
+# The acceptance publisher's own directory (trex-acceptance-publish), so the
+# streak alert reads the document that job writes (Wave 3/4 integration).
+Environment=TREX_ACCEPTANCE_DIR=@DESK_STATE@/acceptance
+# TREX_OWNER_EMAILS (the publisher's private file): the sweep then refuses an
+# acceptance document naming other owners. Optional; read by name only.
+EnvironmentFile=-%h/.config/trex/acceptance.env
 # Release code, so the release identity check gates the start (as the
 # publishers). Its failure report is best effort under this sandbox.
 ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check

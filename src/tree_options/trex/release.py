@@ -26,6 +26,7 @@ COMMANDS = [
     "tree_options.desk shadows",
     "tree_options.desk desk-enter",
     "tree_options.trex.acceptance publish",
+    "tree_options.trex.deadman",
 ]
 EXEC_KEYS = (
     "ExecCondition",

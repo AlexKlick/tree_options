@@ -99,6 +99,7 @@ from pydantic import Field, ValidationError, model_validator
 from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.time.calendar import SessionCalendar
 from tree_options.time.sessions import shift_instant
+from tree_options.trex.contracts import wave3
 from tree_options.trex.contracts.acceptance import (
     DRILL_IDS,
     OPEN_CHECK_WINDOW_S,
@@ -178,8 +179,8 @@ __all__ = [
     "unowned_orders",
 ]
 
-ACCEPTANCE_DIR_ENV: Final = "TREX_ACCEPTANCE_DIR"
-DEFAULT_ACCEPTANCE_DIR: Final = "~/.local/state/trex/acceptance"
+ACCEPTANCE_DIR_ENV: Final = wave3.ACCEPTANCE_DIR_ENV
+DEFAULT_ACCEPTANCE_DIR: Final = wave3.ACCEPTANCE_DIR_DEFAULT
 SAMPLE_SCHEMA: Final = "trex-acceptance-sample/1"
 FACTS_SCHEMA: Final = "trex-acceptance-lifecycle-facts/1"
 SAMPLES_DIR: Final = "samples"
@@ -227,8 +228,9 @@ RecStatus = Literal["clean", "reconciliation_required", "unavailable"]
 
 
 def acceptance_dir_from_env(env: Mapping[str, str] = os.environ) -> Path:
-    """``TREX_ACCEPTANCE_DIR`` (default ``~/.local/state/trex/acceptance``)."""
-    return Path(env.get(ACCEPTANCE_DIR_ENV) or DEFAULT_ACCEPTANCE_DIR).expanduser()
+    """``TREX_ACCEPTANCE_DIR`` (default ``~/.local/state/trex/acceptance``):
+    the shared C3.7 resolver, ``contracts.wave3.acceptance_dir_from_env``."""
+    return wave3.acceptance_dir_from_env(env)
 
 
 @dataclass(frozen=True)

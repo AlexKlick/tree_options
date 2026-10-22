@@ -300,6 +300,31 @@ def test_an_acceptance_document_for_another_calendar_is_refused(desk: Any) -> No
     assert send.calls == [] and result.sources["acceptance"] == "acceptance_calendar_mismatch"
 
 
+def test_a_document_naming_other_owners_or_from_the_future_never_alerts(
+    desk: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integration fix (review P2): the sweep refuses what GET /api/acceptance
+    refuses (an owner list other than TREX_OWNER_EMAILS, a future date)."""
+    days = ["2026-11-02", "2026-11-03", "2026-11-04"]
+    _write_acceptance(desk, [*map(_session, days), _session("2026-11-05", 300)], AFTER_NOV5)
+    send = Sender()
+    monkeypatch.setenv("TREX_OWNER_EMAILS", "mallory@example.net")
+    result = _sweep(desk, AFTER_NOV5, send)
+    assert send.calls == [] and result.sources["acceptance"] == "acceptance_owners_mismatch"
+    monkeypatch.setenv("TREX_OWNER_EMAILS", OWNER)
+    early = _sweep(desk, Z("2026-11-05T21:54:59Z"), send)  # computed 22:00Z: 301 s ahead
+    assert send.calls == [] and early.sources["acceptance"] == "acceptance_invalid"
+    result = _sweep(desk, AFTER_NOV5, send)
+    assert result.pushed == ["acceptance_streak_broken"]
+
+
+def test_the_future_skew_matches_the_web_view() -> None:
+    from tree_options.trex import alert_sweep as sw
+    from tree_options.trex_web import acceptance_view
+
+    assert sw.ACCEPTANCE_FUTURE_SKEW_S == acceptance_view.FUTURE_SKEW_S
+
+
 # -- exit_quote_blind ------------------------------------------------------------------
 
 

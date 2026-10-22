@@ -10,6 +10,14 @@ Environment=TREX_DESK_STATE=@DESK_STATE@
 Environment=DESK_STORE=@DESK_STORE@
 Environment=TREX_DESK_READ_SNAPSHOT=@READ_SNAPSHOT@
 Environment=TREX_EXPERIMENT_SNAPSHOT=@EXPERIMENT_SNAPSHOT@
+# Wave 3/4: Today, Activity and GET /api/acceptance read the directory the
+# acceptance publisher writes (staging sets none and shows acceptance_missing).
+Environment=TREX_ACCEPTANCE_DIR=@DESK_STATE@/acceptance
+# Wave 3/4: the owner list and family command ingress (TREX_OWNER_EMAILS,
+# TREX_FAMILY_ORIGINS, TREX_FAMILY_AUDIENCE, TREX_FAMILY_COMMAND_KEY_FILE,
+# TREX_PILOT_DIR), names and paths only, never a key. Optional: without it
+# family commands are refused (family_ingress_disabled), loopback still works.
+EnvironmentFile=-%h/.config/trex/web.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStartPre=
 ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check

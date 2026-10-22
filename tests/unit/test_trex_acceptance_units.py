@@ -76,6 +76,22 @@ def test_owner_list_comes_from_an_optional_private_env_file() -> None:
     assert values(SERVICE, "EnvironmentFile") == ["-%h/.config/trex/acceptance.env"]
 
 
+def test_every_production_reader_reads_the_directory_the_publisher_writes() -> None:
+    """Integration (review P2): the dead-man sweep (streak alert) and the
+    production web (Today, Activity, GET /api/acceptance) read the same
+    TREX_ACCEPTANCE_DIR the publisher writes; staging names none."""
+    (written,) = [v for v in values(SERVICE, "Environment") if v.startswith("TREX_ACCEPTANCE_DIR=")]
+    for reader in ("trex-deadman.service.in", "trex-web-release.conf.in"):
+        read = [
+            v
+            for v in values(TEMPLATES / reader, "Environment")
+            if v.startswith("TREX_ACCEPTANCE_DIR=")
+        ]
+        assert read == [written], reader
+    staging = values(TEMPLATES / "trex-web-staging-release.conf.in", "Environment")
+    assert not [v for v in staging if v.startswith("TREX_ACCEPTANCE_DIR=")]
+
+
 def test_timer_samples_at_least_twice_a_minute() -> None:
     pairs = dict(directives(TIMER))
     assert pairs["OnUnitInactiveSec"] == "20s"

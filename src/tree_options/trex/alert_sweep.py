@@ -55,7 +55,7 @@ from tree_options.trex.contracts.effects import SupervisedEquityEffect
 from tree_options.trex.contracts.layout import Wave2RunDir, Wave2SupervisedDir
 from tree_options.trex.contracts.mandates import SupervisedMandateV2
 from tree_options.trex.contracts.proposals import EntryProposal, proposal_bytes
-from tree_options.trex.contracts.wave3 import AcceptanceDir
+from tree_options.trex.contracts.wave3 import AcceptanceDir, acceptance_owners_problem
 from tree_options.trex.reconcile import read_reconciliation
 
 BOOK_SCHEMA: Final = "trex-alert-book/1"
@@ -64,6 +64,9 @@ MAX_PROPOSALS: Final = 100
 #: ... of at most this size (both pinned to trex_web.commands_view by a test)
 MAX_PROPOSAL_BYTES: Final = 256 * 1024
 MAX_ACCEPTANCE_BYTES: Final = 32 * 1024 * 1024
+#: ``trex_web.acceptance_view.FUTURE_SKEW_S`` (named here to keep the web
+#: framework out of this import; a test pins the two together)
+ACCEPTANCE_FUTURE_SKEW_S: Final = 300
 #: ``DeskPaths.events()`` (trex.desk_runtime), named here to keep the broker
 #: session code out of this import; a test pins the two together
 DESK_EVENTS: Final = "events.jsonl"
@@ -98,7 +101,13 @@ class SweepResult:
     def degraded(self) -> bool:
         """A push failed or the book could not be written (sources that are
         not there yet are normal, not degraded)."""
-        return self.failed > 0 or (not self.dry_run and not self.book_written)
+        return self.failed > 0 or self.book_lost
+
+    @property
+    def book_lost(self) -> bool:
+        """The book could not be written: every first-seen time and dedupe
+        mark is lost, so the dead-man treats the sweep as failed (no ping)."""
+        return not self.dry_run and not self.book_written
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -109,6 +118,7 @@ class SweepResult:
             "failed": self.failed,
             "held": self.held,
             "degraded": self.degraded,
+            "book_written": self.book_written,
         }
 
 
@@ -205,9 +215,13 @@ def pending_approvals(
     return pending, problems
 
 
-def _acceptance(acceptance_dir: Path, calendar: Any) -> tuple[list[SessionOutcome] | None, str]:
+def _acceptance(
+    acceptance_dir: Path, calendar: Any, now: datetime
+) -> tuple[list[SessionOutcome] | None, str]:
     """The verified document's session results, or why there are none (the
-    ``GET /api/acceptance`` unavailable reasons)."""
+    ``GET /api/acceptance`` unavailable reasons and checks: a document dated
+    more than ``ACCEPTANCE_FUTURE_SKEW_S`` ahead is invalid, and one naming
+    other owners than a configured ``TREX_OWNER_EMAILS`` is refused)."""
     path = AcceptanceDir(acceptance_dir).document()
     try:
         if not path.exists():
@@ -217,6 +231,11 @@ def _acceptance(acceptance_dir: Path, calendar: Any) -> tuple[list[SessionOutcom
         document = AcceptanceDocument.model_validate_json(path.read_bytes())
     except (OSError, ValidationError, ValueError):
         return None, "acceptance_invalid"
+    if document.computed_at.timestamp() > now.timestamp() + ACCEPTANCE_FUTURE_SKEW_S:
+        return None, "acceptance_invalid"
+    owners = acceptance_owners_problem(document.owners, os.environ)
+    if owners is not None:
+        return None, owners.value
     if calendar is None:
         from tree_options.trex.clock import session_calendar
 
@@ -291,7 +310,7 @@ def observe(paths: SweepPaths, now: datetime, *, calendar: Any = None) -> Observ
         sources["proposals"] = "proposals_unreadable"
         unknown.add(AlertKind.APPROVAL_EXPIRING)
 
-    outcomes, sources["acceptance"] = _acceptance(paths.acceptance_dir, calendar)
+    outcomes, sources["acceptance"] = _acceptance(paths.acceptance_dir, calendar, now)
     if outcomes is None:
         unknown.add(AlertKind.ACCEPTANCE_STREAK_BROKEN)
     else:

@@ -57,8 +57,9 @@ claim version 2 identity.
 The output manifest binds the installed interpreter and package versions, source
 head and tree, both dependency locks, all frontend files, QSL and experiment publisher command presence, and the
 experiment-source configuration hash. `supported_commands` lists every command a
-rendered unit may run, now including `tree_options.desk shadows` and
-`tree_options.desk desk-enter`. A manifest sealed before that change will not
+rendered unit may run, now including `tree_options.desk shadows`,
+`tree_options.desk desk-enter` and (Waves 3 and 4) `tree_options.trex.acceptance
+publish` and `tree_options.trex.deadman`. A manifest sealed before that change will not
 verify under the new code; reseal it rather than editing it. The same holds for
 a manifest with a `previous_release` but no `previous_release_sha256`
 (`previous_release_hash_invalid`).
@@ -88,7 +89,12 @@ unit. Together they cover every unit that ran outside the serving checkout on
 | `desk-evidence-release.conf` | `desk-evidence.service` | untracked copy `desk-wave3-safety-rc2` |
 | `desk-admission-preview-release.conf` | `desk-admission-preview.service` | untracked copy `desk-wave3-safety-rc2` |
 
-`trex-premarket.service` is a full rendered unit. The other ~20 `trex-*`/`desk-*`
+`trex-premarket.service` is a full rendered unit, and so are (Waves 3 and 4)
+`trex-acceptance-publish.service`/`.timer` (the paper acceptance recorder,
+[ACCEPTANCE.md](ACCEPTANCE.md)) and `trex-deadman.service`/`.timer` (the owner
+alert sweep and the dead-man heartbeat). Both read and write only inside
+`desk_state` and set `TREX_ACCEPTANCE_DIR=<desk_state>/acceptance`, as the
+production web drop-in does. The other ~20 `trex-*`/`desk-*`
 units still run from the serving checkout with `PYTHONPATH=src`. No release
 template covers them yet.
 
