@@ -9,6 +9,7 @@ web store), kill files on disk, the pause audit, and the claim files.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +19,7 @@ import pytest
 
 from tests.unit.trex_fakes import FakeCommandAuthority, SessionClock
 from tree_options.time.sessions import shift_instant
-from tree_options.trex import desk_commands
+from tree_options.trex import desk_commands, pause
 from tree_options.trex.contracts import (
     AnyCommand,
     CommandResult,
@@ -664,3 +665,167 @@ def test_a_slow_pass_stops_taking_commands_at_its_wall_time_budget(rig):
     step[0] = 3 * budget
     assert [a.idempotency_key for a in rig.queue.process()] == keys[2:3]
     assert [a.idempotency_key for a in rig.queue.process()] == keys[3:]
+
+
+# ------------------------------- W2c refix: a resume never lifts a newer stop
+
+_STOP_FILE = {"halt": "HALT", "flatten": "FLATTEN", "pause_entries": "PAUSE_ENTRIES"}
+_RESUME_STOP = [
+    ("resume_all", "halt"),
+    ("resume_all", "flatten"),
+    ("resume_all", "pause_entries"),
+    ("resume_entries", "pause_entries"),
+]
+
+
+def _standing(rig: Rig) -> set[str]:
+    return {name for name in _STOP_FILE.values() if os.path.lexists(rig.root / name)}
+
+
+def _late(rig: Rig, kind: str, seconds_ago: float) -> str:
+    """A command issued ``seconds_ago`` (a slow client, a retried claim),
+    accepted by the web now: it reaches the desk after newer ones."""
+    issued = shift_instant(rig.clock.utc(), -seconds_ago)
+    command = rig.command(
+        kind,
+        {"reason": "late"},
+        issued_at=issued.isoformat(),
+        expires_at=shift_instant(issued, 120).isoformat(),
+    )
+    assert rig.store.submit(command, now=rig.clock.utc()).result.status == "accepted"
+    return command.idempotency_key
+
+
+@pytest.mark.parametrize("file_pass", [False, True], ids=["full_pass", "file_pass"])
+@pytest.mark.parametrize(("resume", "stop"), _RESUME_STOP)
+def test_an_older_resume_never_lifts_a_newer_stop_in_one_pass(
+    rig: Rig, resume: str, stop: str, file_pass: bool
+) -> None:
+    """Review probes A-C: the owner resumed, then stopped. Both wait in one
+    pass (a gateway outage, a slow approve). The stop is the owner's last
+    word: it stands after the pass, and both answers say what happened."""
+    rig.up = not file_pass
+    first = rig.submit(resume, {"reason": "lift"})
+    rig.clock.advance(2)
+    last = rig.submit(stop, {"reason": "stop"})
+    answers = rig.queue.process(kinds=desk_commands.FILE_KINDS if file_pass else None)
+    assert [a.idempotency_key for a in answers] == [first, last], "issue order"
+    assert _standing(rig) == {_STOP_FILE[stop]}
+    assert answers[1].status == "applied"
+    assert answers[1].result["changed"] is True
+
+
+def test_a_deferred_entry_burst_never_carries_a_resume_past_a_newer_halt(rig):
+    """Review probe D: eight older entry commands, then resume_all, then
+    halt. Every kill-switch kind goes before the entry kinds and is never
+    deferred, so the resume runs in the first pass, before the newer HALT."""
+    burst = []
+    for _ in range(desk_commands.MAX_COMMANDS_PER_PASS + 1):
+        burst.append(rig.submit("compose_entry", _COMPOSE))
+        rig.clock.advance(1)
+    resume = rig.submit("resume_all", {"reason": "lift"})
+    rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": "stop"})
+    first = [a.idempotency_key for a in rig.queue.process()]
+    assert first[:2] == [resume, halt]
+    assert not (rig.root / "commands" / f"{resume}.json").exists(), "never deferred"
+    assert rig.queue.deferred == 1
+    assert _standing(rig) == {"HALT"}
+    rig.queue.process()
+    assert _standing(rig) == {"HALT"}
+
+
+def test_halt_resume_halt_in_one_outage_pass_ends_halted(rig):
+    """Review probe E: the natural outage sequence. The last HALT is placed
+    again (``changed: True``), never answered as a no-op over a HALT the
+    resume then lifts."""
+    rig.up = False
+    rig.submit("halt", {"reason": "first"})
+    rig.clock.advance(1)
+    rig.submit("resume_all", {"reason": "lift"})
+    rig.clock.advance(1)
+    last = rig.submit("halt", {"reason": "again"})
+    answers = rig.queue.process(kinds=desk_commands.FILE_KINDS)
+    assert [a.status for a in answers] == ["applied"] * 3
+    assert answers[-1].idempotency_key == last and answers[-1].result["changed"] is True
+    assert _standing(rig) == {"HALT"}
+
+
+def test_a_stop_and_a_resume_issued_at_the_same_instant_end_stopped(rig):
+    """A tie in one pass: the stop is applied last (the safe direction)."""
+    rig.submit("halt", {"reason": "stop"})
+    rig.submit("resume_all", {"reason": "lift"})
+    rig.submit("pause_entries", {"reason": "stop"})
+    rig.submit("resume_entries", {"reason": "lift"})
+    rig.queue.process()
+    assert _standing(rig) == {"HALT", "PAUSE_ENTRIES"}
+
+
+@pytest.mark.parametrize(("resume", "stop"), _RESUME_STOP)
+def test_a_resume_delivered_after_a_newer_stop_leaves_it_standing(rig, resume, stop):
+    """Ordering alone cannot cover a resume that reaches the desk late (a
+    slow client, a claim retried by a later pass): the stop records its
+    command's issue time, and a resume issued before it leaves it in place
+    and says so (``superseded_by_newer_stop``)."""
+    rig.clock.advance(5)
+    rig.submit(stop, {"reason": "stop"})
+    rig.queue.process()
+    key = _late(rig, resume, seconds_ago=2)
+    (answer,) = rig.queue.process()
+    assert answer.idempotency_key == key and answer.status == "applied"
+    assert _standing(rig) == {_STOP_FILE[stop]}
+    assert answer.result["superseded_by_newer_stop"] == [_STOP_FILE[stop]]
+    assert _STOP_FILE[stop] not in answer.result.get("removed", [])
+    assert "issued after" in answer.detail
+
+
+def test_a_late_resume_lifts_the_older_stops_and_keeps_the_newer(rig):
+    """HALT at t0, resume_all at t1 (late), FLATTEN at t2: by issue order the
+    owner's word is FLATTEN alone, so the late resume lifts only the HALT."""
+    rig.submit("halt", {"reason": "first"})
+    rig.queue.process()
+    rig.clock.advance(4)
+    rig.submit("flatten", {"reason": "close"})
+    rig.queue.process()
+    _late(rig, "resume_all", seconds_ago=2)
+    (answer,) = rig.queue.process()
+    assert _standing(rig) == {"FLATTEN"}
+    assert answer.result["removed"] == ["HALT"]
+    assert answer.result["superseded_by_newer_stop"] == ["FLATTEN"]
+
+
+@pytest.mark.parametrize("stop", ["halt", "flatten", "pause_entries"])
+def test_a_repeated_stop_restamps_the_standing_one(rig, stop):
+    """A stop at t0, the same stop again at t2 (a no-op on the file), then
+    a resume issued at t1 arrives: the owner's last word is the t2 stop, so
+    the standing file carries t2 and the late resume leaves it."""
+    rig.submit(stop, {"reason": "first"})
+    rig.queue.process()
+    rig.clock.advance(4)
+    rig.submit(stop, {"reason": "again"})
+    (again,) = rig.queue.process()
+    assert again.result["changed"] is False, "placed once"
+    record = json.loads((rig.root / _STOP_FILE[stop]).read_text())
+    assert record["reason"] == "first", "the placing record is kept"
+    resume = "resume_entries" if stop == "pause_entries" else "resume_all"
+    _late(rig, resume, seconds_ago=2)
+    rig.queue.process()
+    assert _standing(rig) == {_STOP_FILE[stop]}
+
+
+def test_a_stop_without_a_recorded_issue_time_is_lifted_as_before(rig):
+    """The CLI's HALT (an empty ``touch``) and its pause record no issue
+    time: any resume lifts them, as before. A queued HALT applied over the
+    CLI's file records its own time, so a resume issued before it leaves it."""
+    (rig.root / "HALT").touch()
+    pause.pause_entries(rig.root, actor="operator-cli", now=rig.clock.utc())
+    _late(rig, "resume_all", seconds_ago=30)
+    (answer,) = rig.queue.process()
+    assert answer.result["removed"] == ["HALT"] and answer.result["pause_lifted"] is True
+    assert _standing(rig) == set()
+    (rig.root / "HALT").touch()
+    rig.submit("halt", {"reason": "web"})
+    rig.queue.process()
+    _late(rig, "resume_all", seconds_ago=1)
+    rig.queue.process()
+    assert _standing(rig) == {"HALT"}

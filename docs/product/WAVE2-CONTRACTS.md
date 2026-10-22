@@ -454,7 +454,7 @@ The 2026-10-14 plan is silent on these; each default is in
 | 8 | Entries per session | 3, both asset kinds combined (`MAX_ENTRIES_PER_SESSION`; `session_entry_limit_reached`). Open: per asset kind instead? |
 | 9 | Proposal lifetime | `send_deadline <= proposed_at + 900 s` (`PROPOSAL_MAX_TTL_S`). |
 | 10 | Command lifetime and who applies what | `expires_at <= issued_at + 300 s`. `pause_entries` and `halt` (safety direction) may be applied by whichever process receives them by writing the kill file; `resume_entries`, `resume_all`, `flatten`, compose/approve/reject are applied only by the desk process. |
-| 11 | `resume_all` | Removes `HALT`, `FLATTEN` and `PAUSE_ENTRIES` (superset of `desk_cli resume`); does not revive approvals. |
+| 11 | `resume_all` | Removes `HALT`, `FLATTEN` and `PAUSE_ENTRIES` (superset of `desk_cli resume`); does not revive approvals. W2c amendment: never a stop issued after the resume (see the amendment log). |
 | 12 | `flatten` scope | Every position the desk owns, both asset kinds; never outside positions. |
 | 13 | Early-close sessions | `forced_exit_et` stays `"15:45"` in the schema; C applies min(15:45, close minus 15 min), so 12:45 on a 13:00 close. |
 | 14 | Maximum equity hold | Not bounded beyond `exit_deadline_session >= entry session`. Open: cap it (e.g. 5 sessions)? |
@@ -597,3 +597,26 @@ its commission, a sale's commission alone (a sale's proceeds are never
 added early). Conservative by construction: a double count could only
 understate cash and refuse an entry (`insufficient_cash`), never admit one;
 exits never read it (`trex.risk_snapshot` module docstring).
+
+### 2026-10-21: default 11, a resume never lifts a newer stop (W2c refix)
+
+Additive; no schema or vocabulary change. A W2c review P1 found that the
+first W2c command budget applied every queued stop before an OLDER queued
+resume, which then lifted it while the stop's own answer read `applied`.
+Now:
+
+- The owner applies the kill-switch kinds (`halt`, `flatten`,
+  `pause_entries`, `resume_all`, `resume_entries`, `backup_state`) first,
+  in `issued_at` order among themselves (on a tie the resume before the
+  stop), never deferred by the pass budget; then the entry kinds.
+- A stop placed by a command records its `issued_at` in the file (`HALT` /
+  `FLATTEN`: beside `placed_by`, `reason`, `command`, `at`;
+  `trex-pause-entries/1`: an added optional `issued_at`). A stop applied
+  while its file stands re-stamps it when newer.
+- `resume_all` / `resume_entries` leave any stop recorded as issued after
+  them, and answer `applied` with `superseded_by_newer_stop` (a list of
+  the file names kept; empty when none) beside `removed`. A stop without a
+  recorded time (the terminal's, an older record) lifts as before.
+- Tests: `tests/unit/test_desk_commands.py` (the review's probes A-E plus
+  late delivery, re-stamp and terminal-stop cases) and
+  `tests/unit/test_trex_pause.py`.

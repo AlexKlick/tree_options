@@ -7,7 +7,11 @@ command (it writes ``<key>.json`` and an ``accepted`` result); this module
 consumes it, applies it, and replaces the result with the outcome
 (``trex-command-result/1``, the format the web reads back).
 
-Per command, each loop iteration, in ``issued_at`` order:
+Each loop iteration takes the queued commands in this order: every
+kill-switch kind (``FILE_KINDS``: ``halt``, ``flatten``, ``pause_entries``,
+``resume_all``, ``resume_entries``, ``backup_state``) first, in
+``issued_at`` order among themselves (on a tie the resume before the stop),
+then the entry kinds in ``issued_at`` order. Per command:
 
 1. **Claim** by a no-replace rename to ``<key>.claimed.json``: a command is
    processed exactly once, and a second ``<key>.json`` after a claim (in
@@ -63,13 +67,24 @@ owner loop beside the exits, so no command can stop them.
   any error of a session kind while the session reads down, propagates
   (the loop exits 6). ``recover_interrupted`` contains per claim the same
   way.
-- One full pass takes every queued kill switch (``SAFETY_KINDS``) FIRST,
-  whatever its issue time, then at most ``MAX_COMMANDS_PER_PASS`` other
-  commands in issue order, and starts none of them once the pass has run
+- One full pass takes every queued kill-switch kind (``FILE_KINDS``)
+  FIRST, in issue order among themselves, never deferred (they are file
+  operations), then at most ``MAX_COMMANDS_PER_PASS`` entry commands in
+  issue order, and starts none of those once the pass has run
   ``COMMAND_PASS_BUDGET_S`` (monotonic; the first always starts, so a slow
   command still progresses). The rest stay queued for the next iteration,
   so a burst of compose/approve commands cannot starve the runtime tick.
-  The kill switches are file operations and are never deferred.
+
+**A resume never lifts a newer stop** (W2c refix of a review P1: the first
+W2c cut put the stops ahead of an OLDER resume, which then lifted them).
+Besides the issue order above, every stop file a command places records
+that command's ``issued_at`` (``HALT`` / ``FLATTEN`` here, ``PAUSE_ENTRIES``
+in ``trex.pause``); a stop applied while its file stands re-stamps it when
+newer (the file stands throughout). ``resume_all`` / ``resume_entries``
+leave in place any stop recorded as issued after the resume (a resume that
+reached the desk late, or a claim retried by a later pass) and answer
+``applied`` with ``superseded_by_newer_stop`` naming it. A stop without a
+recorded issue time (the terminal's, an older record) lifts as before.
 """
 
 from __future__ import annotations
@@ -108,7 +123,7 @@ from tree_options.trex.contracts.commands import (
     command_body_sha256,
     parse_command,
 )
-from tree_options.trex.contracts.layout import FLATTEN, HALT, Wave2RunDir
+from tree_options.trex.contracts.layout import FLATTEN, HALT, PAUSE_ENTRIES, Wave2RunDir
 from tree_options.trex.contracts.vocabulary import Blocker, DeskEvent
 from tree_options.trex.desk_backup import BACKUP_REQUEST
 
@@ -123,6 +138,7 @@ __all__ = [
     "FILE_KINDS",
     "MAX_COMMANDS_PER_PASS",
     "NO_SESSION_ENTRIES",
+    "RESUME_KINDS",
     "SAFETY_KINDS",
     "CommandQueue",
     "EntryFlows",
@@ -150,6 +166,8 @@ INTERRUPTED = "owner_stopped_before_result"
 GATEWAY_UNAVAILABLE = "gateway_unavailable"
 #: errors that mean the gateway went: never answered here, the loop exits 6
 _SESSION_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError)
+#: the issue time of a queued document that has none readable (sorts first)
+_EARLIEST = datetime.min.replace(tzinfo=UTC)
 _KEY = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _QUEUED = re.compile(rf"^(?P<key>{_KEY})\.json$")
 _CLAIMED = re.compile(rf"^(?P<key>{_KEY}){re.escape(CLAIMED_SUFFIX)}$")
@@ -166,8 +184,10 @@ FILE_KINDS = frozenset(
 #: answered is applied again (idempotent). Resume and entry kinds keep their
 #: expiry: a stale resume never lifts a newer stop, a stale entry never trades.
 SAFETY_KINDS = frozenset({"halt", "flatten", "pause_entries"})
-#: one full pass takes at most this many commands other than the kill
-#: switches (the rest wait, queued, for the next loop iteration) ...
+#: the kinds that lift a stop: never past a stop issued after them
+RESUME_KINDS = frozenset({"resume_all", "resume_entries"})
+#: one full pass takes at most this many entry commands (every kind outside
+#: ``FILE_KINDS``; the rest wait, queued, for the next loop iteration) ...
 MAX_COMMANDS_PER_PASS = 8
 #: ... and starts none of them once it has run this long (monotonic seconds;
 #: the first always starts). The owner loop sleeps 5 s between iterations.
@@ -308,20 +328,16 @@ def _write_atomic(path: Path, payload: bytes) -> None:
         raise
 
 
-def _kill_record(command: AnyCommand, now: datetime) -> bytes:
-    reason = getattr(command.args, "reason", "")
-    return (
-        json.dumps(
-            {
-                "placed_by": actor_label(command.issued_by),
-                "reason": reason,
-                "command": command.idempotency_key,
-                "at": now.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-            },
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode()
+def _kill_record(command: AnyCommand, now: datetime) -> dict[str, Any]:
+    """A HALT / FLATTEN record: who, why, which command, when applied, and
+    the command's ``issued_at`` (what a later resume is compared with)."""
+    return {
+        "placed_by": actor_label(command.issued_by),
+        "reason": getattr(command.args, "reason", ""),
+        "command": command.idempotency_key,
+        "at": _utc_text(now),
+        "issued_at": _utc_text(command.issued_at),
+    }
 
 
 def _place(path: Path, payload: bytes) -> bool:
@@ -330,6 +346,25 @@ def _place(path: Path, payload: bytes) -> bool:
         return False
     _write_atomic(path, payload)
     return True
+
+
+def _stop(path: Path, command: AnyCommand, now: datetime) -> bool:
+    """Place a HALT / FLATTEN unless one stands (True: placed now). A
+    standing one is re-stamped with this command's issue time when that is
+    newer (``pause.restamp_stop``), so a resume issued between the two
+    never lifts it."""
+    record = _kill_record(command, now)
+    if _place(path, (json.dumps(record, sort_keys=True) + "\n").encode()):
+        return True
+    pause.restamp_stop(path, command.issued_at, record)
+    return False
+
+
+def _superseded(kept: list[str]) -> str:
+    """The answer detail of a resume that left newer stops in place."""
+    if not kept:
+        return ""
+    return f"{', '.join(kept)} issued after this resume: left in place"
 
 
 class CommandQueue:
@@ -404,10 +439,11 @@ class CommandQueue:
         taken = 0
         self.deferred = 0
         for index, (key, path, kind) in enumerate(queued):
-            urgent = kind in SAFETY_KINDS
-            if kinds is None and not urgent:
+            # the kill-switch kinds are never deferred (they come first, in
+            # issue order); the budget bounds the entry kinds only
+            if kinds is None and kind not in FILE_KINDS:
                 if taken and self._spent(taken, started):
-                    self.deferred = len(queued) - index  # the kill switches went first
+                    self.deferred = len(queued) - index  # entry kinds only
                     log.info("%d command(s) wait for the next pass", self.deferred)
                     break
                 taken += 1
@@ -449,29 +485,35 @@ class CommandQueue:
         self._emit(DeskEvent.COMMANDS_FAILED.value, stage=stage, error=name, command=command)
 
     def _queued(self, kinds: frozenset[str] | None = None) -> list[tuple[str, Path, str]]:
-        """Queued commands ``(key, path, kind)``: the kill switches
-        (``SAFETY_KINDS``) first, then the others; each group oldest
-        ``issued_at`` first (an unreadable one first of its group: it is
-        answered, refused, at once)."""
+        """Queued commands ``(key, path, kind)``: every kill-switch kind
+        (``FILE_KINDS``: stops, resumes, backup) first, then the entry
+        kinds; each group oldest ``issued_at`` first (an unreadable one
+        first of its group: it is answered, refused, at once).
+
+        Stops and resumes stay in issue order among themselves, so the
+        owner's latest word wins (W2c refix: putting the stops ahead of an
+        older resume let that resume lift them); on a tie the resume goes
+        before the stop (the safe direction)."""
         if not self.directory.is_dir():
             return []
-        found: list[tuple[int, str, str, Path, str]] = []
+        found: list[tuple[int, datetime, int, str, Path, str]] = []
         for path in self.directory.iterdir():
             match = _QUEUED.match(path.name)
             if match is None:
                 continue
-            issued, kind = "", ""
+            issued, kind = _EARLIEST, ""
             try:
                 doc = _strict_json(path.read_bytes()[: MAX_COMMAND_BYTES + 1])
                 if isinstance(doc, dict):
-                    issued, kind = str(doc.get("issued_at", "")), str(doc.get("kind", ""))
+                    issued, kind = _instant(doc.get("issued_at")), str(doc.get("kind", ""))
             except Exception:  # unreadable: refused by the pass that takes it
-                issued, kind = "", ""
+                issued, kind = _EARLIEST, ""
             if kinds is not None and kind not in kinds:
                 continue
-            urgent = 0 if kind in SAFETY_KINDS else 1
-            found.append((urgent, issued, match["key"], path, kind))
-        return [(key, path, kind) for _, _, key, path, kind in sorted(found)]
+            group = 0 if kind in FILE_KINDS else 1
+            tie = 0 if kind in RESUME_KINDS else 1
+            found.append((group, issued, tie, match["key"], path, kind))
+        return [(key, path, kind) for *_, key, path, kind in sorted(found)]
 
     def archived(self, key: str) -> Path:
         """Where an answered claim is kept (``commands/done/``)."""
@@ -659,24 +701,31 @@ class CommandQueue:
                 reason=command.args.reason,
                 now=now,
                 command_key=command.idempotency_key,
+                issued_at=command.issued_at,
             )
-            event = (
-                DeskEvent.ENTRIES_PAUSED
-                if isinstance(command, PauseEntriesCommand)
-                else DeskEvent.ENTRIES_RESUMED
-            )
+            if isinstance(command, PauseEntriesCommand):
+                event = DeskEvent.ENTRIES_PAUSED
+                detail = ""
+            else:
+                event = DeskEvent.ENTRIES_RESUMED
+                kept = [PAUSE_ENTRIES] if facts.get(pause.SUPERSEDED_BY_NEWER_STOP) else []
+                facts = {**facts, pause.SUPERSEDED_BY_NEWER_STOP: kept}
+                detail = _superseded(kept)
             self._emit(event.value, actor=actor, command=command.idempotency_key, **facts)
-            return applied(**facts)
+            return applied(detail, **facts)
         if isinstance(command, HaltCommand):
-            placed = _place(root / HALT, _kill_record(command, now))
+            placed = _stop(root / HALT, command, now)
             return applied(kill_file=HALT, changed=placed, halt=True)
         if isinstance(command, FlattenCommand):
-            placed = _place(root / FLATTEN, _kill_record(command, now))
+            placed = _stop(root / FLATTEN, command, now)
             halted = os.path.lexists(root / HALT)
             detail = "HALT is present: exits wait until it is removed" if halted else ""
             return applied(detail, kill_file=FLATTEN, changed=placed, halt_present=halted)
         if isinstance(command, ResumeAllCommand):
-            removed = [name for name in (HALT, FLATTEN) if os.path.lexists(root / name)]
+            standing = [name for name in (HALT, FLATTEN) if os.path.lexists(root / name)]
+            # a stop issued after this resume is the owner's later word
+            kept = [name for name in standing if pause.issued_after(root / name, command.issued_at)]
+            removed = [name for name in standing if name not in kept]
             for name in removed:
                 (root / name).unlink(missing_ok=True)
             entries = pause.resume_entries(
@@ -685,12 +734,17 @@ class CommandQueue:
                 reason=command.args.reason,
                 now=now,
                 command_key=command.idempotency_key,
+                issued_at=command.issued_at,
             )
+            if entries.get(pause.SUPERSEDED_BY_NEWER_STOP):
+                kept.append(PAUSE_ENTRIES)
             return applied(
+                _superseded(kept),
                 removed=removed,
                 entries_paused=entries["entries_paused"],
                 pause_lifted=entries["changed"],
                 approvals_revived=False,
+                **{pause.SUPERSEDED_BY_NEWER_STOP: kept},
             )
         if isinstance(command, BackupStateCommand):
             record = {
@@ -887,6 +941,19 @@ def _answered_by_desk(result: CommandResult) -> bool:
 
 def _utc_text(instant: datetime) -> str:
     return instant.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _instant(value: Any) -> datetime:
+    """A queued document's ``issued_at`` as an instant (compared as time,
+    never as text: offsets and fractions differ); ``_EARLIEST`` when it
+    does not read as a timezone-aware instant."""
+    if not isinstance(value, str):
+        return _EARLIEST
+    try:
+        instant = datetime.fromisoformat(value)
+    except ValueError:
+        return _EARLIEST
+    return instant if instant.utcoffset() is not None else _EARLIEST
 
 
 def _durable(command: AnyCommand, intake: CommandResult) -> bool:

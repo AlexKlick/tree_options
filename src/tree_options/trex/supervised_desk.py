@@ -559,9 +559,10 @@ class SupervisedDesk:
                 self.runtime._event("books_failed", error=name)
 
     def process_commands(self) -> list[Any]:
-        """Consume ``commands/`` (``trex.desk_commands``: kill switches first,
-        then a bounded share of the rest; each command's failure contained
-        there). Whatever still escapes the stage while the session is up is
+        """Consume ``commands/`` (``trex.desk_commands``: the kill-switch
+        kinds first, in issue order, then a bounded share of the entry
+        kinds; each command's failure contained there). Whatever still
+        escapes the stage while the session is up is
         recorded (``commands_failed``, the class only, once per class) and
         never raised into the loop: exits must keep running. A lost session
         (``ConnectionError`` / ``TimeoutError``, or anything once the session
