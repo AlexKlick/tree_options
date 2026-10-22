@@ -69,6 +69,19 @@ OWNER = "owner@example.com"
 ACCOUNT = "DU0000001"
 OPTION_INTENT = "opt-qqq-001"
 EQUITY_INTENT = "eq-spy-001"
+#: a complete capital profile (``supervised_desk.load_profile`` shape)
+PROFILE: dict[str, Any] = {
+    "profile_id": "paper-5k",
+    "revision": 1,
+    "intended_capital": "5000",
+    "risk_style": "defined-risk",
+    "goals": ["paper-acceptance"],
+    "allowed_strategy_versions": ["v/1"],
+    "max_loss_per_trade": "300",
+    "max_open_loss": "1500",
+    "max_daily_loss": "600",
+    "horizon_days": 30,
+}
 NOT_ROOT = pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
 
 
@@ -258,11 +271,16 @@ class World:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(model_bytes(document))
 
+    def profile(self, **changes: Any) -> None:
+        """The operator's capital profile, as ``supervised_desk`` reads it."""
+        write_json(self.run_dir / "profile.json", {**PROFILE, **changes})
+
     def healthy(self) -> World:
         """Every source present and good: the page has no blocker at all."""
         self.beat()
         self.watch()
         self.owner()
+        self.profile()
         self.propose(entry_proposal())
         self.holdings()
         self.risk()
@@ -1250,6 +1268,101 @@ def test_an_unverifiable_acceptance_document_is_unavailable(
     acceptance = world.today()["acceptance"]
     assert (acceptance["status"], acceptance["unavailable_reason"]) == ("unavailable", reason)
     assert acceptance["live_authorized"] is False
+
+
+def test_an_acceptance_document_naming_other_owners_or_from_the_future_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integration (review P2): Today refuses what GET /api/acceptance refuses."""
+    world.accept(acceptance_document())  # computed 2026-10-21T21:00Z, owners [OWNER]
+    monkeypatch.setenv("TREX_OWNER_EMAILS", "mallory@example.net")
+    acceptance = world.today()["acceptance"]
+    assert acceptance["unavailable_reason"] == "acceptance_owners_mismatch"
+    monkeypatch.setenv("TREX_OWNER_EMAILS", OWNER)
+    assert world.today()["acceptance"]["status"] == "ok"
+    world.now = datetime(2026, 10, 21, 20, 54, 59, tzinfo=UTC)  # 301 s before it was computed
+    assert world.today()["acceptance"]["unavailable_reason"] == "acceptance_invalid"
+
+
+# =============================================================================
+# capital profile and family ingress (Wave 3/4 integration blockers)
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("write", "code"),
+    [
+        (None, "profile_absent"),
+        ("{not json", "profile_invalid"),
+        ({**PROFILE, "intended_capital": None}, "profile_invalid"),
+        ({**PROFILE, "max_daily_loss": None}, "profile_limits_missing"),
+    ],
+)
+def test_a_profile_the_desk_would_refuse_is_a_blocker(world: World, write: Any, code: str) -> None:
+    world.healthy()
+    path = world.run_dir / "profile.json"
+    if write is None:
+        path.unlink()
+    elif isinstance(write, str):
+        path.write_text(write)
+    else:
+        write_json(path, write)
+    body = world.today()
+    found = blocker(body, code)
+    assert (found["scope"], found["severity"]) == ("entries", "warning")
+    assert "profile" in found["message"].lower() and found["next_step"]
+    assert [c for c in codes(body) if c.startswith("profile_")] == [code]
+
+
+def test_a_complete_profile_names_no_profile_blocker(world: World) -> None:
+    body = world.healthy().today()
+    assert not [c for c in codes(body) if c.startswith("profile_")]
+
+
+def test_family_ingress_status_is_a_blocker_only_when_wired_and_disabled(
+    world: World, tmp_path: Path
+) -> None:
+    world.healthy()
+    assert "family_commands_disabled" not in codes(world.today())  # not wired: no claim
+    for problems, shown in (((), False), (("key_file_missing", "origins_missing"), True)):
+        app = FastAPI()
+        tv.attach(
+            app,
+            run_dir=lambda: world.run_dir,
+            supervised_dir=lambda: world.supervised,
+            clock=lambda: world.now,
+            gateway_state=lambda: world.gateway_path,
+            acceptance_dir=lambda: world.acceptance_dir,
+            lock_probe=world._probe,
+            family_ingress=lambda problems=problems: problems,
+        )
+        body = TestClient(app).get("/api/today").json()
+        assert ("family_commands_disabled" in codes(body)) is shown, problems
+        if shown:
+            found = blocker(body, "family_commands_disabled")
+            assert found["scope"] == "commands" and "key_file_missing" in found["message"]
+
+
+@pytest.mark.parametrize(
+    ("halt", "lock", "says"),
+    [
+        (False, True, "Pausing never stops exits; they keep running."),
+        (True, True, "Exits are NOT running: Emergency stop (also stops exits) is on."),
+        (False, False, "Exits are NOT running: the desk owner is not healthy."),
+    ],
+)
+def test_the_pause_blocker_states_whether_exits_run_now(
+    world: World, halt: bool, lock: bool, says: str
+) -> None:
+    """Review P2: never 'Exits keep running' beside a standing HALT or a
+    stopped desk owner."""
+    world.healthy()
+    world.lock = lock
+    pause.pause_entries(world.run_dir, actor="loopback:operator", reason="", now=ago(NOW, 60))
+    if halt:
+        (world.run_dir / "HALT").write_text("")
+    message = blocker(world.today(), "entries_paused")["message"]
+    assert message == f"New entries are paused. {says}"
 
 
 # =============================================================================

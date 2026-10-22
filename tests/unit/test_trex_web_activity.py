@@ -389,6 +389,30 @@ def test_a_terminal_pause_is_audited_without_a_verified_actor(rig):
     assert "operator-terminal" in item["summary"]
 
 
+def test_a_terminal_label_shaped_like_an_ingress_is_never_shown_as_that_actor(rig):
+    """Integration fix (review P2): ``desk_cli pause --actor`` is free text;
+    a ``family:<sub>`` label without a stored command proving it (or naming
+    a command another principal issued) is no Family actor."""
+    other = rig.submit("halt", {"reason": ""}, sub="loopback-operator", ingress="loopback")
+    rig.clock.advance(1)
+    rig.apply_files()
+    pause.pause_entries(rig.run_dir, actor=f"family:{OWNER}", reason="", now=rig.clock.utc())
+    rig.clock.advance(1)
+    pause.pause_entries(
+        rig.run_dir,
+        actor=f"family:{OWNER}",
+        reason="",
+        now=rig.clock.utc(),
+        command_key=other.idempotency_key,
+    )
+    audits = rig.items(source="audit")
+    assert len(audits) == len(jsonl(rig.run_dir / pause.PAUSE_AUDIT_FILE)) == 2
+    for item in audits:
+        assert item["actor"] is None and item["actor_unavailable_reason"] == "actor_not_recorded"
+        assert "Family Apps" not in item["summary"] and "unverified" in item["summary"]
+        assert f"family:{OWNER}" in item["summary"]
+
+
 def test_drills_that_ran_are_listed_from_the_acceptance_dir(rig):
     passed = rig.drill("relogin", "passed", evidence="drills/relogin.log")
     rig.clock.advance(60)

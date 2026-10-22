@@ -21,10 +21,13 @@ Item rules (``ActivityItem``):
   answer never borrows the actor of another document; with no such document
   (refused at intake, never queued) the actor is ``actor_not_recorded``;
 - desk events are ``{sub: "trex-desk", ingress: "system"}``; a pause audit
-  line's ``<ingress>:<sub>`` actor is shown when it names a command ingress
-  (``family``, ``loopback``), and anything else (the terminal's own label,
-  the kill-file audit's fixed ``cockpit``, a drill's attester, whose ingress
-  is not recorded) is ``actor_not_recorded`` with the label in the summary.
+  line's ``<ingress>:<sub>`` actor is shown only when the line's ``command``
+  key names a stored command whose body-hash-bound actor is exactly that
+  label (``desk_cli pause --actor`` is free text, so a label alone proves
+  nothing), and anything else (the terminal's own label, an unproven
+  ingress label, the kill-file audit's fixed ``cockpit``, a drill's
+  attester, whose ingress is not recorded) is ``actor_not_recorded`` with
+  the label in the summary.
 
 Redaction: summaries are composed from fixed words plus whitelisted fields;
 free text a file carries (an owner's reason, a result detail, a terminal
@@ -77,6 +80,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.datastructures import QueryParams
 
+from tree_options.trex.contracts import wave3
 from tree_options.trex.contracts.acceptance import DRILL_IDS, DrillRecord
 from tree_options.trex.contracts.canonical import model_document
 from tree_options.trex.contracts.commands import (
@@ -116,8 +120,8 @@ __all__ = [
     "redact",
 ]
 
-ACCEPTANCE_DIR_ENV: Final = "TREX_ACCEPTANCE_DIR"
-ACCEPTANCE_DIR_DEFAULT: Final = "~/.local/state/trex/acceptance"
+ACCEPTANCE_DIR_ENV: Final = wave3.ACCEPTANCE_DIR_ENV
+ACCEPTANCE_DIR_DEFAULT: Final = wave3.ACCEPTANCE_DIR_DEFAULT
 #: ``automation._audit``'s file in the run dir (the kill-file verbs' audit)
 AUTOMATION_AUDIT_FILE: Final = "automation.jsonl"
 #: each log is read from its newest this-many bytes (the feed's horizon)
@@ -636,23 +640,36 @@ def _desk_events(run_dir: Path) -> _Source:
 # -- audit ----------------------------------------------------------------------------------
 
 
-def _audit_actor(label: Any) -> tuple[dict[str, str] | None, str]:
-    """(actor, words): a command ingress's ``<ingress>:<sub>`` is an actor;
-    any other label (the terminal's own) is shown, unverified, in words."""
+#: command key -> the actor its stored, body-hash-bound command proves
+#: (``_commands``); an audit line's label is believed only through it
+BoundActors = Mapping[str, Mapping[str, str]]
+
+
+def _audit_actor(label: Any, command: Any, bound: BoundActors) -> tuple[dict[str, str] | None, str]:
+    """(actor, words). A ``<ingress>:<sub>`` label is an actor only when the
+    line's ``command`` key names a stored command whose verified actor (bound
+    by the result's body hash, as command items are) is exactly that label:
+    ``desk_cli pause --actor`` is free text and must never pass as a Family
+    or loopback command (integration fix, review P2). Any other label is
+    shown, unverified, in words."""
     if not isinstance(label, str):
         return None, ""
     ingress, _, sub = label.partition(":")
-    if ingress in _INGRESS_WORDS and sub.strip() and not _CONTROL.search(sub):
-        return {"sub": sub.strip(), "ingress": ingress}, _INGRESS_WORDS[ingress]
     quoted = _quoted(label)
+    if ingress in _INGRESS_WORDS and sub.strip() and not _CONTROL.search(sub):
+        claimed = {"sub": sub.strip(), "ingress": ingress}
+        verified = bound.get(command) if isinstance(command, str) else None
+        if verified is not None and dict(verified) == claimed:
+            return claimed, _INGRESS_WORDS[ingress]
+        return None, f"with an unverified label ({quoted})"
     return None, f"at the terminal ({quoted})" if quoted else "at the terminal"
 
 
-def _pause_item(offset: int, line: Mapping[str, Any]) -> _Entry | None:
+def _pause_item(offset: int, line: Mapping[str, Any], bound: BoundActors) -> _Entry | None:
     event, at = line.get("event"), _instant(line.get("at"))
     if event not in ("entries_paused", "entries_resumed") or at is None:
         return None
-    actor, who = _audit_actor(line.get("actor"))
+    actor, who = _audit_actor(line.get("actor"), line.get("command"), bound)
     paused = event == "entries_paused"
     superseded = line.get("superseded_by_newer_stop") is True
     if superseded:
@@ -672,7 +689,7 @@ def _pause_item(offset: int, line: Mapping[str, Any]) -> _Entry | None:
     )
 
 
-def _automation_item(offset: int, line: Mapping[str, Any]) -> _Entry | None:
+def _automation_item(offset: int, line: Mapping[str, Any], bound: BoundActors) -> _Entry | None:
     at, action, subject = _instant(line.get("at")), line.get("action"), line.get("subject")
     if at is None or not isinstance(action, str) or not isinstance(subject, str):
         return None
@@ -689,13 +706,24 @@ def _automation_item(offset: int, line: Mapping[str, Any]) -> _Entry | None:
     return _entry("audit", local_id, at, kind=kind, summary=text, actor=None, refs=refs)
 
 
-_AUDITS: Final[tuple[tuple[str, Callable[[int, Mapping[str, Any]], _Entry | None]], ...]] = (
+_AuditBuilder = Callable[[int, Mapping[str, Any], BoundActors], _Entry | None]
+_AUDITS: Final[tuple[tuple[str, _AuditBuilder], ...]] = (
     (PAUSE_AUDIT_FILE, _pause_item),
     (AUTOMATION_AUDIT_FILE, _automation_item),
 )
 
 
-def _audits(run_dir: Path) -> _Source:
+def _bound_actors(commands: _Source) -> dict[str, Mapping[str, str]]:
+    """Every command item's verified actor, by its key."""
+    out: dict[str, Mapping[str, str]] = {}
+    for entry in commands.entries:
+        key, actor = entry.fields.get("command_key"), entry.fields.get("actor")
+        if isinstance(key, str) and isinstance(actor, Mapping):
+            out[key] = actor
+    return out
+
+
+def _audits(run_dir: Path, bound: BoundActors) -> _Source:
     source = _Source()
     for name, build in _AUDITS:
         try:
@@ -705,7 +733,7 @@ def _audits(run_dir: Path) -> _Source:
             continue
         for offset, raw in lines or ():
             line = _json_object(raw)
-            entry = None if line is None else build(offset, line)
+            entry = None if line is None else build(offset, line, bound)
             if entry is None:
                 source.fail()
                 continue
@@ -819,10 +847,11 @@ def activity_page(
 ) -> ActivityPage:
     """One page of ``trex-activity/1`` (see the module docstring)."""
     if run_dir.is_dir():
+        commands = _commands(run_dir)
         sources = {
-            "command": _commands(run_dir),
+            "command": commands,
             "desk_event": _desk_events(run_dir),
-            "audit": _audits(run_dir),
+            "audit": _audits(run_dir, _bound_actors(commands)),
         }
     else:
         sources = {name: _Source(reason=_UNREADABLE) for name in ("command", "desk_event", "audit")}
@@ -863,8 +892,9 @@ def activity_page(
 
 
 def default_acceptance_dir() -> Path:
-    """``TREX_ACCEPTANCE_DIR`` (default ``~/.local/state/trex/acceptance``)."""
-    return Path(os.environ.get(ACCEPTANCE_DIR_ENV, "") or ACCEPTANCE_DIR_DEFAULT).expanduser()
+    """``TREX_ACCEPTANCE_DIR`` (default ``~/.local/state/trex/acceptance``),
+    by the shared C3.7 resolver."""
+    return wave3.acceptance_dir_from_env(os.environ)
 
 
 def attach(

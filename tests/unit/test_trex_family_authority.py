@@ -737,6 +737,68 @@ def test_commands_route_refuses_a_bad_family_assertion(rig: Rig) -> None:
     )
 
 
+def test_create_app_defaults_to_the_dispatching_authority(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Integration wiring (WAVE3-CONTRACTS C3.1): with no authority passed,
+    create_app judges an x-family-actor request by the family verifier only
+    (never the loopback operator, never a fallback) and reads its config
+    from the process environment per request."""
+
+    def app_with_default_authority() -> Any:
+        return create_app(
+            state_dir=str(rig.root / "legacy"),
+            plans_dir=str(rig.root / "plans"),
+            discovery_dir=str(rig.root / "discovery"),
+            desk_state_dir=str(rig.root / "desk-state"),
+            desk_store_dir=str(rig.root / "desk-store"),
+            desk_run_dir=str(rig.run_dir),
+            supervised_dir=str(rig.root / "supervised"),
+            command_clock=rig.clock,
+        )
+
+    family = TestClient(
+        app_with_default_authority(), base_url=f"https://{HOST}", client=("127.0.0.1", 50000)
+    )
+
+    def post(tok: str) -> Any:
+        return family.post(
+            "/api/commands",
+            content=BODY,
+            headers={"origin": ORIGIN, "content-type": "application/json", "x-family-actor": tok},
+        )
+
+    unconfigured = post(TOKEN)
+    assert unconfigured.status_code == 403
+    assert unconfigured.json()["detail"] == "family_ingress_disabled"
+    for name, value in rig.env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("TREX_WORKSPACE_CONTROLS", "1")  # loopback on: still never a fallback
+    assert post("garbage").json()["detail"] == "assertion_malformed"
+    accepted = post(TOKEN)
+    assert accepted.status_code == 202, accepted.text
+    stored = json.loads((rig.run_dir / "commands" / f"{IDEMPOTENCY_KEY}.json").read_bytes())
+    assert (stored["issued_by"]["sub"], stored["issued_by"]["ingress"]) == (OWNER, "family")
+
+
+def test_the_server_never_trusts_forwarded_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Integration wiring (lane B): uvicorn runs with proxy_headers=False, so
+    X-Forwarded-For can never rewrite the transport peer the authorities read."""
+    import sys
+
+    import uvicorn
+
+    from tree_options.trex_web import __main__ as entry
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+    monkeypatch.setattr(entry, "create_app", lambda **kw: object())
+    monkeypatch.setattr(sys, "argv", ["trex_web", "--port", "18999"])
+    entry.main()
+    assert seen["proxy_headers"] is False
+    assert (seen["host"], seen["port"]) == ("127.0.0.1", 18999)
+
+
 # -- the v2 family mode of the shared fakes ----------------------------------------------------
 
 

@@ -10,11 +10,15 @@ Read-only and broker-free. It serves ``<TREX_ACCEPTANCE_DIR>/acceptance.json``
    counter or drill result cannot parse);
 3. it is not dated more than ``FUTURE_SKEW_S`` after the server's clock;
 4. ``verify_acceptance`` accepts it against the repo NYSE calendar (another
-   calendar, or a window that hides a trailing session, refuses).
+   calendar, or a window that hides a trailing session, refuses);
+5. when ``TREX_OWNER_EMAILS`` is configured, the document's ``owners`` are
+   exactly that list (Wave 3/4 integration, review P2: otherwise "attested
+   by an owner" was judged against a list the document chose itself).
 
 Anything else is ``unavailable`` with the contract's reason
 (``acceptance_missing``, ``acceptance_invalid``,
-``acceptance_calendar_mismatch``, ``acceptance_window_mismatch``) and no
+``acceptance_calendar_mismatch``, ``acceptance_window_mismatch``,
+``acceptance_owners_mismatch``) and no
 document: never a partial or zero figure. ``live_authorized`` is the literal
 ``false`` in the view and in every document: acceptance never unlocks live
 trading. The directory resolves per request (default: ``TREX_ACCEPTANCE_DIR``).
@@ -30,7 +34,7 @@ from __future__ import annotations
 
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
@@ -48,7 +52,12 @@ from tree_options.trex.contracts.acceptance import (
     verify_acceptance,
 )
 from tree_options.trex.contracts.canonical import model_document
-from tree_options.trex.contracts.wave3 import ACCEPTANCE_PATH, AcceptanceDir, Wave3Reason
+from tree_options.trex.contracts.wave3 import (
+    ACCEPTANCE_PATH,
+    AcceptanceDir,
+    Wave3Reason,
+    acceptance_owners_problem,
+)
 
 __all__ = [
     "FUTURE_SKEW_S",
@@ -103,7 +112,9 @@ def _read_document(path: Path) -> bytes:
         os.close(fd)
 
 
-def _verified(path: Path, now: datetime, calendar: SessionCalendar) -> AcceptanceDocument:
+def _verified(
+    path: Path, now: datetime, calendar: SessionCalendar, env: Mapping[str, str]
+) -> AcceptanceDocument:
     raw = _read_document(path)
     try:
         document = AcceptanceDocument.model_validate_json(raw)
@@ -118,16 +129,29 @@ def _verified(path: Path, now: datetime, calendar: SessionCalendar) -> Acceptanc
         if reason in _VERIFY_REASONS:
             raise _Unavailable(Wave3Reason(reason)) from None
         raise _Unavailable(Wave3Reason.ACCEPTANCE_INVALID) from None
+    owners = acceptance_owners_problem(document.owners, env)
+    if owners is not None:
+        raise _Unavailable(owners)
     return document
 
 
 def acceptance_view(
-    acceptance_dir: Path, now: datetime, calendar: SessionCalendar
+    acceptance_dir: Path,
+    now: datetime,
+    calendar: SessionCalendar,
+    env: Mapping[str, str] | None = None,
 ) -> AcceptanceView:
     """The view of the document under ``acceptance_dir`` at ``now`` (pure
-    read: never writes, never creates the directory)."""
+    read: never writes, never creates the directory). ``env`` (default: the
+    process environment) supplies ``TREX_OWNER_EMAILS``: when set, a document
+    naming other owners is ``acceptance_owners_mismatch``."""
     try:
-        document = _verified(AcceptanceDir(acceptance_dir).document(), now, calendar)
+        document = _verified(
+            AcceptanceDir(acceptance_dir).document(),
+            now,
+            calendar,
+            os.environ if env is None else env,
+        )
     except _Unavailable as refused:
         return AcceptanceView(
             now=now,
@@ -149,7 +173,7 @@ def acceptance_payload(
 
 
 def _env_dir() -> Path:
-    from tree_options.trex.acceptance import acceptance_dir_from_env
+    from tree_options.trex.contracts.wave3 import acceptance_dir_from_env
 
     return acceptance_dir_from_env(os.environ)
 

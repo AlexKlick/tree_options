@@ -31,12 +31,17 @@ def main() -> None:
     # Single worker: the lane is broker-free and small. ``reload=False`` is
     # intentional — the service is owned by systemd, hot-reload is a foot-gun
     # in this layout (the monitor and the web service both touch state files).
+    # ``proxy_headers=False`` (Wave 3 C3.1): uvicorn otherwise trusts
+    # X-Forwarded-For from loopback and rewrites ``request.client``, which the
+    # command authorities read as the transport peer (``peer_host``); one
+    # forwarding hop would then turn every family command into ``wrong_peer``.
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
         log_level="info",
         access_log=True,
+        proxy_headers=False,
     )
 
 

@@ -179,6 +179,34 @@ def test_the_directory_resolves_per_request_from_the_environment(tmp_path, monke
     assert app.get(ACCEPTANCE_PATH).json() == expected
 
 
+@pytest.mark.parametrize(
+    ("configured", "served"),
+    [
+        ("owner@example.com", "ok"),
+        (" Owner@Example.com ,", "ok"),  # the contract's own parser: trimmed, lower-cased
+        ("", "ok"),  # nothing configured: nothing to compare with
+        ("mallory@example.net", "acceptance_owners_mismatch"),
+        ("owner@example.com,second@example.com", "acceptance_owners_mismatch"),
+        ("not an email", "acceptance_owners_mismatch"),
+    ],
+)
+def test_a_document_naming_other_owners_than_configured_is_refused(
+    tmp_path, monkeypatch, configured: str, served: str
+) -> None:
+    """Integration fix (review P2): a document that chose its own owner list
+    (drills attested by them) is never served as this desk's acceptance."""
+    expected = fixture()
+    assert expected["document"]["owners"] == ["owner@example.com"]
+    write_doc(tmp_path, expected["document"])
+    if configured:
+        monkeypatch.setenv("TREX_OWNER_EMAILS", configured)
+    got = client(tmp_path, expected["now"]).get(ACCEPTANCE_PATH).json()
+    if served == "ok":
+        assert got == expected
+    else:
+        assert got == unavailable(expected["now"], served)
+
+
 def test_payload_is_pure_and_utc(tmp_path) -> None:
     expected = fixture()
     write_doc(tmp_path, expected["document"])

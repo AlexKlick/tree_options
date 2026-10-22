@@ -23,6 +23,7 @@ itself always answers.
 | ``positions`` | the ``GET /api/portfolio`` reader (Wave 2 books) | ``holdings_*``, ``risk_snapshot_*`` |
 | ``acceptance`` | ``<TREX_ACCEPTANCE_DIR>/acceptance.json``, verified against the calendar | ``acceptance_*``, ``calendar_unreadable`` |
 | ``next_events`` | the calendar, pending approvals, the desk's open positions (``book.json`` + ``specs/``), host timers (an injected reader) | ``calendar_unreadable``, ``schedule_unavailable`` |
+| ``blockers`` only (Wave 3/4 integration) | ``<run dir>/profile.json`` read by the desk's own ``load_profile``; the injected family ingress status | ``profile_absent``, ``profile_invalid``, ``profile_limits_missing``; ``family_commands_disabled`` |
 
 Details worth knowing:
 
@@ -95,6 +96,8 @@ from tree_options.trex.contracts.layout import FLATTEN, HALT, PAUSE_ENTRIES, Wav
 from tree_options.trex.contracts.proposals import EntryProposal
 from tree_options.trex.contracts.vocabulary import Blocker
 from tree_options.trex.contracts.wave3 import (
+    ACCEPTANCE_DIR_DEFAULT,
+    ACCEPTANCE_DIR_ENV,
     CONTROL_LABELS,
     TODAY_PATH,
     AcceptanceDir,
@@ -116,6 +119,8 @@ from tree_options.trex.contracts.wave3 import (
     SessionState,
     TodayView,
     Wave3Reason,
+    acceptance_dir_from_env,
+    acceptance_owners_problem,
 )
 from tree_options.trex.desk_backup import SCHEDULED_AT as BACKUP_AT_ET
 from tree_options.trex.desk_runtime import DEFAULT_ENTRY_WINDOW
@@ -123,6 +128,7 @@ from tree_options.trex.desk_spec import load_spec
 from tree_options.trex.engine import EngineConfig
 from tree_options.trex.equity_exits import FORCED_EXIT_CLOSE_BUFFER_S
 from tree_options.trex.exit_watch import EXPOSED, HEARTBEAT_STALE_S
+from tree_options.trex_web.acceptance_view import FUTURE_SKEW_S as ACCEPTANCE_FUTURE_SKEW_S
 from tree_options.trex_web.command_store import (
     MAX_PENDING_SCAN,
     CommandStore,
@@ -149,9 +155,9 @@ __all__ = [
 
 log = logging.getLogger("trex_web.today")
 
-#: ``TREX_ACCEPTANCE_DIR`` (C3.7), read per request when no dir is pinned.
-ACCEPTANCE_DIR_ENV: Final = "TREX_ACCEPTANCE_DIR"
-DEFAULT_ACCEPTANCE_DIR: Final = Path("~/.local/state/trex/acceptance")
+#: ``TREX_ACCEPTANCE_DIR`` (C3.7, ``ACCEPTANCE_DIR_ENV``), read per request
+#: when no dir is pinned (the shared resolver, ``wave3.acceptance_dir_from_env``).
+DEFAULT_ACCEPTANCE_DIR: Final = Path(ACCEPTANCE_DIR_DEFAULT)
 #: The kernel's table of held file locks (read, never written).
 PROC_LOCKS: Final = Path("/proc/locks")
 #: ``DeskPaths.lock()``, ``.book()``, ``.specs()`` and the owner file, by name.
@@ -159,6 +165,8 @@ RUNTIME_LOCK: Final = "runtime.lock"
 BOOK: Final = "book.json"
 OWNER_FILE: Final = "owner.json"
 SPECS: Final = "specs"
+#: ``SupervisedDesk.profile_path()``: the operator's capital profile, by name.
+PROFILE_FILE: Final = "profile.json"
 #: No state file the page reads is anywhere near this; a bigger one is not ours.
 MAX_STATE_BYTES: Final = 1024 * 1024
 MAX_ACCEPTANCE_BYTES: Final = 32 * 1024 * 1024
@@ -187,6 +195,9 @@ LockProbe = Callable[[Path], bool]
 TimerReader = Callable[[], Sequence[ScheduledEvent]]
 CalendarSource = Callable[[], SessionCalendar]
 PathSource = Callable[[], Path]
+#: Why family command ingress is disabled (empty: enabled); the coordinator
+#: wires ``family_authority.family_ingress_status().problems``.
+FamilyIngress = Callable[[], Sequence[str]]
 
 
 class LockStateUnknown(RuntimeError):
@@ -401,6 +412,36 @@ def _owner_epoch(run_dir: Path) -> str | None:
     except (OSError, ValueError):
         return None
     return epoch if isinstance(epoch, str) and epoch.strip() else None
+
+
+def _profile_problem(run_dir: Path) -> Blocker | None:
+    """Why the desk would refuse every entry for its capital profile, read
+    exactly as the desk reads it (``supervised_desk.load_profile`` on
+    ``<run dir>/profile.json``): ``profile_absent``, ``profile_invalid`` or
+    ``profile_limits_missing`` (``CapitalProfile.complete_for_review``);
+    None when it is usable. Wave 3/4 integration: onboarding reads these
+    blockers (an unreadable run dir is unknown, so it names nothing)."""
+    from tree_options.trex.supervised_desk import load_profile  # lazy: a heavy module
+
+    path = run_dir / PROFILE_FILE
+    try:
+        profile, _digest = load_profile(path)
+    except FileNotFoundError:
+        return Blocker.PROFILE_ABSENT
+    except (NotADirectoryError, PermissionError):
+        return None
+    except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
+        return Blocker.PROFILE_INVALID
+    if not profile.complete_for_review:
+        return Blocker.PROFILE_LIMITS_MISSING
+    return None
+
+
+def _family_problems(source: FamilyIngress | None) -> tuple[str, ...] | None:
+    """Why family commands are refused (empty: enabled); None: not wired."""
+    if source is None:
+        return None
+    return tuple(source())
 
 
 # -- gateway -----------------------------------------------------------------------------
@@ -799,8 +840,11 @@ def _acceptance_unavailable(reason: Reason) -> AcceptanceSummary:
     )
 
 
-def _acceptance(directory: Path, cal: SessionCalendar | None) -> AcceptanceSummary:
-    """The C3.4 summary of a document verified against the repo calendar."""
+def _acceptance(directory: Path, cal: SessionCalendar | None, now: datetime) -> AcceptanceSummary:
+    """The C3.4 summary of a document verified against the repo calendar,
+    with ``GET /api/acceptance``'s two further checks (Wave 3/4 integration):
+    never dated more than ``ACCEPTANCE_FUTURE_SKEW_S`` after ``now``, and
+    naming exactly the configured ``TREX_OWNER_EMAILS`` when set."""
     try:
         raw = _read_bytes(AcceptanceDir(directory).document(), MAX_ACCEPTANCE_BYTES)
     except FileNotFoundError:
@@ -811,6 +855,11 @@ def _acceptance(directory: Path, cal: SessionCalendar | None) -> AcceptanceSumma
         document = AcceptanceDocument.model_validate_json(raw)
     except ValueError:  # pydantic's ValidationError included
         return _acceptance_unavailable(Wave3Reason.ACCEPTANCE_INVALID)
+    if document.computed_at > shift_instant(now, ACCEPTANCE_FUTURE_SKEW_S):
+        return _acceptance_unavailable(Wave3Reason.ACCEPTANCE_INVALID)
+    owners = acceptance_owners_problem(document.owners, os.environ)
+    if owners is not None:
+        return _acceptance_unavailable(owners)
     if cal is None:
         return _acceptance_unavailable(Wave3Reason.CALENDAR_UNREADABLE)
     try:
@@ -1033,6 +1082,17 @@ _GATEWAY_BLOCKERS: Final[Mapping[str, tuple[Reason, Severity, str, str]]] = {
     ),
     "starting": (Wave3Reason.GATEWAY_STARTING, "info", "IB Gateway is starting.", ""),
 }
+_PROFILE_STEP = (
+    "Install the capital profile (profile.json in the desk run directory) "
+    "with all three loss limits."
+)
+_PROFILE_WORDS: Final[Mapping[Blocker, str]] = {
+    Blocker.PROFILE_ABSENT: "No capital profile is installed: the desk refuses every new entry.",
+    Blocker.PROFILE_INVALID: "The capital profile cannot be read: the desk refuses every new entry.",
+    Blocker.PROFILE_LIMITS_MISSING: (
+        "The capital profile has no complete loss limits: new entries are refused at review."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -1048,6 +1108,25 @@ class _Page:
     portfolio: Mapping[str, Any] | None
     acceptance: AcceptanceSummary
     next_events: NextEvents
+    #: Wave 3/4 integration: the capital profile's problem (None: usable or unknown)
+    profile: Blocker | None = None
+    #: why family commands are refused (empty: enabled; None: not wired)
+    family: tuple[str, ...] | None = None
+
+
+def _exit_state_words(page: _Page) -> str:
+    """Whether exits run NOW, never a promise (review P2): the pause never
+    stops exits, but HALT does, and so does a desk owner that is not healthy."""
+    if page.controls.halt.status == "standing":
+        return f"Exits are NOT running: {CONTROL_LABELS['halt']} is on."
+    owner = page.desk_owner
+    if owner.status == "unavailable":
+        return "Whether exits are running is unknown: the desk owner's state cannot be read."
+    if owner.status != "healthy":
+        return "Exits are NOT running: the desk owner is not healthy."
+    if page.controls.halt.status == "unavailable":
+        return "Whether exits are running is unknown: the emergency stop cannot be read."
+    return "Pausing never stops exits; they keep running."
 
 
 def _blockers(page: _Page) -> tuple[HumanBlocker, ...]:
@@ -1161,7 +1240,7 @@ def _blockers(page: _Page) -> tuple[HumanBlocker, ...]:
             Blocker.ENTRIES_PAUSED,
             "entries",
             "info",
-            "New entries are paused. Exits keep running.",
+            f"New entries are paused. {_exit_state_words(page)}",
             f'Use "{CONTROL_LABELS["resume_entries"]}" to allow entries again.',
         )
     kills = (controls.pause_entries, controls.halt, controls.flatten)
@@ -1293,6 +1372,18 @@ def _blockers(page: _Page) -> tuple[HumanBlocker, ...]:
             "info",
             "Upcoming events cannot be listed.",
         )
+    if page.profile is not None:
+        add(page.profile, "entries", "warning", _PROFILE_WORDS[page.profile], _PROFILE_STEP)
+    if page.family:
+        add(
+            Wave3Reason.FAMILY_COMMANDS_DISABLED,
+            "commands",
+            "info",
+            "Commands from Family Apps (the phone) are turned off "
+            f"({', '.join(page.family)[:200]}). Commands on this host still work.",
+            "Install the TREX family command key and set TREX_OWNER_EMAILS and "
+            "TREX_FAMILY_ORIGINS (WAVE3-CONTRACTS.md C3.1).",
+        )
 
     unique: dict[str, HumanBlocker] = {}
     for one in out:
@@ -1321,8 +1412,13 @@ def today_view(
     calendar: CalendarSource = session_calendar,
     lock_probe: LockProbe = proc_locks_probe,
     timers: TimerReader | None = None,
+    family_ingress: FamilyIngress | None = None,
 ) -> TodayView:
-    """The ``trex-today/1`` page at ``now`` (see the module docstring)."""
+    """The ``trex-today/1`` page at ``now`` (see the module docstring).
+
+    ``family_ingress`` (Wave 3/4 integration) returns why family commands are
+    refused (empty: enabled); a non-empty answer is the
+    ``family_commands_disabled`` blocker, None means not wired (no claim)."""
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     cal = _calendar(calendar)
@@ -1401,7 +1497,7 @@ def today_view(
     )
     acceptance = _guard(
         "acceptance",
-        lambda: _acceptance(acceptance_dir, cal),
+        lambda: _acceptance(acceptance_dir, cal, now),
         lambda: _acceptance_unavailable(Wave3Reason.ACCEPTANCE_INVALID),
     )
     next_events = _guard(
@@ -1421,6 +1517,12 @@ def today_view(
         portfolio=portfolio,
         acceptance=acceptance,
         next_events=next_events,
+        profile=_guard("profile", lambda: _profile_problem(run_dir), lambda: None),
+        family=_guard(
+            "family_ingress",
+            lambda: _family_problems(family_ingress),
+            lambda: ("family_ingress_status_unreadable",),
+        ),
     )
     return TodayView(
         now=now,
@@ -1452,11 +1554,13 @@ def attach(
     calendar: CalendarSource | None = None,
     lock_probe: LockProbe | None = None,
     timers: TimerReader | None = None,
+    family_ingress: FamilyIngress | None = None,
 ) -> None:
     """Mount ``GET /api/today``. Every path resolves per request; the
     defaults read ``TREX_GATEWAY_STATE`` and ``TREX_ACCEPTANCE_DIR`` (else
     their C3.7 / gateway-watch defaults), the repo calendar and
-    ``/proc/locks``; no timer reader unless one is given."""
+    ``/proc/locks``; no timer reader and no family ingress status unless
+    one is given (``app.py`` wires ``family_ingress_status``)."""
 
     def gateway_path() -> Path:
         if gateway_state is not None:
@@ -1466,7 +1570,7 @@ def attach(
     def acceptance_path() -> Path:
         if acceptance_dir is not None:
             return acceptance_dir()
-        return _env_path(ACCEPTANCE_DIR_ENV, DEFAULT_ACCEPTANCE_DIR)
+        return acceptance_dir_from_env(os.environ)
 
     @app.get(TODAY_PATH)
     def get_today() -> JSONResponse:
@@ -1479,5 +1583,6 @@ def attach(
             calendar=calendar if calendar is not None else session_calendar,
             lock_probe=lock_probe if lock_probe is not None else proc_locks_probe,
             timers=timers,
+            family_ingress=family_ingress,
         )
         return JSONResponse(model_document(view), headers=NO_STORE)

@@ -431,8 +431,11 @@ def create_app(
     ``desk_run_dir`` / ``supervised_dir`` pin the supervised desk's run dir
     and authority dir (default: ``TREX_DESK_RUN_DIR`` / ``TREX_SUPERVISED_DIR``
     read per request). ``command_authority`` verifies every mutating desk
-    request (default: ``LoopbackCommandAuthority``; the family-signed one
-    plugs in here). ``command_clock`` is the commands' and books' clock.
+    request (default: ``family_authority.dispatching_authority``, C3.1: the
+    family verifier for ``x-family-actor`` requests, with no fallback, else
+    the Wave 2 ``LoopbackCommandAuthority``). ``command_clock`` is the
+    commands' and books' clock (None: wall clock; the read views then use
+    ``now_et``).
     """
     state_root = _resolve_state_root(state_dir)
     plans_root = _resolve_plans_root(plans_dir)
@@ -491,10 +494,17 @@ def create_app(
 
     from tree_options.trex.desk_runtime import DeskPaths
     from tree_options.trex.supervised import SupervisedPaths
-    from tree_options.trex_web.commands_view import LoopbackCommandAuthority
+    from tree_options.trex_web.acceptance_view import attach as attach_acceptance
+    from tree_options.trex_web.activity_view import attach as attach_activity
     from tree_options.trex_web.commands_view import attach as attach_commands
     from tree_options.trex_web.desk_view import attach as attach_desk_evidence
+    from tree_options.trex_web.family_authority import (
+        dispatching_authority,
+        family_ingress_status,
+    )
+    from tree_options.trex_web.pilot_view import attach as attach_pilot
     from tree_options.trex_web.portfolio_view import attach as attach_portfolio
+    from tree_options.trex_web.today_view import attach as attach_today
 
     run_dir_pin = Path(desk_run_dir).expanduser() if desk_run_dir else None
     supervised_pin = Path(supervised_dir).expanduser() if supervised_dir else None
@@ -505,7 +515,14 @@ def create_app(
     def resolve_supervised_dir() -> Path:
         return supervised_pin if supervised_pin is not None else SupervisedPaths.default().root
 
-    authority = command_authority if command_authority is not None else LoopbackCommandAuthority()
+    # C3.1 dispatch (Wave 3 lane B): a request carrying x-family-actor is judged
+    # by the family verifier ONLY (no fallback); every other request by the
+    # Wave 2 LoopbackCommandAuthority. Missing family config fails closed.
+    authority = (
+        command_authority
+        if command_authority is not None
+        else dispatching_authority(run_dir=resolve_run_dir, clock=command_clock)
+    )
     clock = command_clock if command_clock is not None else now_et
     attach_commands(
         app,
@@ -515,6 +532,19 @@ def create_app(
         clock=clock,
     )
     attach_portfolio(app, run_dir=resolve_run_dir, clock=clock)
+    # Waves 3 and 4 read views (read-only; directories resolve per request:
+    # TREX_ACCEPTANCE_DIR and TREX_PILOT_DIR by the shared C3.7 resolvers).
+    attach_today(
+        app,
+        run_dir=resolve_run_dir,
+        supervised_dir=resolve_supervised_dir,
+        clock=clock,
+        gateway_state=lambda: gateway_state_path,
+        family_ingress=lambda: family_ingress_status().problems,
+    )
+    attach_activity(app, run_dir=resolve_run_dir, clock=clock)
+    attach_acceptance(app, clock=clock)
+    attach_pilot(app, clock=clock)
 
     attach_desk_evidence(
         app,
