@@ -1013,21 +1013,16 @@ class OwnerEntries:
 
     def _retire_pending(self, proposal: EntryProposal, now: datetime) -> str | None:
         """Retire the unconsumed per-trade mandate of this proposal (if any)
-        under the supervised state lock; its approval id."""
-        path = self.sup.entry_mandate(proposal.effect.intent_id)
-        if not path.exists():
-            return None
-        # lane E's lock and retirement record (supervised.py exposes no public
-        # retire yet; WAVE2b integration note)
-        with supervised_core._locked(self.sup):
-            try:
-                mandate = SupervisedMandateV2.model_validate_json(_read_bounded(path))
-            except (OSError, ValidationError, ValueError):
-                return None
-            if mandate.proposal_id != proposal.proposal_id:
-                return None
-            supervised_core._retire_entry_mandate(self.sup, mandate, now=now, reason="rejected")
-        return mandate.approval_id
+        through the supervised core's public retirement (its state lock and
+        retirement record); its approval id."""
+        retired = supervised_core.retire_entry_mandate(
+            self.sup,
+            proposal.effect.intent_id,
+            now=now,
+            reason="rejected",
+            proposal_id=proposal.proposal_id,
+        )
+        return None if retired is None else retired.approval_id
 
     # -- recovery ------------------------------------------------------------------------
 

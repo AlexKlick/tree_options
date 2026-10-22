@@ -457,6 +457,66 @@ def test_restart_invalidates_pending_approvals(paths):
     assert invalidate_entry_mandates(paths, now=T_GRANT, owner_epoch="owner-restarted-9") == []
 
 
+def test_retire_entry_mandate_is_the_public_retirement(paths):
+    """W2c item 6: ``retire_entry_mandate`` moves one unconsumed per-trade
+    mandate out of the way under the state lock (the retirement record
+    names the reason) and returns it; a mandate of another proposal, an
+    absent one and a consumed one are left alone (None)."""
+    from tree_options.trex.supervised import retire_entry_mandate
+
+    proposal = entry_proposal()
+    granted = _grant(paths, proposal)
+    layout = _layout(paths)
+    assert (
+        retire_entry_mandate(paths, "eq-spy-001", now=T_GRANT, reason="x", proposal_id="0" * 64)
+        is None
+    )
+    assert layout.mandate("eq-spy-001").exists(), "another proposal's approval stays"
+    retired = retire_entry_mandate(
+        paths, "eq-spy-001", now=T_GRANT, reason="rejected", proposal_id=proposal.proposal_id
+    )
+    assert retired == granted
+    assert not layout.mandate("eq-spy-001").exists()
+    assert paths.entry_mandate_retired("eq-spy-001", granted.approval_id).exists()
+    record = paths.entry_mandate_retirements().read_text().splitlines()[-1]
+    assert '"reason": "rejected"' in record or '"reason":"rejected"' in record
+    assert retire_entry_mandate(paths, "eq-spy-001", now=T_GRANT, reason="again") is None
+    with pytest.raises(SupervisedRefused) as caught:
+        _permit(paths)
+    assert caught.value.reason == "mandate_absent", "a retired approval can never mint"
+    # a consumed mandate is history, never retired
+    other = entry_proposal(equity_effect(intent_id="eq-spy-004"))
+    _grant(
+        paths, other, approve_command(other, idempotency_key="1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f")
+    )
+    _permit(paths, equity_effect(intent_id="eq-spy-004"))
+    assert retire_entry_mandate(paths, "eq-spy-004", now=T_GRANT, reason="late") is None
+    assert layout.mandate_consumed("eq-spy-004").exists()
+    with pytest.raises(SupervisedRefused) as unsafe:
+        retire_entry_mandate(paths, "../escape", now=T_GRANT, reason="x")
+    assert unsafe.value.reason == "intent_id_not_path_safe"
+
+
+def test_the_owner_flows_use_no_private_supervised_helpers():
+    """W2c item 6: the reject flow retires through the public function, not
+    the supervised core's private lock and retirement."""
+    import ast
+    from pathlib import Path
+
+    import tree_options.trex.desk_entries as desk_entries
+
+    tree = ast.parse(Path(desk_entries.__file__).read_text())
+    private = sorted(
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "supervised_core"
+        and node.attr.startswith("_")
+    )
+    assert private == []
+
+
 # ------------------------------------------------------------------- send
 
 
