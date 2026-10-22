@@ -23,6 +23,12 @@ Environment=UV_NO_SYNC=1
 # switches included (coordinator ruling 2026-10-21). It must exist before the
 # web unit starts; creating it here is idempotent.
 ExecStartPre=/usr/bin/mkdir -p %h/.local/state/trex/desk-paper/commands
+# The queued kill switches (HALT / FLATTEN / PAUSE / resume / backup) are file
+# operations: applied here on every start attempt, so they never wait for the
+# gateway (an outage keeps the owner in the wait below). No broker contact;
+# entry commands stay queued for the owner. A failure here never blocks the
+# start ('-'); the owner applies them again before it connects.
+ExecStartPre=-/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.supervised_desk apply-commands
 # Start the moment the gateway API answers (real IB handshake) instead of
 # crash-looping against a logged-out gateway.
 ExecStartPre=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.gateway_watch --wait-api 300

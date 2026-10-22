@@ -1338,3 +1338,131 @@ def test_the_desk_refreshes_its_status_files_after_a_reconnect(rig):
     rig.runtime.connect_hooks[:] = [rig.desk.books.request_refresh]
     rig.runtime.tick()
     assert calls == ["refresh"]
+
+
+# ------------- W2b review P1: kill switches the web accepted survive an outage
+
+
+def test_a_lost_gateway_applies_the_queued_kill_switches_before_exit_6(rig, monkeypatch):
+    halt = _queue(rig, "halt", {"reason": "gateway down"})
+    rig.gw.is_connected = False
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=1) == EXIT_DISCONNECTED
+    answer = _answer(rig, halt)
+    assert (answer["status"], answer["result"]["answered_by"]) == ("applied", "trex-desk")
+    assert rig.paths.halt().exists()
+    # a drop that surfaces mid-iteration, before the commands stage
+    rig.gw.is_connected = True
+    flatten = _queue(rig, "flatten", {"reason": "dropped mid-iteration"})
+
+    def lost(*_: Any, **__: Any) -> None:
+        raise ConnectionError(SECRET)
+
+    monkeypatch.setattr(rig.desk.books, "step", lost)
+    assert run_loop(rig.desk, interval_s=0, stop=lambda: False, max_ticks=1) == EXIT_DISCONNECTED
+    assert _answer(rig, flatten)["status"] == "applied"
+    assert rig.paths.flatten().exists()
+    assert [e["stage"] for e in _events(rig, "gateway_lost")] == ["loop", "books"]
+
+
+def test_start_applies_queued_kill_switches_before_the_first_tick(rig):
+    flatten = _queue(rig, "flatten", {"reason": "queued while no owner ran"})
+    rig.clock.now = shift_instant(rig.clock.now, 600)  # far past its 120 s TTL
+    rig.desk.start()
+    answer = _answer(rig, flatten)
+    assert (answer["status"], answer["result"]["applied_after_expiry"]) == ("applied", True)
+    assert rig.paths.flatten().exists()
+
+
+def _queue_wall(root: Path, kind: str, args: dict[str, Any], *, ago_s: int, ttl_s: int) -> str:
+    """A command the web accepted ``ago_s`` seconds ago by the WALL clock
+    (main() reads the wall clock)."""
+    import uuid
+    from datetime import UTC
+
+    from tests.unit.trex_fakes import FakeCommandAuthority
+    from tree_options.trex.contracts import model_document, parse_command
+    from tree_options.trex_web.command_store import CommandStore
+
+    issued = shift_instant(datetime.now(UTC), -ago_s)
+    doc = {
+        "schema": "trex-command/1",
+        "idempotency_key": str(uuid.uuid4()),
+        "kind": kind,
+        "args": args,
+        "issued_at": issued.isoformat(),
+        "expires_at": shift_instant(issued, ttl_s).isoformat(),
+    }
+    auth = FakeCommandAuthority(clock=lambda: issued)
+    actor = auth.verify(auth.make_request(json.dumps(doc).encode()))
+    command = parse_command({**doc, "issued_by": model_document(actor)})
+    assert CommandStore(root).submit(command, now=issued).result.status == "accepted"
+    return command.idempotency_key
+
+
+def _desk_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DeskPaths:
+    for var, sub in (
+        ("TREX_DESK_RUN_DIR", "desk"),
+        ("TREX_SUPERVISED_DIR", "supervised"),
+        ("TREX_ACCOUNT_OWNERS", "owners"),
+    ):
+        monkeypatch.setenv(var, str(tmp_path / sub))
+    monkeypatch.delenv("TREX_IBKR_ACCOUNT_ALIAS", raising=False)
+    paths = DeskPaths.default()
+    assert paths.root == tmp_path / "desk", "never the live owner's run dir"
+    return paths
+
+
+class _RefusedSession(IbkrTrex):
+    """The gateway is still down: ``connect`` is refused."""
+
+    def connect(self) -> None:
+        raise ConnectionRefusedError(111, SECRET)
+
+
+def test_main_applies_queued_kill_switches_before_it_connects(tmp_path, monkeypatch):
+    """main() used to return 6 on a failed connect before anything consumed
+    the queue, so a HALT accepted during the outage outlived its TTL there
+    and was then refused. The kill switches are file operations: they are
+    applied before the connect; an entry kind waits for a live session."""
+    from tree_options.trex import supervised_desk
+
+    paths = _desk_env(tmp_path, monkeypatch)
+    halt = _queue_wall(paths.root, "halt", {"reason": "outage"}, ago_s=400, ttl_s=300)
+    compose = _queue_wall(
+        paths.root,
+        "compose_entry",
+        {"program_id": "desk-miner", "candidate_id": "dv1", "asset_kind": "option"},
+        ago_s=5,
+        ttl_s=300,
+    )
+    monkeypatch.setattr(supervised_desk, "IbkrTrex", _RefusedSession)
+    assert supervised_desk.main(["run", "--no-spots", "--interval", "0"]) == EXIT_DISCONNECTED
+    answer = json.loads((paths.root / "commands" / f"{halt}.result.json").read_text())
+    assert answer["status"] == "applied", answer
+    assert answer["result"]["applied_after_expiry"] is True
+    assert paths.halt().exists()
+    assert (paths.root / "commands" / f"{compose}.json").exists(), "left for a live session"
+    assert _lock_free(paths.lock())
+    assert SECRET not in paths.events().read_text()
+
+
+def test_the_apply_commands_cli_takes_the_kill_switches_while_no_owner_runs(
+    tmp_path, monkeypatch, capsys
+):
+    from tree_options.trex import supervised_desk
+    from tree_options.trex.pause import is_paused
+
+    paths = _desk_env(tmp_path, monkeypatch)
+    pause = _queue_wall(paths.root, "pause_entries", {"reason": "outage"}, ago_s=10, ttl_s=300)
+    result = paths.root / "commands" / f"{pause}.result.json"
+    with open(paths.lock(), "a+b") as owner:  # a live owner holds the run dir
+        fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert supervised_desk.main(["apply-commands"]) == 0
+        assert json.loads(result.read_text())["status"] == "accepted", "the owner's job"
+        assert json.loads(capsys.readouterr().out)["skipped"] == "run_dir_locked"
+    assert supervised_desk.main(["apply-commands"]) == 0
+    assert json.loads(result.read_text())["status"] == "applied"
+    assert is_paused(paths.root)
+    report = json.loads(capsys.readouterr().out)
+    assert report["answered"] == [{"command": pause, "kind": "pause_entries", "status": "applied"}]
+    assert _lock_free(paths.lock())

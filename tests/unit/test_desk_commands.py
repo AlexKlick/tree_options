@@ -18,6 +18,7 @@ import pytest
 
 from tests.unit.trex_fakes import FakeCommandAuthority, SessionClock
 from tree_options.time.sessions import shift_instant
+from tree_options.trex import desk_commands
 from tree_options.trex.contracts import (
     AnyCommand,
     CommandResult,
@@ -163,12 +164,125 @@ def test_the_web_reads_the_desk_answer_and_a_retry_is_a_duplicate(rig):
     assert retry.result.result["first_status"] == "applied"
 
 
-def test_an_expired_command_is_refused_and_nothing_is_applied(rig):
-    rig.submit("halt", {"reason": ""}, ttl_s=30)
+_COMPOSE = {"program_id": "p", "candidate_id": "c", "asset_kind": "equity"}
+
+
+@pytest.mark.parametrize(
+    ("kind", "args"),
+    [
+        ("resume_all", {"reason": ""}),
+        ("resume_entries", {"reason": ""}),
+        ("backup_state", {"label": "eod"}),
+        ("compose_entry", _COMPOSE),
+        ("approve_entry", None),
+        ("reject_entry", {"proposal_id": "a" * 64}),
+    ],
+)
+def test_an_expired_command_is_refused_and_nothing_is_applied(rig, kind, args):
+    """Only the safety direction outlives its window: a stale resume never
+    lifts a newer stop, and a stale entry never trades."""
+    rig.submit(kind, _approve_args() if args is None else args, ttl_s=30)
     rig.clock.advance(30)
     (answer,) = rig.queue.process()
     assert (answer.status, answer.reason) == ("refused", "command_expired")
+    assert rig.flows.calls == []
+    assert not any((rig.root / f).exists() for f in ("HALT", "FLATTEN", BACKUP_REQUEST))
+
+
+@pytest.mark.parametrize("kind", ["halt", "flatten", "pause_entries"])
+def test_an_accepted_safety_command_is_applied_after_its_expiry(rig, kind):
+    """W2b review P1: the web answered 202 accepted, then the owner could not
+    consume the command inside its TTL (gateway outage, restart wait). A
+    HALT, FLATTEN or PAUSE the web accepted is never dropped as expired."""
+    key = rig.submit(kind, {"reason": "gateway down"}, ttl_s=300)
+    accepted_at = rig.result(key).at
+    rig.clock.advance(301)
+    (answer,) = rig.queue.process()
+    assert (answer.idempotency_key, answer.status, answer.reason) == (key, "applied", None)
+    on_disk = {"halt": "HALT", "flatten": "FLATTEN", "pause_entries": "PAUSE_ENTRIES"}[kind]
+    assert (rig.root / on_disk).exists()
+    assert answer.result["applied_after_expiry"] is True
+    assert answer.result["accepted_at"] == accepted_at.isoformat().replace("+00:00", "Z")
+    applied_events = [p for n, p in rig.events if n == "command_applied"]
+    assert applied_events[-1]["applied_after_expiry"] is True
+
+
+def test_a_safety_command_the_web_never_accepted_in_its_window_still_expires(rig):
+    command = rig.command("halt", {"reason": ""}, ttl_s=30)
+    rig.clock.advance(30)
+    rig.queue_raw(command)  # an intake record stamped at expires_at: outside the window
+    (answer,) = rig.queue.process()
+    assert (answer.status, answer.reason) == ("refused", "command_expired")
     assert not (rig.root / "HALT").exists()
+
+
+def test_the_file_pass_applies_the_kill_switch_kinds_without_a_session(rig):
+    """While the gateway is down only the file kinds are taken (in issue
+    order); an entry kind stays queued, untouched, for a live session."""
+    rig.up = False
+    compose = rig.submit("compose_entry", _COMPOSE)
+    rig.clock.advance(1)
+    halt = rig.submit("halt", {"reason": "gateway down"})
+    rig.clock.advance(1)
+    resume = rig.submit("resume_entries", {"reason": ""})
+    answers = rig.queue.process(kinds=desk_commands.FILE_KINDS)
+    assert [(a.idempotency_key, a.status) for a in answers] == [
+        (halt, "applied"),
+        (resume, "applied"),
+    ]
+    assert (rig.root / "HALT").exists()
+    assert rig.flows.calls == []
+    assert (rig.root / "commands" / f"{compose}.json").exists(), "never claimed offline"
+    assert rig.result(compose).status == "accepted"
+    rig.up = True
+    (later,) = rig.queue.process()
+    assert later.idempotency_key == compose
+    assert rig.flows.calls == [("compose", compose)]
+
+
+def test_a_malformed_queued_kind_never_breaks_the_file_pass(rig):
+    junk = rig.submit("compose_entry", _COMPOSE)
+    path = rig.root / "commands" / f"{junk}.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "kind": ["halt"]}))
+    halt = rig.submit("halt", {"reason": ""})
+    (answer,) = rig.queue.process(kinds=desk_commands.FILE_KINDS)
+    assert (answer.idempotency_key, answer.status) == (halt, "applied")
+    assert path.exists(), "left for the full pass, which refuses it"
+    (refusal,) = rig.queue.process()
+    assert (refusal.idempotency_key, refusal.status) == (junk, "refused")
+
+
+def test_a_file_error_without_a_session_is_a_failed_answer(rig, monkeypatch):
+    def unwritable(path: Path, payload: bytes) -> bool:
+        raise PermissionError(13, "read-only")
+
+    rig.up = False
+    monkeypatch.setattr(desk_commands, "_place", unwritable)
+    key = rig.submit("halt", {"reason": ""})
+    (answer,) = rig.queue.process(kinds=desk_commands.FILE_KINDS)
+    assert (answer.idempotency_key, answer.status, answer.reason) == (key, "failed", "apply_error")
+    assert answer.detail == "PermissionError"
+
+
+def test_an_interrupted_safety_command_is_reapplied_at_recovery(rig):
+    """A claim the dead owner never answered: a HALT/FLATTEN/PAUSE is applied
+    again (idempotent: a kill file is placed only when absent); every other
+    kind is still answered failed and never re-applied."""
+    folder = rig.root / "commands"
+    halt = rig.submit("halt", {"reason": "owner died mid-command"}, ttl_s=60)
+    resume = rig.submit("resume_all", {"reason": ""}, ttl_s=60)
+    for key in (halt, resume):
+        (folder / f"{key}.json").rename(folder / f"{key}{CLAIMED_SUFFIX}")
+    rig.clock.advance(120)
+    answers = {a.idempotency_key: a for a in rig.new_queue().recover_interrupted()}
+    assert (answers[halt].status, answers[halt].reason) == ("applied", None)
+    assert answers[halt].result["recovered"] is True
+    assert (rig.root / "HALT").exists()
+    assert (answers[resume].status, answers[resume].reason) == (
+        "failed",
+        "owner_stopped_before_result",
+    )
+    assert rig.new_queue().recover_interrupted() == [], "answered once"
 
 
 def test_a_command_without_the_webs_intake_record_is_refused(rig):

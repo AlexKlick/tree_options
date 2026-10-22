@@ -50,6 +50,12 @@ every entry; exits stay automatic and the runtime's.
   kill switches included, is applied HERE; the web only queues), then the
   v1 entry inbox (in session). A books or command problem never stops the
   exits; a lost gateway is still exit 6.
+- **Kill switches never wait for the gateway** (W2b review P1): the
+  queued HALT / FLATTEN / PAUSE / resume / backup commands are file
+  operations, applied on the way out with exit 6, by ``main`` before it
+  connects, by ``start`` before the first tick, and by the unit's
+  ExecStartPre (``apply-commands``) while it waits for the gateway. A HALT,
+  FLATTEN or PAUSE the web accepted never expires in the queue.
 - **Entry commands** (``trex.desk_entries``): compose -> preflight +
   screening -> ``proposals/<id>.json``; approve -> approval binding, kill
   files, fresh owner facts, screening with the session's entry count and the
@@ -68,6 +74,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
+import fcntl
 import functools
 import hashlib
 import json
@@ -93,12 +100,13 @@ from tree_options.schemas.common import IdStr, StrictModel
 from tree_options.trex import notify
 from tree_options.trex.admission import entry_send_blockers
 from tree_options.trex.clock import ET, is_session
+from tree_options.trex.contracts.commands import CommandResult
 from tree_options.trex.contracts.desk_spec_v2 import EquityDeskSpecV2
 from tree_options.trex.contracts.layout import Wave2RunDir
 from tree_options.trex.contracts.proposals import EntryProposal
 from tree_options.trex.contracts.vocabulary import DeskEvent
 from tree_options.trex.desk_books import DeskBooks
-from tree_options.trex.desk_commands import CommandQueue
+from tree_options.trex.desk_commands import FILE_KINDS, NO_SESSION_ENTRIES, CommandQueue
 from tree_options.trex.desk_entries import OwnerEntries, equity_loss_cents
 from tree_options.trex.desk_runtime import (
     DeskPaths,
@@ -497,11 +505,15 @@ class SupervisedDesk:
             stale_proposals=stale,
         )
         recovered = self.commands.recover_interrupted()
+        # the kill switches queued while no owner ran are in place before the
+        # first tick (W2b review P1); entry kinds wait for the loop
+        switched = self.commands.process(kinds=FILE_KINDS)
         self.books.request_refresh()
         return {
             "retired_mandates": retired,
             "stale_proposals": stale,
             "recovered_commands": [r.idempotency_key for r in recovered],
+            "kill_switch_commands": [r.idempotency_key for r in switched],
         }
 
     def _stale_proposals(self, now: datetime) -> list[str]:
@@ -906,9 +918,10 @@ def run_loop(
     The loss is caught where it surfaces: at the loop top, or as an error
     out of the tick, the books, the commands, the inbox, the beat or the
     sleep (``DISCONNECT_ERRORS``, or anything once the session reads
-    disconnected). Either way one ``gateway_lost`` event and exit 6; any
-    other error propagates. A request or command claimed when the gateway
-    went is answered at the next start, never re-sent.
+    disconnected). Either way one ``gateway_lost`` event, the queued
+    kill-switch commands applied, and exit 6; any other error propagates.
+    A request or command claimed when the gateway went is answered at the
+    next start, never re-sent.
 
     Order per iteration: tick (in session) or beat, books, commands, then
     the v1 inbox (in session). Commands run outside the session too: a
@@ -957,10 +970,13 @@ def _connected(desk: SupervisedDesk) -> bool:
 
 
 def _gateway_lost(desk: SupervisedDesk, stage: str, error: BaseException | None = None) -> int:
-    """Record the loss and return the restart code. The error CLASS only
-    (as desk_runtime does): broker errors can carry account details. The
-    record is best-effort, so a failed write cannot turn exit 6 into a
-    crash."""
+    """Record the loss, apply the queued kill-switch commands, and return
+    the restart code. The error CLASS only (as desk_runtime does): broker
+    errors can carry account details. Both steps are best-effort, so a
+    failed write cannot turn exit 6 into a crash.
+
+    The kill switches are file operations (``FILE_KINDS``): an accepted
+    HALT, FLATTEN or PAUSE never waits for the gateway (W2b review P1)."""
     detail: dict[str, str] = {"stage": stage}
     if error is not None:
         detail["error"] = type(error).__name__
@@ -969,7 +985,67 @@ def _gateway_lost(desk: SupervisedDesk, stage: str, error: BaseException | None 
         desk.runtime._event("gateway_lost", **detail)
     except Exception as failure:
         log.error("gateway_lost event not recorded: %s", type(failure).__name__)
+    try:
+        desk.commands.process(kinds=FILE_KINDS)
+    except Exception as failure:
+        log.error("kill-switch commands not applied on exit: %s", type(failure).__name__)
     return EXIT_DISCONNECTED
+
+
+def _run_dir_event(paths: DeskPaths, clock: Callable[[], datetime]) -> Callable[..., None]:
+    """``events.jsonl`` records in ``DeskRuntime._event``'s shape, for a
+    command pass that runs without a runtime (no notification)."""
+
+    def write(event: str, **payload: Any) -> None:
+        record = {"ts": clock().astimezone(ET).isoformat(), "event": event, **payload}
+        with paths.events().open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, default=str, sort_keys=True) + "\n")
+
+    return write
+
+
+def apply_file_commands(
+    paths: DeskPaths,
+    *,
+    owner_epoch: str | None,
+    clock: Callable[[], datetime] | None = None,
+) -> list[CommandResult] | None:
+    """Apply the queued kill-switch commands (``FILE_KINDS``) with no broker
+    session: in ``main`` before it connects, and from the unit's
+    ExecStartPre while it waits for the gateway (``apply-commands``). An
+    entry kind stays queued for a live owner.
+
+    Under the run-dir lock, taken without waiting: None when a live owner
+    holds it (its own loop applies them). No claim a dead owner left is
+    touched here; ``start`` answers those."""
+    if not Wave2RunDir(paths.root).commands().is_dir():
+        return []
+    now = clock or (lambda: datetime.now(ET))
+    with open(paths.lock(), "a+b") as handle:  # closing it releases the lock
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        queue = CommandQueue(
+            paths.root,
+            flows=NO_SESSION_ENTRIES,
+            clock=now,
+            owner_epoch=owner_epoch,
+            event=_run_dir_event(paths, now),
+            connected=lambda: False,
+        )
+        return queue.process(kinds=FILE_KINDS)
+
+
+def _apply_before_connect(paths: DeskPaths, owner_epoch: str) -> None:
+    """``apply_file_commands`` for ``main``: best-effort, the class only."""
+    try:
+        answered = apply_file_commands(paths, owner_epoch=owner_epoch)
+    except Exception as error:
+        log.error("kill-switch commands not applied before connect: %s", type(error).__name__)
+        return
+    if answered:
+        log.info("%d kill-switch command(s) applied before connect", len(answered))
 
 
 def _dividend_source() -> DividendSource:
@@ -999,6 +1075,23 @@ def qualify_owned_account(
     return qualify_read_only(
         desk, matching[0], account_id=account_id, account_alias=account_alias, output=output
     )
+
+
+def _apply_commands_cli() -> int:
+    """``apply-commands``: one ``apply_file_commands`` pass over the desk
+    run dir, a JSON summary on stdout (keys, kinds, statuses only); 1 on an
+    error (its class), 0 otherwise, a run dir a live owner holds included."""
+    try:
+        answered = apply_file_commands(DeskPaths.default(), owner_epoch=None)
+    except Exception as error:
+        print(json.dumps({"error": type(error).__name__}))
+        return 1
+    if answered is None:
+        print(json.dumps({"skipped": "run_dir_locked"}))
+        return 0
+    summary = [{"command": r.idempotency_key, "kind": r.kind, "status": r.status} for r in answered]
+    print(json.dumps({"answered": summary}, sort_keys=True))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1037,7 +1130,16 @@ def main(argv: list[str] | None = None) -> int:
     digest.add_argument(
         "--path", type=Path, default=None, help="profile.json (default: the desk run dir's)"
     )
+    sub.add_parser(
+        "apply-commands",
+        help=(
+            "apply the queued kill-switch commands (file operations only, no broker "
+            "contact); the unit's ExecStartPre, while no owner runs"
+        ),
+    )
     args = ap.parse_args(argv)
+    if args.command == "apply-commands":
+        return _apply_commands_cli()
     if args.command == "profile-digest":
         path = args.path or DeskPaths.default().root / "profile.json"
         try:
@@ -1063,6 +1165,10 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     ib = IbkrTrex(host=args.host, port=args.port, client_id=SUPERVISED_CLIENT_ID)
+    epoch = f"desk{SUPERVISED_CLIENT_ID}-{int(wall.time()):x}"
+    paths = DeskPaths.default()
+    # the kill switches queued while no owner ran never wait for the gateway
+    _apply_before_connect(paths, epoch)
     try:
         ib.connect()
     except Exception as error:  # the unit's ExecStartPre waits for the API first
@@ -1086,13 +1192,11 @@ def main(argv: list[str] | None = None) -> int:
             notify.send(notify_cfg, title, message, priority)
 
         notify_fn = _push
-    paths = DeskPaths.default()
     supervised = SupervisedPaths.default()
     runtime = DeskRuntime(
         ib, paths, supervised=supervised, spots=spots, dividends=dividends, notify=notify_fn
     )
     runtime.acquire()
-    epoch = f"desk{SUPERVISED_CLIENT_ID}-{int(wall.time()):x}"
     # One process-lifetime alias fence across execution providers. Existing
     # managed IBKR paper accounts remain the broker binding; an operator may
     # give a single account a common alias when another runtime uses that alias.

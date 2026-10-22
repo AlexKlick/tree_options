@@ -16,7 +16,11 @@ Per command, each loop iteration, in ``issued_at`` order:
    args, by the contract), its key equals the file name, the web's intake
    result exists with the same kind and ``command_body_sha256`` (which binds
    the ``issued_by`` actor's principal and ingress), not expired
-   (``command_expired``) and not issued in the future beyond the skew.
+   (``command_expired``) and not issued in the future beyond the skew. The
+   safety kinds (``halt``, ``flatten``, ``pause_entries``) never expire
+   in the queue once the web accepted them inside their window: their
+   answer then says ``applied_after_expiry`` (W2b review P1: a gateway
+   outage that keeps the owner away must not drop an accepted HALT).
 3. **Apply** by kind: the entry kinds through ``EntryFlows``
    (``trex.desk_entries``); ``pause_entries`` / ``resume_entries`` through
    ``trex.pause`` (the actor ``<ingress>:<sub>`` and the key in its audit);
@@ -30,10 +34,17 @@ Per command, each loop iteration, in ``issued_at`` order:
    desk event. Every desk answer carries ``result.answered_by =
    "trex-desk"``.
 
+The kill-switch kinds are file operations (``FILE_KINDS``): with the
+gateway down the owner still applies them (``process(kinds=FILE_KINDS)``:
+on its way out with exit 6, before it connects, and at ``start`` before
+its first tick); an entry kind stays queued for a live session.
+
 A claim without a desk answer (the owner died mid-command) is answered at
 the next start by ``recover_interrupted``: ``failed``,
 ``owner_stopped_before_result``, never re-applied (an approval reports what
-the supervised outbox proves about its order).
+the supervised outbox proves about its order). A safety kind is the
+exception: validated and applied again (a kill file is placed only when
+absent).
 """
 
 from __future__ import annotations
@@ -81,6 +92,9 @@ __all__ = [
     "ANSWERED_BY",
     "CLAIMED_SUFFIX",
     "COMMAND_NOT_YET_VALID",
+    "FILE_KINDS",
+    "NO_SESSION_ENTRIES",
+    "SAFETY_KINDS",
     "CommandQueue",
     "EntryFlows",
     "Outcome",
@@ -100,15 +114,24 @@ MAX_COMMAND_BYTES = 64 * 1024
 MAX_FUTURE_SKEW_S = 60
 COMMAND_NOT_YET_VALID = "command_not_yet_valid"
 INTERRUPTED = "owner_stopped_before_result"
+GATEWAY_UNAVAILABLE = "gateway_unavailable"
 #: errors that mean the gateway went: never answered here, the loop exits 6
 _SESSION_ERRORS: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError)
 _KEY = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _QUEUED = re.compile(rf"^(?P<key>{_KEY})\.json$")
 _CLAIMED = re.compile(rf"^(?P<key>{_KEY}){re.escape(CLAIMED_SUFFIX)}$")
 _INTAKE_STATUSES = frozenset({"accepted", "applied"})
-_KILL_SWITCH_KINDS = frozenset(
+#: the kinds applied by file operations alone (kill files, the pause record,
+#: the backup request): never a broker call, so applicable with the gateway
+#: down (``process(kinds=FILE_KINDS)``)
+FILE_KINDS = frozenset(
     {"pause_entries", "resume_entries", "halt", "flatten", "resume_all", "backup_state"}
 )
+#: the safety direction (W2b review P1): once the web accepted one inside its
+#: window it never expires in the queue, and a claim a dead owner never
+#: answered is applied again (idempotent). Resume and entry kinds keep their
+#: expiry: a stale resume never lifts a newer stop, a stale entry never trades.
+SAFETY_KINDS = frozenset({"halt", "flatten", "pause_entries"})
 
 EventFn = Callable[..., None]
 Status = Literal["applied", "refused", "failed"]
@@ -146,6 +169,27 @@ class EntryFlows(Protocol):
     def reject(self, command: RejectEntryCommand, now: datetime) -> Outcome: ...
 
     def interrupted(self, command: AnyCommand) -> dict[str, Any]: ...
+
+
+class _NoSessionEntries:
+    """The entry flows of a queue that has no broker session (the file pass
+    before the owner connects). That pass never takes an entry kind; one
+    that reached it anyway is refused, never applied."""
+
+    def compose(self, command: ComposeEntryCommand, now: datetime) -> Outcome:
+        return refused(GATEWAY_UNAVAILABLE)
+
+    def approve(self, command: ApproveEntryCommand, now: datetime) -> Outcome:
+        return refused(GATEWAY_UNAVAILABLE)
+
+    def reject(self, command: RejectEntryCommand, now: datetime) -> Outcome:
+        return refused(GATEWAY_UNAVAILABLE)
+
+    def interrupted(self, command: AnyCommand) -> dict[str, Any]:
+        return {}
+
+
+NO_SESSION_ENTRIES: EntryFlows = _NoSessionEntries()
 
 
 def actor_label(actor: Actor) -> str:
@@ -234,7 +278,7 @@ class CommandQueue:
         *,
         flows: EntryFlows,
         clock: Callable[[], datetime],
-        owner_epoch: str,
+        owner_epoch: str | None,
         event: EventFn | None = None,
         connected: Callable[[], bool] = lambda: True,
     ) -> None:
@@ -256,16 +300,20 @@ class CommandQueue:
 
     # -- the loop step --------------------------------------------------------------
 
-    def process(self) -> list[CommandResult]:
-        """Claim, validate, apply and answer every queued command once."""
+    def process(self, kinds: frozenset[str] | None = None) -> list[CommandResult]:
+        """Claim, validate, apply and answer every queued command once.
+
+        ``kinds`` (``FILE_KINDS`` while the gateway is down): only the queued
+        commands of those kinds, by the queued document; anything else, and
+        a document that does not read, stays queued for the full pass."""
         answered: list[CommandResult] = []
-        for key, path in self._queued():
+        for key, path in self._queued(kinds):
             result = self._process(key, path)
             if result is not None:
                 answered.append(result)
         return answered
 
-    def _queued(self) -> list[tuple[str, Path]]:
+    def _queued(self, kinds: frozenset[str] | None = None) -> list[tuple[str, Path]]:
         """Queued commands, oldest ``issued_at`` first (an unreadable one
         first of all: it is answered, refused, at once)."""
         if not self.directory.is_dir():
@@ -275,12 +323,15 @@ class CommandQueue:
             match = _QUEUED.match(path.name)
             if match is None:
                 continue
-            issued = ""
+            issued, kind = "", ""
             try:
                 doc = _strict_json(path.read_bytes()[: MAX_COMMAND_BYTES + 1])
-                issued = str(doc.get("issued_at", "")) if isinstance(doc, dict) else ""
+                if isinstance(doc, dict):
+                    issued, kind = str(doc.get("issued_at", "")), str(doc.get("kind", ""))
             except (OSError, ValueError):
                 pass
+            if kinds is not None and kind not in kinds:
+                continue
             found.append((issued, match["key"], path))
         return [(key, path) for _, key, path in sorted(found)]
 
@@ -313,7 +364,7 @@ class CommandQueue:
             return None
         if outcome is None:
             assert command is not None
-            outcome = self._apply(command, now)
+            outcome = _late(self._apply(command, now), command, intake, now)
         return self._answer(key, kind, body_sha, outcome, now, command)
 
     def _set_aside(self, key: str, path: Path) -> None:
@@ -386,7 +437,7 @@ class CommandQueue:
             )
         elif intake.status not in _INTAKE_STATUSES:
             refusal = refused(Blocker.COMMAND_UNAUTHORIZED, f"intake_status:{intake.status}")
-        elif (now - command.expires_at).total_seconds() >= 0:
+        elif (now - command.expires_at).total_seconds() >= 0 and not _durable(command, intake):
             refusal = refused(Blocker.COMMAND_EXPIRED)
         elif (command.issued_at - now).total_seconds() > MAX_FUTURE_SKEW_S:
             refusal = refused(COMMAND_NOT_YET_VALID)
@@ -401,7 +452,10 @@ class CommandQueue:
         try:
             return self._dispatch(command, now)
         except Exception as error:
-            if isinstance(error, _SESSION_ERRORS) or not self.connected():
+            # a file kind never touches the session: its error is its own,
+            # answered even while the gateway is down
+            session_down = command.kind not in FILE_KINDS and not self.connected()
+            if isinstance(error, _SESSION_ERRORS) or session_down:
                 raise
             log.exception("command %s (%s) failed", command.idempotency_key, command.kind)
             return failed("apply_error", type(error).__name__)
@@ -509,6 +563,7 @@ class CommandQueue:
         name = (
             DeskEvent.COMMAND_APPLIED if outcome.status == "applied" else DeskEvent.COMMAND_REFUSED
         )
+        flags = {f: True for f in ("applied_after_expiry", "recovered") if outcome.facts.get(f)}
         self._emit(
             name.value,
             command=key,
@@ -516,6 +571,7 @@ class CommandQueue:
             status=outcome.status,
             reason=outcome.reason,
             actor=None if command is None else actor_label(command.issued_by),
+            **flags,
         )
         return result
 
@@ -532,7 +588,10 @@ class CommandQueue:
 
     def recover_interrupted(self) -> list[CommandResult]:
         """Answer every claim a previous owner never answered: ``failed``
-        (``owner_stopped_before_result``), never re-applied."""
+        (``owner_stopped_before_result``), never re-applied; except a
+        safety kind (``SAFETY_KINDS``), which is validated and applied again
+        (placing a kill file is idempotent), so a dead owner never drops a
+        HALT, FLATTEN or PAUSE the web accepted."""
         answered: list[CommandResult] = []
         if not self.directory.is_dir():
             return answered
@@ -556,8 +615,16 @@ class CommandQueue:
                 kind, body_sha = intake.kind, intake.command_body_sha256
             else:
                 continue  # nothing reads: no answer can be written
+            if command is not None and command.kind in SAFETY_KINDS:
+                _, sha, accepted_kind, refusal = self._validate(key, path, now, intake)
+                outcome = refusal or _late(self._apply(command, now), command, intake, now)
+                outcome = _with(outcome, recovered=True)
+                answered.append(
+                    self._answer(key, accepted_kind or kind, sha or body_sha, outcome, now, command)
+                )
+                continue
             facts: dict[str, Any] = {}
-            if command is not None and command.kind not in _KILL_SWITCH_KINDS:
+            if command is not None and command.kind not in FILE_KINDS:
                 try:
                     facts = self.flows.interrupted(command)
                 except Exception as error:  # reporting only
@@ -577,3 +644,38 @@ class CommandQueue:
 
 def _answered_by_desk(result: CommandResult) -> bool:
     return isinstance(result.result, dict) and result.result.get("answered_by") == ANSWERED_BY
+
+
+def _utc_text(instant: datetime) -> str:
+    return instant.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _durable(command: AnyCommand, intake: CommandResult) -> bool:
+    """A safety kind the web accepted inside its window: its expiry bounds
+    the web's acceptance, never the owner's consumption (W2b review P1: an
+    owner kept away by a gateway outage must not drop an accepted HALT)."""
+    return (
+        command.kind in SAFETY_KINDS
+        and intake.status in _INTAKE_STATUSES
+        and (command.expires_at - intake.at).total_seconds() > 0
+    )
+
+
+def _with(outcome: Outcome, **facts: Any) -> Outcome:
+    return Outcome(outcome.status, outcome.reason, outcome.detail, {**outcome.facts, **facts})
+
+
+def _late(
+    outcome: Outcome, command: AnyCommand, intake: CommandResult | None, now: datetime
+) -> Outcome:
+    """An applied durable command past its expiry says so in its facts."""
+    if outcome.status != "applied" or intake is None:
+        return outcome
+    if (now - command.expires_at).total_seconds() < 0:
+        return outcome
+    return _with(
+        outcome,
+        applied_after_expiry=True,
+        accepted_at=_utc_text(intake.at),
+        expired_at=_utc_text(command.expires_at),
+    )

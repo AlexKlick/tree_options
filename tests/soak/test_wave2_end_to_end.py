@@ -411,6 +411,44 @@ def test_halt_blocks_entries_and_exits_as_before(rig):
     assert sell.order.totalQuantity == 2
 
 
+def test_a_flatten_accepted_through_a_gateway_outage_is_applied_not_expired(rig):
+    """W2b review P1. The gateway drops with a position open. The operator
+    clicks PAUSE (the web answers 202 accepted); the owner applies it on its
+    way out (exit 6). The unit then waits for the gateway and the operator
+    clicks FLATTEN, which outlives its 300 s TTL before any owner runs. It
+    is not dropped as command_expired: the restarted owner applies it before
+    its first tick, and that tick flattens (PAUSE never blocks exits)."""
+    _open(rig)
+    rig.gw.is_connected = False
+    paused = rig.submit("pause_entries", {"reason": "gateway down"}, ttl_s=300)
+    assert rig.step() == 6
+    assert rig.result(paused).status == "applied"
+    flatten = rig.submit("flatten", {"reason": "close it all"}, ttl_s=300)
+    rig.gw.is_connected = True
+    rig.restart(down_s=301)
+    answer = rig.result(flatten)
+    assert (answer.status, answer.result["applied_after_expiry"]) == ("applied", True)
+    rig.quote()
+    assert rig.step() == 0
+    (sell,) = rig.orders("SELL")
+    assert (sell.order.orderRef, sell.order.totalQuantity) == ("trex:desk:eq-spy-001", 2)
+
+
+def test_a_halt_accepted_through_a_gateway_outage_still_gates_the_exits(rig):
+    _open(rig)
+    rig.gw.is_connected = False
+    assert rig.step() == 6
+    halt = rig.submit("halt", {"reason": "while the owner is down"}, ttl_s=300)
+    rig.gw.is_connected = True
+    rig.restart(down_s=301)
+    assert rig.result(halt).status == "applied"
+    assert (rig.paths.root / "HALT").exists()
+    rig.gw.script_fills("trex:desk:eq-spy-001", [FillStep()])
+    _confirm_stop(rig)
+    assert rig.step() == 0
+    assert rig.orders("SELL") == [], "the late HALT gates the stop exit as before"
+
+
 def test_pause_blocks_entries_but_a_stop_exit_still_fires(rig):
     _open(rig)
     paused = rig.run("pause_entries", {"reason": "lunch"})

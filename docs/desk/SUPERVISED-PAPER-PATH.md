@@ -359,8 +359,29 @@ files), `trex/desk_runtime.py` (exits, unchanged, plus the reconnect hook).
    `command_refused` event. A bug while connected is a `failed` answer
    (`apply_error`); a lost gateway is exit 6 and the unanswered claim is
    answered `failed` (`owner_stopped_before_result`, never re-applied) at
-   the next start.
+   the next start. A HALT, FLATTEN or PAUSE claim is the exception: it is
+   applied again at the next start (placing a kill file is idempotent).
 4. The v1 entry inbox (`requests/`, the canary path, unchanged), in session.
+
+### Kill switches never wait for the gateway (W2b review P1)
+
+The kill-switch kinds (`pause_entries`, `resume_entries`, `halt`,
+`flatten`, `resume_all`, `backup_state`) are file operations. The owner
+applies the queued ones without a broker session: on its way out with exit
+6, in `main` before it connects, in `start` before its first tick, and from
+the unit's `ExecStartPre` (`python -m tree_options.trex.supervised_desk
+apply-commands`, under the run-dir lock, skipped when a live owner holds
+it) on every start attempt while the unit waits for the gateway. Entry
+kinds stay queued for a live session.
+
+A HALT, FLATTEN or PAUSE the web accepted inside its window never expires
+in the queue: an owner kept away by an outage applies it late and says so
+(`applied_after_expiry`, `accepted_at`, `expired_at`). The resume kinds,
+`backup_state` and the entry kinds keep their expiry: a stale resume never
+lifts a newer stop, a stale entry never trades. Consequence: a FLATTEN and
+a later RESUME_ALL both queued through an outage longer than the resume's
+TTL end with the FLATTEN applied and the resume refused `command_expired`
+(the safety direction wins; resume again).
 
 ### The commands
 
@@ -425,7 +446,9 @@ approve -> partial fill -> remainder cancel -> stop exit -> flat ->
 reconciled clean with both commissions; duplicate approval sends once;
 back-to-back approvals; pause between grant and send; restart invalidation;
 reject; reconnect; reconciliation required; session cap; option debit
-spread; HALT; PAUSE), `tests/unit/test_desk_commands.py`,
+spread; HALT; PAUSE; a FLATTEN and a HALT accepted through a gateway
+outage, past their TTL, applied before the restarted owner's first tick),
+`tests/unit/test_desk_commands.py`,
 `tests/unit/test_desk_books.py`, `tests/unit/test_desk_entries.py`, and the
 Wave 2b additions to `tests/unit/test_supervised_desk.py`. Spot mutants
 (scratch copies): no reservation, no intake binding, no kill-file re-check
