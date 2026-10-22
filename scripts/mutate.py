@@ -8668,6 +8668,42 @@ MUTANTS.extend(
             "selectors": ["tests/unit/test_trex_web_wave34_app.py"],
             "invariant": "every acceptance reader resolves TREX_ACCEPTANCE_DIR through the one C3.7 resolver",
         },
+        {
+            "id": "W34-M15-ledger-probe-gutted",
+            "owner": "test_status_names_an_unwritable_ledger_without_writing",
+            "file": "src/tree_options/trex_web/family_authority.py",
+            "anchor": "    problem = None if run_dir is None else ledger_problem(run_dir)",
+            "replacement": "    problem = None",
+            "selectors": ["tests/unit/test_trex_family_authority.py"],
+            "invariant": "family ingress never reads enabled while the web cannot write its replay ledger",
+        },
+        {
+            "id": "W34-M16-ledger-probe-symlink-accepted",
+            "owner": "test_status_names_a_ledger_that_is_not_a_real_directory",
+            "file": "src/tree_options/trex_web/family_authority.py",
+            "anchor": "            if os.path.lexists(path) and not _real_dir(path):",
+            "replacement": "            if False:",
+            "selectors": ["tests/unit/test_trex_family_authority.py"],
+            "invariant": "a symlinked ledger directory is reported unwritable, as record_assertion refuses it",
+        },
+        {
+            "id": "W34-M17-today-ledger-probe-unwired",
+            "owner": "test_today_names_a_replay_ledger_the_web_cannot_write",
+            "file": "src/tree_options/trex_web/app.py",
+            "anchor": "        family_ingress=lambda: family_ingress_status(run_dir=resolve_run_dir()).problems,",
+            "replacement": "        family_ingress=lambda: family_ingress_status().problems,",
+            "selectors": ["tests/unit/test_trex_web_wave34_app.py"],
+            "invariant": "Today probes the replay ledger under the run dir create_app resolves",
+        },
+        {
+            "id": "W34-M18-ledger-step-dropped",
+            "owner": "test_the_family_blocker_next_step_follows_its_causes",
+            "file": "src/tree_options/trex_web/today_view.py",
+            "anchor": "        steps.append(_FAMILY_LEDGER_STEP)",
+            "replacement": "        pass",
+            "selectors": ["tests/unit/test_trex_web_today.py"],
+            "invariant": "an unwritable replay ledger tells the owner to grant it, not to reinstall the key",
+        },
     ]
 )
 
