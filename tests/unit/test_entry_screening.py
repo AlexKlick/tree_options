@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from fractions import Fraction
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from tests.unit.trex_fakes import contract_fixture, equity_effect
+from tree_options.action_graph import canary
 from tree_options.action_graph.canary import (
     EquityEntryFacts,
     entry_session_blockers,
@@ -24,13 +27,16 @@ from tree_options.action_graph.canary import (
 )
 from tree_options.action_graph.capital import CapitalProfile
 from tree_options.time.sessions import shift_instant
+from tree_options.trex.clock import session_calendar
 from tree_options.trex.contracts import Quote, RiskSnapshot
 from tree_options.trex.supervised_canary import (
     EQUITY_SCREENING_SCHEMA,
     EquityScreeningInputs,
+    OperatorCanaryInputs,
     collect_entry_screening,
     collect_equity_screening,
 )
+from tree_options.trex.supervised_ibkr import SupervisedEffect
 
 EFFECT_DOC = contract_fixture("equity_effect.json")
 RISK_DOC = contract_fixture("risk_snapshot.json")
@@ -321,3 +327,233 @@ def test_kind_aware_entry_screening_routes_equities():
             entries_this_session=0,
             clock=lambda: NOW,
         )
+
+
+# ------------------------------------------- the regular-session entry window
+
+# Oracle: the window is written out as ET wall times on the repo calendar's
+# own session days ([open + 5 min, close - 30 min]), never derived through
+# the calendar arithmetic the implementation uses.
+ET_ZONE = ZoneInfo("America/New_York")
+CLOSED = ("entry_window_closed",)
+NORMAL_DAY = date(2026, 10, 22)  # Thursday, EDT, 16:00 close: [09:35, 15:30]
+EARLY_DAY = date(2026, 11, 27)  # day after Thanksgiving, 13:00 close: [09:35, 12:30]
+WINTER_DAY = date(2026, 12, 1)  # Tuesday, EST (UTC-5), 16:00 close: [09:35, 15:30]
+SATURDAY = date(2026, 10, 24)
+THANKSGIVING = date(2026, 11, 26)
+
+
+def _et(day: date, hour: int, minute: int, second: int = 0) -> datetime:
+    return datetime(day.year, day.month, day.day, hour, minute, second, tzinfo=ET_ZONE)
+
+
+def _at(instant: datetime, **changes) -> EquityEntryFacts:
+    """Otherwise clean facts checked at ``instant`` (a 5 s old realtime quote)."""
+    return _facts(checked_at=instant, quote_observed_at=shift_instant(instant, -5), **changes)
+
+
+def test_the_repo_calendar_has_the_days_these_tests_assume():
+    cal = session_calendar()
+    assert all(cal.is_session(day) for day in (NORMAL_DAY, EARLY_DAY, WINTER_DAY))
+    early = set(cal.early_close_sessions())
+    assert EARLY_DAY in early
+    assert NORMAL_DAY not in early and WINTER_DAY not in early
+    assert not cal.is_session(SATURDAY) and not cal.is_session(THANKSGIVING)
+
+
+def test_the_window_bounds_are_module_constants():
+    assert canary.EQUITY_ENTRY_OPEN_DELAY_S == 5 * 60
+    assert canary.EQUITY_ENTRY_CLOSE_CUTOFF_S == 30 * 60
+    assert canary.ENTRY_WINDOW_CLOSED == CLOSED[0]
+    doc = canary.review_equity_entry.__doc__ or ""
+    assert "EQUITY_ENTRY_OPEN_DELAY_S" in doc and "EQUITY_ENTRY_CLOSE_CUTOFF_S" in doc
+
+
+@pytest.mark.parametrize(
+    ("day", "start", "end"),
+    [
+        (NORMAL_DAY, (9, 35), (15, 30)),
+        (EARLY_DAY, (9, 35), (12, 30)),
+        (WINTER_DAY, (9, 35), (15, 30)),
+    ],
+    ids=["normal", "early-close", "winter-est"],
+)
+def test_the_window_of_a_session(day, start, end):
+    assert canary.equity_entry_window(day) == (_et(day, *start), _et(day, *end))
+
+
+WINDOW_CASES = [
+    # a normal day: [09:35:00, 15:30:00] ET, both ends inclusive
+    ("normal-open-itself", NORMAL_DAY, (9, 30, 0), False),
+    ("normal-last-second-before", NORMAL_DAY, (9, 34, 59), False),
+    ("normal-first-second", NORMAL_DAY, (9, 35, 0), True),
+    ("normal-midday", NORMAL_DAY, (12, 0, 0), True),
+    ("normal-last-second", NORMAL_DAY, (15, 30, 0), True),
+    ("normal-first-second-after", NORMAL_DAY, (15, 30, 1), False),
+    ("normal-forced-exit-time", NORMAL_DAY, (15, 45, 0), False),
+    ("normal-after-close-desk-still-polling", NORMAL_DAY, (16, 10, 0), False),
+    ("normal-premarket", NORMAL_DAY, (8, 0, 0), False),
+    # an early close (13:00): the window ends at 12:30
+    ("early-last-second-before", EARLY_DAY, (9, 34, 59), False),
+    ("early-first-second", EARLY_DAY, (9, 35, 0), True),
+    ("early-last-second", EARLY_DAY, (12, 30, 0), True),
+    ("early-first-second-after", EARLY_DAY, (12, 30, 1), False),
+    ("early-before-its-close", EARLY_DAY, (12, 59, 59), False),
+    ("early-after-its-close", EARLY_DAY, (13, 30, 0), False),
+    ("early-inside-a-normal-window", EARLY_DAY, (15, 0, 0), False),
+    # standard time: the window follows the ET wall clock, not UTC
+    ("winter-last-second-before", WINTER_DAY, (9, 34, 59), False),
+    ("winter-first-second", WINTER_DAY, (9, 35, 0), True),
+    ("winter-last-second", WINTER_DAY, (15, 30, 0), True),
+    ("winter-first-second-after", WINTER_DAY, (15, 30, 1), False),
+    # not a session at all
+    ("saturday", SATURDAY, (11, 0, 0), False),
+    ("thanksgiving", THANKSGIVING, (11, 0, 0), False),
+]
+
+
+@pytest.mark.parametrize(
+    ("day", "wall", "inside"),
+    [case[1:] for case in WINDOW_CASES],
+    ids=[case[0] for case in WINDOW_CASES],
+)
+def test_equity_entries_only_inside_the_entry_window(day, wall, inside):
+    checked_at = _et(day, *wall)
+    blockers = review_equity_entry(_profile(), equity_effect(), _at(checked_at))
+    assert blockers == (() if inside else CLOSED)
+    assert canary.equity_entry_window_blockers(checked_at) == blockers
+
+
+@pytest.mark.parametrize(
+    ("instant", "expected"),
+    [
+        # 13:35Z on 2026-10-22 is 09:35 EDT; 14:35Z on 2026-12-01 is 09:35 EST
+        (datetime(2026, 10, 22, 13, 35, tzinfo=UTC), ()),
+        (datetime(2026, 10, 22, 13, 34, 59, tzinfo=UTC), CLOSED),
+        (datetime(2026, 12, 1, 14, 35, tzinfo=UTC), ()),
+        (datetime(2026, 12, 1, 14, 34, 59, tzinfo=UTC), CLOSED),
+        # 13:35Z on 2026-12-01 is 08:35 EST: the EDT reading would wrongly open
+        (datetime(2026, 12, 1, 13, 35, tzinfo=UTC), CLOSED),
+        # 01:00Z Friday 2026-10-23 is 21:00 ET Thursday: no session is open
+        (datetime(2026, 10, 23, 1, 0, tzinfo=UTC), CLOSED),
+    ],
+)
+def test_the_window_reads_any_instant_in_eastern_time(instant, expected):
+    assert canary.equity_entry_window_blockers(instant) == expected
+
+
+def test_the_session_is_the_eastern_date_of_the_instant():
+    # 01:00Z Friday 10-23 is 21:00 ET Thursday; 01:00Z Monday 10-26 is
+    # Sunday evening in New York (no session, though Monday's UTC date is one)
+    assert canary.equity_entry_session(datetime(2026, 10, 23, 1, 0, tzinfo=UTC)) == NORMAL_DAY
+    assert canary.equity_entry_session(datetime(2026, 10, 26, 1, 0, tzinfo=UTC)) is None
+    assert canary.equity_entry_session(_et(SATURDAY, 11, 0)) is None
+
+
+def test_a_naive_instant_refuses():
+    with pytest.raises(ValueError):
+        canary.equity_entry_window_blockers(datetime(2026, 10, 22, 10, 0))
+    with pytest.raises(ValueError):
+        canary.equity_entry_session(datetime(2026, 10, 22, 10, 0))
+
+
+def test_a_closed_window_is_listed_beside_the_other_blockers():
+    facts = _at(_et(NORMAL_DAY, 9, 31), market_data_type="delayed")
+    assert review_equity_entry(_profile(), equity_effect(), facts) == (
+        "entry_window_closed",
+        "equity_quote_not_realtime",
+    )
+
+
+def _collect_at(instant: datetime):
+    """The collected screening at ``instant`` with fresh quote and snapshot."""
+    risk = RiskSnapshot.model_validate({**RISK_DOC, "as_of": shift_instant(instant, -30)})
+    quote = Quote.model_validate(
+        {
+            "bid_cents": LIMIT - 2,
+            "ask_cents": LIMIT + 2,
+            "market_data_type": "realtime",
+            "as_of": shift_instant(instant, -5),
+        }
+    )
+    return collect_equity_screening(
+        equity_effect(),
+        profile=_profile(),
+        mandate_account_id=ACCOUNT,
+        inputs=_inputs(quote=quote, risk=risk),
+        entries_this_session=0,
+        clock=lambda: instant,
+    )
+
+
+def test_collected_screening_refuses_after_an_early_window_and_records_it():
+    last = _collect_at(_et(EARLY_DAY, 12, 30))
+    assert last.blockers == ()
+    late = _collect_at(_et(EARLY_DAY, 12, 30, 1))
+    assert late.blockers == CLOSED
+    window = {
+        "open_delay_s": 300,
+        "close_cutoff_s": 1800,
+        "session": "2026-11-27",
+        "start": _et(EARLY_DAY, 9, 35).astimezone(UTC).isoformat(),
+        "end": _et(EARLY_DAY, 12, 30).astimezone(UTC).isoformat(),
+    }
+    assert late.evidence["entry_window"] == window == last.evidence["entry_window"]
+    assert late.evidence["blockers"] == list(CLOSED)
+    # the window is bound into the screening digest
+    assert late.screening_sha256 != last.screening_sha256
+
+
+def test_collected_screening_refuses_on_a_non_session():
+    weekend = _collect_at(_et(SATURDAY, 11, 0))
+    assert weekend.blockers == CLOSED
+    assert weekend.evidence["entry_window"] == {
+        "open_delay_s": 300,
+        "close_cutoff_s": 1800,
+        "session": None,
+        "start": None,
+        "end": None,
+    }
+
+
+def test_the_kind_aware_router_applies_the_window_to_equities():
+    routed = collect_entry_screening(
+        equity_effect(),
+        profile=_profile(),
+        mandate_account_id=ACCOUNT,
+        entries_this_session=0,
+        equity_inputs=_inputs(),
+        clock=lambda: _et(NORMAL_DAY, 15, 30, 1),
+    )
+    assert "entry_window_closed" in routed.blockers
+
+
+def test_option_screening_has_no_equity_entry_window():
+    option = SupervisedEffect.model_validate(contract_fixture("option_effect_canary.json"))
+
+    def unreadable():
+        raise RuntimeError("account view down")
+
+    # a broker whose account view fails: the option screen stops there, and a
+    # Saturday check instant adds nothing (options keep their own screen)
+    broker = SimpleNamespace(
+        paper_blockers=lambda account: (), ib=SimpleNamespace(account_snapshot=unreadable)
+    )
+    screening = collect_entry_screening(
+        option,
+        profile=_profile(),
+        mandate_account_id=option.account_id,
+        entries_this_session=0,
+        broker=broker,
+        option_inputs=OperatorCanaryInputs(
+            owner_epoch="owner-test",
+            owner_healthy=True,
+            assignment_plan_verified=True,
+            protective_exit_ready=True,
+            current_open_loss=Decimal("0"),
+            realized_daily_loss=Decimal("0"),
+        ),
+        clock=lambda: _et(SATURDAY, 11, 0),
+    )
+    assert screening.blockers == ("broker_view_unreadable:account_snapshot",)
+    assert "entry_window" not in screening.evidence

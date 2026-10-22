@@ -9,18 +9,29 @@ long-only, cash-only stock entry, screened with the frozen contract defaults
 and the contract's own equity risk arithmetic (integer cents). The option
 screen (``review_canary_package``) is unchanged; the per-session entry cap
 (``entry_session_blockers``) is shared by both asset kinds.
+
+Equity entries are screened only inside the regular-session entry window
+(``equity_entry_window_blockers``, blocker ``entry_window_closed``): from
+``EQUITY_ENTRY_OPEN_DELAY_S`` (300 s, 5 min) after an NYSE session's open to
+``EQUITY_ENTRY_CLOSE_CUTOFF_S`` (1800 s, 30 min) before its close, both ends
+inclusive, per the repo's trex calendar (``trex.clock.session_calendar``).
+Early closes are honored: a 13:00 close ends the window at 12:30 ET. Any
+other instant (pre-market, the last half hour, after the close, a weekend or
+holiday) blocks. Options keep their own screen and have no such window here.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_FLOOR, Decimal
 from hashlib import sha256
 
 from tree_options.action_graph.capital import CapitalProfile, _money
 from tree_options.action_graph.proposal import canonical_bytes
+from tree_options.time.sessions import require_utc, shift_instant
+from tree_options.trex.clock import ET, session_calendar
 from tree_options.trex.contracts.defaults import (
     EQUITY_GAP_RESERVE_BPS,
     EQUITY_SYMBOL_ALLOWLIST,
@@ -234,6 +245,46 @@ def _cap_cents(value: Decimal) -> int:
     return int((value * 100).to_integral_value(rounding=ROUND_FLOOR))
 
 
+#: Equity entry window, in whole seconds (no timedelta outside time/): it
+#: opens this long after a session's open (the opening auction settles) ...
+EQUITY_ENTRY_OPEN_DELAY_S = 5 * 60
+#: ... and closes this long before the session's close (13:00 on an early
+#: close), leaving the desk's managed exits room before the forced exit.
+EQUITY_ENTRY_CLOSE_CUTOFF_S = 30 * 60
+#: Blocker for an equity entry outside the window (a wire string; lane K adds
+#: it to ``contracts.vocabulary.Blocker``, which compares equal).
+ENTRY_WINDOW_CLOSED = "entry_window_closed"
+
+
+def equity_entry_session(now: datetime) -> date | None:
+    """The NYSE session ``now`` falls on (its ET date), or None when that
+    date is not a session in the repo's trex calendar. Naive instants refuse."""
+    day = require_utc(now, what="entry check instant").astimezone(ET).date()
+    return day if session_calendar().is_session(day) else None
+
+
+def equity_entry_window(session: date) -> tuple[datetime, datetime]:
+    """``[start, end]`` (UTC instants, both inclusive) of the equity entry
+    window on ``session``: open + ``EQUITY_ENTRY_OPEN_DELAY_S`` to close -
+    ``EQUITY_ENTRY_CLOSE_CUTOFF_S``, early closes included. A date that is
+    not a session raises ``NotASessionError`` (fail closed)."""
+    cal = session_calendar()
+    start = shift_instant(cal.session_open(session), EQUITY_ENTRY_OPEN_DELAY_S)
+    end = shift_instant(cal.session_close(session), -EQUITY_ENTRY_CLOSE_CUTOFF_S)
+    return start, end
+
+
+def equity_entry_window_blockers(now: datetime) -> tuple[str, ...]:
+    """``(ENTRY_WINDOW_CLOSED,)`` unless ``now`` is inside its session's
+    equity entry window; empty inside it."""
+    session = equity_entry_session(now)
+    if session is not None:
+        start, end = equity_entry_window(session)
+        if start <= now <= end:
+            return ()
+    return (ENTRY_WINDOW_CLOSED,)
+
+
 @dataclass(frozen=True)
 class EquityEntryFacts:
     """Observed facts for one equity entry; money in integer cents.
@@ -291,6 +342,11 @@ def review_equity_entry(
     Pure: never an authorization. The loss held against the profile caps
     is the contract's ``equity_max_loss_cents`` (the stop loss, or the gap
     reserve when larger: the desk manages the stop, no broker stop rests).
+
+    ``facts.checked_at`` must lie inside the regular-session entry window,
+    ``[open + EQUITY_ENTRY_OPEN_DELAY_S, close - EQUITY_ENTRY_CLOSE_CUTOFF_S]``
+    (09:35 to 15:30 ET, or 09:35 to 12:30 ET on a 13:00 early close, per the
+    repo's trex calendar); otherwise ``entry_window_closed`` blocks.
     """
     blockers: list[str] = []
     if not profile.complete_for_review:
@@ -301,6 +357,7 @@ def review_equity_entry(
         blockers.append(Blocker.EQUITY_SYMBOL_NOT_QUALIFIED.value)
     if effect.side != "BUY" or type(effect.quantity) is not int or effect.quantity < 1:
         blockers.append("equity_not_whole_share_long")
+    blockers.extend(equity_entry_window_blockers(facts.checked_at))
     if facts.market_data_type != "realtime":
         blockers.append(Blocker.EQUITY_QUOTE_NOT_REALTIME.value)
     if facts.quote_observed_at is None:
