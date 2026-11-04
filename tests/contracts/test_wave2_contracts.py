@@ -1090,6 +1090,9 @@ W2C_BLOCKERS = frozenset(
 #: ticket's refusal and ``GET /api/ideas``' unreadable states
 #: (tests/contracts/test_wave5_contracts.py pins their producers).
 W5_BLOCKERS = frozenset({"manual_ticket_invalid", "drafts_dir_unreadable", "draft_unreadable"})
+#: Amendment 2026-11-04 (recovery review): an equity exit the fresh quote
+#: already reached, re-checked at approval as well as compose.
+REC_BLOCKERS = frozenset({"equity_exit_marketable"})
 #: The modules whose string literals the W2c members must match.
 W2C_PRODUCERS = (
     "trex/admission.py",
@@ -1184,14 +1187,16 @@ def _member_name(value: str) -> str:
 
 
 def test_blocker_wire_strings_are_frozen() -> None:
+    later = W5_BLOCKERS | REC_BLOCKERS
     assert {b.value for b in c.Blocker} == (
-        PLAN_BLOCKERS | AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS | W5_BLOCKERS
+        PLAN_BLOCKERS | AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS | later
     )
     # the amendments are additive: no earlier value is re-added or renamed
-    assert not PLAN_BLOCKERS & (AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS | W5_BLOCKERS)
-    assert not AMENDED_BLOCKERS & (RESERVED_BLOCKERS | W2C_BLOCKERS | W5_BLOCKERS)
-    assert not RESERVED_BLOCKERS & (W2C_BLOCKERS | W5_BLOCKERS)
-    assert not W2C_BLOCKERS & W5_BLOCKERS
+    assert not PLAN_BLOCKERS & (AMENDED_BLOCKERS | RESERVED_BLOCKERS | W2C_BLOCKERS | later)
+    assert not AMENDED_BLOCKERS & (RESERVED_BLOCKERS | W2C_BLOCKERS | later)
+    assert not RESERVED_BLOCKERS & (W2C_BLOCKERS | later)
+    assert not W2C_BLOCKERS & later
+    assert not W5_BLOCKERS & REC_BLOCKERS
     assert PORTFOLIO_LABEL_REASONS <= AMENDED_BLOCKERS
 
 

@@ -148,7 +148,7 @@ from tree_options.trex.desk_commands import (
 from tree_options.trex.desk_runtime import assignment_plan, exit_owner_ready
 from tree_options.trex.desk_spec import DeskSpec
 from tree_options.trex.equity_exits import in_regular_session
-from tree_options.trex.ibkr import StockNotQualified, market_data_type_name
+from tree_options.trex.ibkr import EquityQuote, StockNotQualified, market_data_type_name
 from tree_options.trex.ledger import LedgerFold
 from tree_options.trex.risk_snapshot import option_open_loss_cents
 from tree_options.trex.state import ENTRY_LANE, BookState
@@ -370,6 +370,18 @@ def equity_draft(
     }
 
 
+def marketable_exit_blockers(effect: SupervisedEquityEffect, quote: EquityQuote) -> tuple[str, ...]:
+    """A stop at or above the bid fires on the first quote, and a target at
+    or below the ask is already reached: neither is an exit to send."""
+    policy = effect.exit_policy
+    target = policy.target_price_cents
+    if policy.stop_price_cents >= quote.bid_cents or (
+        target is not None and target <= quote.ask_cents
+    ):
+        return (Blocker.EQUITY_EXIT_MARKETABLE,)
+    return ()
+
+
 def manual_limit_cents(policy: str | ManualLimit, bid_cents: int, ask_cents: int) -> int:
     """A manual ticket's DAY limit from a two-sided quote (cents): the ask;
     the mid rounded UP to the cent (a buy limit never sits below the mid);
@@ -524,9 +536,14 @@ class OwnerEntries:
         exit_ready = exit_owner_ready(desk.paths, now)
         screening: CanaryScreening | EquityScreening
         quote: Quote | None = None
+        marketable: tuple[str, ...] = ()
         if isinstance(effect, SupervisedEquityEffect):
             held = desk.ib.equity_quote(effect.symbol)
             quote = None if held is None else held.to_contract()
+            if held is not None:
+                # compose AND approval: the quote may have moved through an
+                # exit since the ticket was priced
+                marketable = marketable_exit_blockers(effect, held)
             risk = self._reserved_risk(account, reservation)
             screening = collect_entry_screening(
                 effect,
@@ -572,7 +589,7 @@ class OwnerEntries:
             facts = option_screening.facts
             package = facts.intent_sha256 if facts is not None else effect_v1_sha256(effect)
             quote = self._option_quote(effect, option_screening)
-        blockers = tuple(dict.fromkeys([*preflight, *unreadable, *screening.blockers]))
+        blockers = tuple(dict.fromkeys([*preflight, *unreadable, *screening.blockers, *marketable]))
         return _Screened(
             blockers=blockers,
             screening_sha256=screening.screening_sha256,

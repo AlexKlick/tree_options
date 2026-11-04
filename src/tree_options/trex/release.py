@@ -138,6 +138,24 @@ def _unit_unsafe(path: str | Path) -> bool:
     return any(c in str(path) for c in ("\n", "\r", '"', "%", "$", " "))
 
 
+def _on_blocked_storage(value: str | Path, blocked: list[str]) -> bool:
+    """True when `value` resolves beneath a blocked root, or lives on the same
+    filesystem as a blocked root that is mounted (a bind mount or a second
+    mount point of that storage has another path but the same device)."""
+    path = Path(value).resolve()
+    for root in blocked:
+        root_path = Path(root).resolve()
+        if path.is_relative_to(root_path):
+            return True
+        if os.path.ismount(root_path):
+            probe = path
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            if probe.stat().st_dev == root_path.stat().st_dev:
+                return True
+    return False
+
+
 def _configuration(config: dict[str, Any]) -> Path:
     source = Path(config["source"])
     if type(config.get("recovery_read_only", False)) is not bool:
@@ -148,8 +166,7 @@ def _configuration(config: dict[str, Any]) -> Path:
     ):
         raise ValueError("release_blocked_storage_roots_invalid")
     for value in (str(source), *(config[key] for key in STATE_KEYS)):
-        path = Path(value).resolve()
-        if any(path.is_relative_to(Path(root).resolve()) for root in blocked):
+        if _on_blocked_storage(value, blocked):
             raise ValueError("release_storage_dependency_blocked")
     if not source.is_absolute() or source.resolve() != source:
         raise ValueError("release_source_not_canonical")
@@ -281,6 +298,24 @@ def _unit_commands(content: str) -> list[str]:
     return commands
 
 
+def _require_read_only_web(name: str, content: str) -> None:
+    """In a recovery release, every web launcher runs read-only and resets
+    every write grant it would inherit (staging and production alike)."""
+    lines = [line.strip() for line in content.splitlines()]
+    starts = [
+        line for line in lines if line.startswith("ExecStart=") and "tree_options.trex_web" in line
+    ]
+    if not starts:
+        return
+    grants = [line.partition("=")[2] for line in lines if line.startswith("ReadWritePaths=")]
+    if (
+        any("--recovery-read-only" not in line.split() for line in starts)
+        or "Environment=TREX_RECOVERY_READ_ONLY=1" not in lines
+        or grants != [""]
+    ):
+        raise ValueError(f"recovery_web_unit_writable:{name}")
+
+
 def render_units(manifest: dict[str, Any], destination: Path) -> None:
     """Write unit files and drop-ins for one verified release; never installs them.
 
@@ -297,6 +332,8 @@ def render_units(manifest: dict[str, Any], destination: Path) -> None:
     release_dir = destination.parent
     if not destination.is_absolute() or _unit_unsafe(release_dir):
         raise ValueError("release_dir_unsafe_for_unit")
+    if _on_blocked_storage(release_dir, manifest.get("blocked_storage_roots", [])):
+        raise ValueError("release_storage_dependency_blocked")  # units name it at runtime
     try:
         sealed = json.loads((release_dir / "config.json").read_text())
     except (OSError, ValueError):
@@ -322,6 +359,8 @@ def render_units(manifest: dict[str, Any], destination: Path) -> None:
         for command in _unit_commands(content):
             if command not in supported:
                 raise ValueError(f"release_template_command_unbound:{template.name}:{command}")
+        if read_only:
+            _require_read_only_web(template.name, content)
         rendered[template.name.removesuffix(".in")] = content
     destination.mkdir(parents=True)
     for name, content in rendered.items():

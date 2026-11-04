@@ -19,6 +19,9 @@ each value exactly as its producer spells it.
 Amendment 2026-10-21 (Wave 5, additive): ``manual_ticket_invalid`` (the
 owner's manual equity ticket) and the two unreadable states of
 ``GET /api/ideas``.
+
+Amendment 2026-11-04 (recovery review, additive): ``equity_exit_marketable``
+(an equity entry's exits re-checked against the fresh quote at approval).
 """
 
 from __future__ import annotations
@@ -177,6 +180,10 @@ class Blocker(StrEnum):
     # one draft file, cannot be read
     DRAFTS_DIR_UNREADABLE = "drafts_dir_unreadable"
     DRAFT_UNREADABLE = "draft_unreadable"
+    # --- amendment 2026-11-04 (recovery review, additive): an equity entry
+    # whose stop is at or above the fresh bid, or whose target is at or below
+    # the fresh ask, at compose OR approval (trex.desk_entries screening)
+    EQUITY_EXIT_MARKETABLE = "equity_exit_marketable"
 
 
 @unique

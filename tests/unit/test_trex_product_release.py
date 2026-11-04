@@ -117,6 +117,35 @@ def test_recovery_refuses_dependencies_through_unavailable_storage(release_confi
         release.seal(release_config)
 
 
+def test_a_mounted_blocked_root_is_refused_by_device_not_only_by_path(
+    release_config, tmp_path, monkeypatch
+):
+    # A bind mount (or a second mount point) of the blocked storage has another
+    # path but the same device: once the blocked root is mounted, every state
+    # path on that filesystem depends on it, whatever its spelling.
+    mounted = tmp_path / "raid"
+    mounted.mkdir()
+    release_config["blocked_storage_roots"] = [str(mounted)]
+    assert not Path(release_config["premarket_runs"]).is_relative_to(mounted)
+    release.seal(release_config)  # not a mount point: path identity only, no refusal
+    monkeypatch.setattr(release.os.path, "ismount", lambda path: Path(path) == mounted)
+    with pytest.raises(ValueError, match="release_storage_dependency_blocked"):
+        release.seal(release_config)
+
+
+def test_render_refuses_a_release_dir_on_blocked_storage(release_config, tmp_path):
+    # Units name the release directory at runtime (TREX_RELEASE_DIR, the gate's
+    # config.json), so it is a storage dependency like any state root.
+    blocked = tmp_path / "raid"
+    release_config["blocked_storage_roots"] = [str(blocked)]
+    _copy_templates(Path(release_config["source"]))
+    manifest = release.seal(release_config)
+    release_dir = _release_dir(blocked / "release", manifest)
+    with pytest.raises(ValueError, match="release_storage_dependency_blocked"):
+        release.render_units(manifest, release_dir / "units")
+    assert not (release_dir / "units").exists()
+
+
 # --- Source identity: a detached linked worktree, never a serving checkout ----
 
 
@@ -436,6 +465,32 @@ def test_recovery_render_resets_writable_paths_and_freezes_read_only_mode(
     assert ("Environment", "TREX_RECOVERY_READ_ONLY=1") in pairs
     assert any(key == "ExecStart" and "--recovery-read-only" in value for key, value in pairs)
     assert [value for key, value in pairs if key == "ReadWritePaths"] == [""]
+
+
+@pytest.mark.parametrize(
+    ("template", "anchor", "replacement"),
+    [
+        ("trex-web-staging-release.conf.in", "--port 8091 @RECOVERY_FLAG@", "--port 8091"),
+        ("trex-web-release.conf.in", "@WEB_WRITE_ACCESS@", "ReadWritePaths=/var/lib/x"),
+        ("trex-web-release.conf.in", "TREX_RECOVERY_READ_ONLY=@RECOVERY_READ_ONLY@", "X=1"),
+    ],
+)
+def test_recovery_render_refuses_a_writable_web_launcher(
+    release_config, tmp_path, template, anchor, replacement
+):
+    # The guard is the renderer's, not each template's: a template that loses
+    # its recovery flag, environment switch or write reset never renders.
+    source = Path(release_config["source"])
+    _copy_templates(source)
+    path = source / "deploy/product" / template
+    assert anchor in path.read_text()
+    path.write_text(path.read_text().replace(anchor, replacement))
+    release_config["recovery_read_only"] = True
+    manifest = release.seal(release_config)
+    release_dir = _release_dir(tmp_path / "release", manifest)
+    with pytest.raises(ValueError, match=f"recovery_web_unit_writable:{template}"):
+        release.render_units(manifest, release_dir / "units")
+    assert not (release_dir / "units").exists()
 
 
 @pytest.mark.parametrize("state", ["missing", "other_manifest", "not_json"])

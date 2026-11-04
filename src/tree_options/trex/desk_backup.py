@@ -385,8 +385,10 @@ def quarantined(rel: str) -> bool:
         return len(tail) == 1 and (
             tail[0] in ("owner.json", "FLATTEN") or tail[0].startswith("RESOLVE-FLAT-")
         )
-    if tail[0] in ("permits", "mandates"):
-        return True  # v1 permits and v2 per-trade authority, consumed or not
+    if tail[0] in ("permits", "mandates", "deployments"):
+        # v1 permits and v2 per-trade authority, consumed or not, and a paper
+        # workspace's approved deployments when one is captured as this root
+        return True
     return (
         len(tail) == 1
         and tail[0].startswith("mandate")

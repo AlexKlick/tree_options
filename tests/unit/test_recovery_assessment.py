@@ -72,6 +72,44 @@ def test_restore_rechecks_bytes_and_quarantine(
     assert assess(*custody, now=NOW)["read_only_recovery_artifacts_verified"] is False
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("backup_owner_epoch", "desk83-another-owner"),
+        ("backup_taken_at", "2026-10-01T00:00:00+00:00"),
+        ("restored", []),
+        ("quarantined", []),
+    ],
+)
+def test_receipt_provenance_and_disposition_are_each_rechecked(
+    custody: tuple[Path, Path, Path], field: str, value: object
+) -> None:
+    # each receipt claim on its own: the bytes on disk are untouched, so only
+    # the comparison of that one field can refuse
+    _, backup, scratch = custody
+    receipt = json.loads((scratch / "RESTORE.json").read_text())
+    receipt[field] = value
+    (scratch / "RESTORE.json").write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match=r"restore_(provenance|disposition)_mismatch"):
+        verify_restoration(backup, scratch)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("read_only", False), ("errors", ["unit_unreadable"]), ("schema", "trex-inventory/0")],
+)
+def test_an_inventory_that_is_not_a_clean_read_only_census_is_blocked(
+    custody: tuple[Path, Path, Path], field: str, value: object
+) -> None:
+    inventory, _, _ = custody
+    doc = json.loads(inventory.read_text())
+    doc[field] = value
+    inventory.write_text(json.dumps(doc))
+    report = assess(*custody, now=NOW)
+    assert report["checks"]["inventory"] == {"status": "BLOCKED"}
+    assert "inventory_unusable" in report["blockers"]
+
+
 @pytest.mark.parametrize("receipt", ["[]", '"RESTORE"', "null", "7"])
 def test_malformed_receipt_is_blocked_not_a_crash(
     custody: tuple[Path, Path, Path], receipt: str

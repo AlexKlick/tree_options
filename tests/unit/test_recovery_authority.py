@@ -19,6 +19,9 @@ from tree_options.trex.supervised import SupervisedPaths
         "run/proposal-drafts/candidate.json",
         "supervised/mandates/pending.json",
         "supervised/mandates/used.consumed.json",
+        # a paper workspace snapshotted as the supervised root: a STAGED
+        # deployment with an unexpired approval could execute for the new epoch
+        "supervised/deployments/canary.json",
     ],
 )
 def test_restore_archives_every_wave2_command_and_mandate(tmp_path: Path, relative: str) -> None:

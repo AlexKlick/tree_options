@@ -302,6 +302,37 @@ def test_a_stop_a_cent_under_the_bid_and_a_target_a_cent_over_the_ask_compose(ri
     assert (policy.stop_price_cents, policy.target_price_cents) == (BID - 1, ASK + 1)
 
 
+# compose at 671.48 x 671.52 with the stop a cent under the bid and the target
+# a cent over the ask, then the quote moves before the owner approves: the
+# approval's fresh screening must see the exit the move made marketable
+@pytest.mark.parametrize(
+    ("bid", "ask"),
+    [
+        pytest.param(BID - 2, ASK - 2, id="bid-fell-through-the-stop"),
+        pytest.param(BID - 1, ASK - 1, id="bid-reached-the-stop"),
+        pytest.param(BID + 2, ASK + 2, id="ask-rose-through-the-target"),
+        pytest.param(BID + 1, ASK + 1, id="ask-reached-the-target"),
+    ],
+)
+def test_approval_refuses_an_exit_the_quote_moved_through_since_compose(rig, bid, ask):
+    composed = _compose(rig, _ticket(rig, stop_price_cents=BID - 1, target_price_cents=ASK + 1))
+    assert composed.status == "applied", composed
+    rig.quote(bid, ask)
+    approved = rig.approve(composed)
+    assert (approved.status, approved.reason) == ("refused", Blocker.EQUITY_EXIT_MARKETABLE)
+    assert rig.orders() == [], "a stop or target the quote already reached never sends"
+    assert not [p for p in _authority_files(rig) if "outbox" in p]
+
+
+def test_approval_still_sends_when_the_quote_stays_inside_the_exits(rig):
+    composed = _compose(rig, _ticket(rig, stop_price_cents=BID - 1, target_price_cents=ASK + 1))
+    assert composed.status == "applied", composed
+    rig.quote(BID, ASK)
+    approved = rig.approve(composed)
+    assert approved.status == "applied", approved
+    assert len(rig.orders("BUY")) == 1
+
+
 def test_a_manual_ticket_binds_only_the_manual_program(rig):
     """The ideas payload advertises ``owner-manual``; a manual ticket naming
     any other program (a pilot's, say) is refused before any broker call."""

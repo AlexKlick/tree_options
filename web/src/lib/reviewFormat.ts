@@ -152,6 +152,7 @@ export const REASON_TEXT: Readonly<Record<string, string>> = {
   candidate_expired: "The idea's time window has passed",
   manual_ticket_invalid: 'The ticket does not fit the live quote or the calendar (its stop, target, limit or exit deadline)',
   deadline_beyond_max_hold: `The exit deadline is more than ${MANUAL_MAX_HOLD_SESSIONS} market sessions after today`,
+  equity_exit_marketable: 'The price has moved through the stop or target since the ticket was priced; compose a new one',
   desk_book_unreadable: "The desk's own book could not be read",
   credit_open_not_supported_v1: 'Opening a credit structure is not supported yet',
   equity_not_whole_share_long: 'Stock entries must buy whole shares',
