@@ -8887,7 +8887,7 @@ MUTANTS.extend(
             id="REC-M6-storage-alias-bypass",
             owner="test_recovery_refuses_dependencies_through_unavailable_storage",
             file="src/tree_options/trex/release.py",
-            anchor="if any(path.is_relative_to(Path(root).resolve()) for root in blocked):",
+            anchor="if path.is_relative_to(root_path):",
             replacement="if False:",
             selectors=[f"{U}/test_trex_product_release.py"],
             invariant="dangling aliases cannot smuggle RAID into local runtime dependencies",
