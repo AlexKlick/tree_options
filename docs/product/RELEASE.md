@@ -11,16 +11,48 @@ prepare a new manifest for this version rather than editing an old receipt.
 For storage recovery, set `recovery_read_only: true` and an explicit
 `blocked_storage_roots` list in the private input. A state or source path that
 resolves under a blocked root is refused, including through a dangling symlink.
-Recovery rendering sets `TREX_RECOVERY_READ_ONLY=1` and resets inherited
-`ReadWritePaths` on the production web drop-in. Every HTTP mutation and WebSocket
-is refused before authority or route dispatch. The shell labels recovery and
-removes the command bar. `GET /api/runtime-mode` reports the frozen mode.
+While a blocked root is mounted, a path on the same filesystem device is refused
+too (a bind mount or second mount point has another path but the same device),
+and so is a render destination there. Recovery rendering sets
+`TREX_RECOVERY_READ_ONLY=1` and resets inherited `ReadWritePaths` on both web
+drop-ins (production and staging); the renderer refuses a recovery release whose
+web launcher lacks the flag, the switch or the reset. Every HTTP mutation and
+WebSocket is refused before authority or route dispatch, and the in-process
+research worker is not started. The shell labels recovery and removes the
+command bar. `GET /api/runtime-mode` reports the frozen mode.
+
+`configuration_sha256` is a self-integrity hash: verification recomputes it from
+the manifest's own fields, so it catches an uncoordinated edit, not an editor who
+rewrites both. It is artifact identity, not authentication.
 
 This is an inspection capability, not permission to replace an execution owner,
-resume entries, install other units, or claim broker reconciliation. Inventory
-all effective drop-ins before installation: a later drop-in can override unit
-configuration. Keep the installation and previous unit bytes outside the
-release for rollback. Retain the blocked storage and all inaccessible history.
+resume entries, or claim broker reconciliation. Retain the blocked storage and
+all inaccessible history.
+
+### Activating a sealed release
+
+`python -m tree_options.trex.release_activate prepare|apply|rollback --release
+<release dir> --evidence <private dir> --gate-receipt <M0 receipt> [--unit
+<rendered file>]... [--restart <service>]...` installs rendered units:
+
+- `prepare` verifies the manifest, requires an exit-0 M0 receipt for its head,
+  re-renders and refuses if `units/` differs from that render, refuses broker
+  owners (desk, exit machine, watchers), and saves every unit file it will
+  replace or retire under `<evidence>/systemd-before-<head12>/`.
+- `apply` repeats all of that under a lock and refuses if any target or drop-in
+  directory changed since `prepare`. A `<unit>-release.conf` becomes
+  `<unit>.service.d/zz-trex-release.conf`, so it sorts after hand-written
+  drop-ins; earlier `95-release.conf` and `zz-recovery-*` drop-ins are retired.
+  It then installs the bytes it hashed (each file fsynced and renamed into
+  place), reloads, restarts the `--restart` services and proves the effective
+  units: loaded, no blocked root in a command, path or environment, the on-disk
+  and loaded drop-in sets equal to the planned set, and every release
+  `Environment=` value in the running process (an `EnvironmentFile` cannot
+  move a state path). A restarted read-only web must also refuse a POST and show
+  an empty `ReadWritePaths` with `ProtectHome=read-only` and
+  `ProtectSystem=strict`. Any failure, the receipt write included, restores
+  every saved byte and restarts the services again.
+- `rollback` restores the saved bytes of a completed activation by hand.
 
 `python -m tree_options.trex.recovery --inventory <fresh inventory.json>
 --backup <verified backup> --restored <scratch restore>` rehashes custody

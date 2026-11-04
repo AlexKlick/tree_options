@@ -726,3 +726,16 @@ does: while the session is up, `StockNotQualified` is
 `order_unbuildable:<error class>` (never the provider text); once the
 session reads disconnected the error propagates (`gateway_lost`, exit 6).
 Tests: `tests/unit/test_desk_manual_ticket.py`.
+
+### 2026-11-04: equity exits re-checked at approval (recovery review)
+
+C2.7 gains `equity_exit_marketable` (additive). The shared equity screening,
+which compose AND `approve_entry` both run against a fresh quote, refuses an
+equity entry whose stop is at or above the bid or whose target is at or below
+the ask. A proposal composed with valid exits is refused at approval if the
+quote has since moved through either one; the owner composes a new proposal.
+It is reported after the standing gates (pause, cash, window, caps). The manual
+ticket's compose-time `manual_ticket_invalid` checks are unchanged. Tests:
+`tests/unit/test_desk_manual_ticket.py` (each direction, at and through the
+exit, plus a quote that stays inside), `tests/contracts/test_wave2_contracts.py`
+(`REC_BLOCKERS`).

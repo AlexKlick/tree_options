@@ -119,6 +119,7 @@ beside its code:
 | `entry_window_closed` | outside the stock entry window | try again between 09:35 and 15:30 ET |
 | `manual_ticket_invalid` | at the live quote the stop is not below the limit and the bid, or the target not above the limit and the ask; or the exit deadline is not a session on or after today | change the stop, target, limit or deadline |
 | `manual_ticket_invalid` with `deadline_beyond_max_hold` | the exit deadline is more than 20 market sessions after today | pick an earlier deadline |
+| `equity_exit_marketable` | when you approved, the price had moved through the stop (the bid is at or below it) or the target (the ask is at or above it) since the ticket was priced | compose a new ticket at today's prices |
 | `candidate_program_mismatch` | a ticket named a program other than `owner-manual` (only another client can do that) | send the ticket from this page |
 | `equity_quote_not_realtime` or `quote_unavailable` | no live real-time quote to price the ticket | wait for the quote; check the gateway on Today |
 | `order_unbuildable:` and an error name | the broker could not set up the stock contract | try again; check the gateway on Today |

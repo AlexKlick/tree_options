@@ -9024,6 +9024,78 @@ MUTANTS.extend(
     ]
 )
 
+# Release activation (2026-11-04, gpt-6.1-sol review N2-N4): install exactly
+# the qualified bytes, prove the effective units, or restore every byte.
+_ACT = "src/tree_options/trex/release_activate.py"
+_ACT_TESTS = [f"{U}/test_trex_release_activate.py"]
+MUTANTS.extend(
+    [
+        dict(
+            id="ACT-M1-gate-receipt-unbound",
+            owner="test_a_gate_receipt_for_another_head_refuses_before_any_write",
+            file=_ACT,
+            anchor='if receipt.get("head") != head or receipt.get("exit") != "0":',
+            replacement="if False:",
+            selectors=_ACT_TESTS,
+            invariant="only a passed gate of the release's own head activates it",
+        ),
+        dict(
+            id="ACT-M2-rendered-drift-ignored",
+            owner="test_release_units_that_differ_from_a_fresh_render_are_refused",
+            file=_ACT,
+            anchor="if sealed != rendered:",
+            replacement="if False:",
+            selectors=_ACT_TESTS,
+            invariant="the installed bytes are the renderer's, not whatever units/ holds",
+        ),
+        dict(
+            id="ACT-M3-broker-owner-targeted",
+            owner="test_a_broker_owner_is_never_an_activation_target",
+            file=_ACT,
+            anchor="if unit in BROKER_UNITS:",
+            replacement="if False:",
+            selectors=_ACT_TESTS,
+            invariant="activation never re-pins the desk, the exit machine or a watcher",
+        ),
+        dict(
+            id="ACT-M4-prepared-state-unchecked",
+            owner="test_a_dropin_written_after_prepare_refuses_apply_with_nothing_changed",
+            file=_ACT,
+            anchor='if planned.document()["operations"] != prepared["operations"] or (',
+            replacement="if False and (",
+            selectors=_ACT_TESTS,
+            invariant="apply installs only onto the unit set prepare saved",
+        ),
+        dict(
+            id="ACT-M5-no-restore-on-failure",
+            owner="test_any_failed_proof_restores_every_byte",
+            file=_ACT,
+            anchor="            _restore(host, planned, evidence, done)",
+            replacement="            pass",
+            selectors=_ACT_TESTS,
+            invariant="a failed proof, the receipt included, restores every byte",
+        ),
+        dict(
+            id="ACT-M6-environment-file-override-accepted",
+            owner="test_any_failed_proof_restores_every_byte",
+            file=_ACT,
+            anchor="if running.get(key) != value:",
+            replacement="if False:",
+            selectors=_ACT_TESTS,
+            invariant="the running process has the release's state paths, not an override",
+        ),
+        dict(
+            id="ACT-M7-writable-sandbox-accepted",
+            owner="test_any_failed_proof_restores_every_byte",
+            file=_ACT,
+            anchor='shown.get("ReadWritePaths", "") != ""',
+            replacement="False",
+            selectors=_ACT_TESTS,
+            invariant="a read-only release proves the effective sandbox, not just its flag",
+        ),
+    ]
+)
+
 
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
