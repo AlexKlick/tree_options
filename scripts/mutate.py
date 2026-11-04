@@ -8834,6 +8834,86 @@ assert len(PARKED_MUTANTS) == len(PARKED_MUTANT_IDS), "a parked id names no regi
 MUTANTS = [m for m in MUTANTS if m["id"] not in PARKED_MUTANT_IDS]
 
 
+# Recovery authority boundaries (2026-11-04). These are part of the full gate,
+# not a separate campaign that can be mistaken for release qualification.
+MUTANTS.extend(
+    [
+        dict(
+            id="REC-M1-command-replay",
+            owner="test_restore_archives_every_wave2_command_and_mandate",
+            file="src/tree_options/trex/desk_backup.py",
+            anchor='if tail[0] in ("requests", "commands", "proposals", "proposal-drafts"):',
+            replacement='if tail[0] == "requests":',
+            selectors=[f"{U}/test_recovery_authority.py"],
+            invariant="restoration never reactivates the Wave 2 command inbox",
+        ),
+        dict(
+            id="REC-M2-mandate-replay",
+            owner="test_restore_archives_every_wave2_command_and_mandate",
+            file="src/tree_options/trex/desk_backup.py",
+            anchor='if tail[0] in ("permits", "mandates"):',
+            replacement='if tail[0] == "permits":',
+            selectors=[f"{U}/test_recovery_authority.py"],
+            invariant="per-trade mandates are historical authority after restoration",
+        ),
+        dict(
+            id="REC-M3-post-exception",
+            owner="test_recovery_denies_all_mutations_before_auth_or_route_dispatch",
+            file="src/tree_options/trex_web/recovery_mode.py",
+            anchor='scope.get("method") not in {"GET", "HEAD"}',
+            replacement='scope.get("method") not in {"GET", "HEAD", "POST"}',
+            selectors=[f"{U}/test_recovery_mode.py"],
+            invariant="recovery denies POST before auth, parsing or spooling",
+        ),
+        dict(
+            id="REC-M4-mode-disabled",
+            owner="test_recovery_shell_and_runtime_status_explain_the_same_mode",
+            file="src/tree_options/trex_web/recovery_mode.py",
+            anchor='return value in {"1", "true"}',
+            replacement="return False",
+            selectors=[f"{U}/test_recovery_mode.py"],
+            invariant="the configured recovery boundary is actually enforced",
+        ),
+        dict(
+            id="REC-M5-configuration-unbound",
+            owner="test_sealed_configuration_cannot_change_runtime_mode_or_state_roots",
+            file="src/tree_options/trex/release.py",
+            anchor="key: config.get(key)",
+            replacement="key: None",
+            selectors=[f"{U}/test_trex_product_release.py"],
+            invariant="sealed state paths and recovery mode cannot drift",
+        ),
+        dict(
+            id="REC-M6-storage-alias-bypass",
+            owner="test_recovery_refuses_dependencies_through_unavailable_storage",
+            file="src/tree_options/trex/release.py",
+            anchor="if any(path.is_relative_to(Path(root).resolve()) for root in blocked):",
+            replacement="if False:",
+            selectors=[f"{U}/test_trex_product_release.py"],
+            invariant="dangling aliases cannot smuggle RAID into local runtime dependencies",
+        ),
+        dict(
+            id="REC-M7-restored-bytes-unchecked",
+            owner="test_restore_rechecks_bytes_and_quarantine",
+            file="src/tree_options/trex/recovery.py",
+            anchor='or _hash(path) != entry["sha256"]',
+            replacement="or False",
+            selectors=[f"{U}/test_recovery_assessment.py"],
+            invariant="a restore receipt cannot substitute for restored file integrity",
+        ),
+        dict(
+            id="REC-M8-environment-overrides-cli",
+            owner="test_explicit_recovery_flag_cannot_be_disabled_by_an_environment_file",
+            file="src/tree_options/trex_web/app.py",
+            anchor="recovery_read_only = recovery_read_only or recovery_enabled(os.environ)",
+            replacement="recovery_read_only = recovery_read_only and recovery_enabled(os.environ)",
+            selectors=[f"{U}/test_recovery_mode.py"],
+            invariant="an environment file cannot relax an explicit read-only launcher",
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

@@ -112,6 +112,7 @@ export function AppShell({
 }) {
   const route = useRoute()
   const phone = useMediaQuery(PHONE_QUERY)
+  const recoveryReadOnly = document.querySelector<HTMLMetaElement>('meta[name="trex-recovery-mode"]')?.content === 'read-only'
   return (
     <div className={phone ? 'shell shell-phone' : 'shell'}>
       <header>
@@ -128,7 +129,12 @@ export function AppShell({
           <DensityToggle />
         </div>
       </header>
-      <ControlBar compact={phone} />
+      {recoveryReadOnly ? (
+        <section className="card" role="alert">
+          <strong>Recovery: records are available for inspection.</strong>
+          <p>Commands are disabled. Broker positions and exit coverage still need reconciliation.</p>
+        </section>
+      ) : <ControlBar compact={phone} />}
       <main>
         {route.fallback ? (
           <p className="route-fallback muted">

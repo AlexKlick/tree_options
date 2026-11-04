@@ -35,6 +35,8 @@ from tree_options.trex_web.reader import (
     load_plan_view,
     marks_age_seconds,
 )
+from tree_options.trex_web.recovery_mode import META, RecoveryModeMiddleware
+from tree_options.trex_web.recovery_mode import enabled as recovery_enabled
 
 # Defaults picked to match the deployed host conventions. Both can be
 # overridden via ``TREX_STATE`` / ``TREX_PLANS_DIR`` (the env vars) or the
@@ -421,6 +423,7 @@ def create_app(
     supervised_dir: str | None = None,
     command_authority: CommandAuthority | None = None,
     command_clock: Callable[[], datetime] | None = None,
+    recovery_read_only: bool = False,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
@@ -491,6 +494,19 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
+    recovery_read_only = recovery_read_only or recovery_enabled(os.environ)
+    app.add_middleware(RecoveryModeMiddleware, read_only=recovery_read_only)
+
+    @app.get("/api/runtime-mode")
+    def runtime_mode() -> JSONResponse:
+        return JSONResponse(
+            {
+                "schema": "trex-runtime-mode/1",
+                "recovery_read_only": recovery_read_only,
+                "live_authorized": False,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     from tree_options.trex.desk_runtime import DeskPaths
     from tree_options.trex.supervised import SupervisedPaths
@@ -934,10 +950,19 @@ def create_app(
             "note": "consumed by trex-discovery --serve",
         }
 
+    @app.get("/index.html", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def spa_shell() -> Response:
         index = static_root / "index.html"
         if index.is_file():
+            if recovery_read_only:
+                shell = index.read_text(encoding="utf-8")
+                shell = (
+                    shell.replace("</head>", META + "</head>", 1)
+                    if "</head>" in shell
+                    else META + shell
+                )
+                return HTMLResponse(shell, headers={"Cache-Control": "no-store"})
             # no-cache = always revalidate (ETag keeps it cheap): a
             # heuristically cached shell keeps pointing at the previous
             # deploy's hashed bundle long after a rebuild

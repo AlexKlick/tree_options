@@ -99,6 +99,24 @@ def test_release_refuses_state_in_replaceable_source(release_config):
         release.seal(release_config)
 
 
+def test_sealed_configuration_cannot_change_runtime_mode_or_state_roots(release_config):
+    manifest = release.seal(release_config)
+    for key, value in (("recovery_read_only", True), ("paper_workspace", "/other/state")):
+        changed = {**manifest, key: value}
+        with pytest.raises(ValueError, match="release_identity_changed:configuration_sha256"):
+            release.verify_manifest(changed)
+
+
+def test_recovery_refuses_dependencies_through_unavailable_storage(release_config, tmp_path):
+    unavailable = tmp_path / "missing-raid"
+    release_config["blocked_storage_roots"] = [str(unavailable)]
+    alias = tmp_path / "old-premarket"
+    alias.symlink_to(unavailable / "premarket", target_is_directory=True)
+    release_config["premarket_runs"] = str(alias / "runs")
+    with pytest.raises(ValueError, match="release_storage_dependency_blocked"):
+        release.seal(release_config)
+
+
 # --- Source identity: a detached linked worktree, never a serving checkout ----
 
 
@@ -401,6 +419,18 @@ def rendered(release_config, tmp_path):
     units = _release_dir(tmp_path / "release", manifest) / "units"
     release.render_units(manifest, units)
     return manifest, units
+
+
+def test_recovery_render_resets_writable_paths_and_freezes_read_only_mode(release_config, tmp_path):
+    release_config["recovery_read_only"] = True
+    _copy_templates(Path(release_config["source"]))
+    manifest = release.seal(release_config)
+    units = _release_dir(tmp_path / "recovery-release", manifest) / "units"
+    release.render_units(manifest, units)
+    pairs = _directives((units / "trex-web-release.conf").read_text())
+    assert ("Environment", "TREX_RECOVERY_READ_ONLY=1") in pairs
+    assert any(key == "ExecStart" and "--recovery-read-only" in value for key, value in pairs)
+    assert [value for key, value in pairs if key == "ReadWritePaths"] == [""]
 
 
 @pytest.mark.parametrize("state", ["missing", "other_manifest", "not_json"])

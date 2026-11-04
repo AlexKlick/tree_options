@@ -25,9 +25,16 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8090, help="Bind port.")
     parser.add_argument("--state-dir", default=None, help="Override TREX_STATE.")
     parser.add_argument("--plans-dir", default=None, help="Override TREX_PLANS_DIR.")
+    parser.add_argument(
+        "--recovery-read-only", action="store_true", help="Refuse every mutation during recovery."
+    )
     args = parser.parse_args()
 
-    app = create_app(state_dir=args.state_dir, plans_dir=args.plans_dir)
+    app = create_app(
+        state_dir=args.state_dir,
+        plans_dir=args.plans_dir,
+        recovery_read_only=args.recovery_read_only,
+    )
     # Single worker: the lane is broker-free and small. ``reload=False`` is
     # intentional — the service is owned by systemd, hot-reload is a foot-gun
     # in this layout (the monitor and the web service both touch state files).

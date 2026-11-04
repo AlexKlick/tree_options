@@ -377,13 +377,16 @@ def quarantined(rel: str) -> bool:
     parts = PurePosixPath(rel).parts
     key, tail = parts[0], parts[1:]
     if key == _RUN:
-        if tail[0] == "requests":
-            return True  # claimed, results AND unclaimed requests: never replayed
+        if tail[0] in ("requests", "commands", "proposals", "proposal-drafts"):
+            # Wave 2 added a second command inbox and per-trade proposals.
+            # Restoring a pending resume or approval into either inbox would
+            # turn historical evidence into a command for the new owner.
+            return True
         return len(tail) == 1 and (
             tail[0] in ("owner.json", "FLATTEN") or tail[0].startswith("RESOLVE-FLAT-")
         )
-    if tail[0] == "permits":
-        return True  # issued and consumed alike
+    if tail[0] in ("permits", "mandates"):
+        return True  # v1 permits and v2 per-trade authority, consumed or not
     return (
         len(tail) == 1
         and tail[0].startswith("mandate")
@@ -477,6 +480,7 @@ def _build_restore(
         "backup": str(backup),
         "backup_owner_epoch": manifest.get("owner_epoch"),
         "backup_taken_at": manifest.get("taken_at"),
+        "backup_manifest_sha256": _file_sha(backup / MANIFEST)[0],
         "restored_at": at.astimezone(UTC).isoformat(),
         "restored": sorted(restored),
         "quarantined": sorted(archived),

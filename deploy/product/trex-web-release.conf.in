@@ -2,6 +2,7 @@
 WorkingDirectory=@SOURCE@
 Environment=PYTHONPATH=@SOURCE@/src
 Environment=TREX_RELEASE_DIR=@RELEASE_DIR@
+Environment=TREX_RECOVERY_READ_ONLY=@RECOVERY_READ_ONLY@
 Environment=TREX_PREMARKET_RUNS=@PREMARKET_RUNS@
 Environment=RESEARCH_WORKSPACE_DIR=@RESEARCH_WORKSPACE@
 Environment=TREX_PAPER_WORKSPACE=@PAPER_WORKSPACE@
@@ -22,7 +23,10 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStartPre=
 ExecStartPre=@SOURCE@/.venv/bin/python -m tree_options.trex.premarket --check
 ExecStart=
-ExecStart=@SOURCE@/.venv/bin/python -m tree_options.trex_web --host 127.0.0.1 --port 8090
+ExecStart=@SOURCE@/.venv/bin/python -m tree_options.trex_web --host 127.0.0.1 --port 8090 @RECOVERY_FLAG@
 ExecStartPost=
+# Recovery removes inherited writable paths, including missing RAID paths.
+# The HTTP boundary refuses every mutation independently of actor authority.
+@WEB_WRITE_ACCESS@
 # Inherit ingress and filesystem restrictions from the base unit. Evidence
 # publication is owned by its service, never a ReadWritePaths exception here.

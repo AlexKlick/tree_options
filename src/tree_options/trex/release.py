@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "trex-research-release/2"
+SCHEMA = "trex-research-release/3"
 COMMANDS = [
     "tree_options.trex_web",
     "tree_options.desk qsl",
@@ -140,6 +140,17 @@ def _unit_unsafe(path: str | Path) -> bool:
 
 def _configuration(config: dict[str, Any]) -> Path:
     source = Path(config["source"])
+    if type(config.get("recovery_read_only", False)) is not bool:
+        raise ValueError("release_recovery_mode_invalid")
+    blocked = config.get("blocked_storage_roots", [])
+    if not isinstance(blocked, list) or any(
+        not isinstance(root, str) or not Path(root).is_absolute() for root in blocked
+    ):
+        raise ValueError("release_blocked_storage_roots_invalid")
+    for value in (str(source), *(config[key] for key in STATE_KEYS)):
+        path = Path(value).resolve()
+        if any(path.is_relative_to(Path(root).resolve()) for root in blocked):
+            raise ValueError("release_storage_dependency_blocked")
     if not source.is_absolute() or source.resolve() != source:
         raise ValueError("release_source_not_canonical")
     if _unit_unsafe(source):
@@ -178,6 +189,25 @@ def _configuration(config: dict[str, Any]) -> Path:
 def _identity(source: Path, config: dict[str, Any]) -> dict[str, Any]:
     """Everything verification recomputes from the source and compares."""
     return {
+        "configuration_sha256": hashlib.sha256(
+            json.dumps(
+                {
+                    key: config.get(key)
+                    for key in (
+                        "source",
+                        *STATE_KEYS,
+                        "first_session",
+                        "previous_release",
+                        "orders_authorized",
+                        "live_money",
+                        "recovery_read_only",
+                        "blocked_storage_roots",
+                    )
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
         "release_head": _git(source, "rev-parse", "HEAD"),
         "release_tree": _git(source, "rev-parse", "HEAD^{tree}"),
         "experiment_sources_sha256": _hash(Path(config["experiment_sources"])),
@@ -273,7 +303,14 @@ def render_units(manifest: dict[str, Any], destination: Path) -> None:
         sealed = None
     if sealed != json.loads(json.dumps(manifest)):
         raise ValueError("release_dir_config_mismatch")
-    values = {**manifest, "release_dir": str(release_dir)}
+    read_only = manifest.get("recovery_read_only", False)
+    values = {
+        **manifest,
+        "release_dir": str(release_dir),
+        "recovery_read_only": "1" if read_only else "0",
+        "recovery_flag": "--recovery-read-only" if read_only else "",
+        "web_write_access": "ReadWritePaths=" if read_only else "# Keep base command grants.",
+    }
     supported = set(manifest["supported_commands"])
     rendered: dict[str, str] = {}
     for template in sorted((source / "deploy/product").glob("*.in")):

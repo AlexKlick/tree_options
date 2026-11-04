@@ -157,9 +157,12 @@ restore:
 | --- | --- |
 | `run/owner.json` | It names the old owner epoch. Every owner start mints a new epoch and writes its own file. |
 | `run/requests/*` (unclaimed, `.claimed`, `.result`, `.duplicate-<n>`) | These are consumed command state. An unclaimed request restored into the inbox would be processed by the next owner as a new entry. |
+| `run/commands/*` | Wave 2 commands, including pending resumes, approvals and their results, are historical evidence, never commands for a replacement owner. |
+| `run/proposals/*`, `run/proposal-drafts/*` | Old proposals and candidates must not become inputs to a new owner's approval flow. |
 | `run/FLATTEN`, `run/RESOLVE-FLAT-*` (including `.applied`) | These are operator commands about a past moment. A restored FLATTEN would close positions; a restored RESOLVE-FLAT would close a book entry unpriced. |
 | `supervised/mandate.json`, `supervised/mandate.expired-*.json` | These are old authority. A mandate is bound to the epoch it was granted for. |
 | `supervised/permits/*` (issued and consumed) | These are single-use authority for old intents. |
+| `supervised/mandates/*` (pending and consumed) | Wave 2 per-trade authority is archived alongside v1 authority. |
 
 These stay active, on purpose:
 

@@ -66,10 +66,22 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  document.querySelector('meta[name="trex-recovery-mode"]')?.remove()
   window.matchMedia = realMatchMedia
   mediaListeners = []
   vi.unstubAllGlobals()
   at('#')
+})
+
+it('recovery explains the read-only boundary and removes the desk control bar', () => {
+  const marker = document.createElement('meta')
+  marker.name = 'trex-recovery-mode'
+  marker.content = 'read-only'
+  document.head.append(marker)
+  render(<AppShell title="Today" showRuntimeBanners={false}>Saved records</AppShell>)
+  expect(screen.getByRole('alert').textContent).toContain('Commands are disabled')
+  expect(screen.queryByRole('button', { name: 'Pause new entries' })).toBeNull()
+  expect(screen.getByText('Saved records')).toBeTruthy()
 })
 
 // M8 flash review: "● live" sat beside hours-old marks and "delayed ·

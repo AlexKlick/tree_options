@@ -1,5 +1,36 @@
 # Building the isolated research/web release
 
+## Recovery releases (version 3)
+
+Version 3 binds state paths, scheduling inputs, prior-release reference,
+authority flags and recovery configuration with `configuration_sha256`, in
+addition to source, environment and asset identity. Older manifests remain
+historical artifacts, served and verified only by their original pinned code;
+prepare a new manifest for this version rather than editing an old receipt.
+
+For storage recovery, set `recovery_read_only: true` and an explicit
+`blocked_storage_roots` list in the private input. A state or source path that
+resolves under a blocked root is refused, including through a dangling symlink.
+Recovery rendering sets `TREX_RECOVERY_READ_ONLY=1` and resets inherited
+`ReadWritePaths` on the production web drop-in. Every HTTP mutation and WebSocket
+is refused before authority or route dispatch. The shell labels recovery and
+removes the command bar. `GET /api/runtime-mode` reports the frozen mode.
+
+This is an inspection capability, not permission to replace an execution owner,
+resume entries, install other units, or claim broker reconciliation. Inventory
+all effective drop-ins before installation: a later drop-in can override unit
+configuration. Keep the installation and previous unit bytes outside the
+release for rollback. Retain the blocked storage and all inaccessible history.
+
+`python -m tree_options.trex.recovery --inventory <fresh inventory.json>
+--backup <verified backup> --restored <scratch restore>` rehashes custody
+artifacts and returns a `trex-recovery-assessment/1`. It always exits 3:
+current broker reconciliation, exit coverage, off-host restoration and alarm
+delivery remain separate gates. Local artifact verification never grants
+execution authority.
+
+## Preparing the release
+
 This procedure prepares a candidate. It does not install a second broker owner,
 activate new entries, or qualify paper/live trading. Complete the Phase 0 custody
 and canary gates before changing installed services. Preserve the previous release
