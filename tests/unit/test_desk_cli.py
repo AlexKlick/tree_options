@@ -21,6 +21,19 @@ T0 = datetime(2026, 9, 28, 15, 0, tzinfo=UTC)
 ACCOUNT = "DUT143714"
 
 
+@pytest.fixture(autouse=True)
+def fixed_cli_clock(monkeypatch):
+    """CLI defaults must be exercised at the fixture's date, not the host's date."""
+    from tree_options.trex import desk_cli
+
+    class FixtureDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return T0.astimezone(tz) if tz is not None else T0.replace(tzinfo=None)
+
+    monkeypatch.setattr(desk_cli, "datetime", FixtureDatetime)
+
+
 def _compose(**overrides):
     kwargs = dict(
         intent_id="canary-x",
