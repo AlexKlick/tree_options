@@ -40,11 +40,16 @@ OLD_RELEASE = b"[Service]\nWorkingDirectory=/media/raid/releases/old/source\n"
 
 class FakeHost(Host):
     def __init__(self, root: Path, recovery: bool = True) -> None:
-        super().__init__(root, self._systemctl, self._environ_of, self._http)
+        super().__init__(root, self._systemctl, self._environ_of, self._http, self._sleep)
         self.calls: list[list[str]] = []
         self.running: dict[str, int] = {}
         self.env_files: dict[str, dict[str, str]] = {}
         self.web_read_only = recovery
+        self.not_listening = 0  # GETs refused before the restarted web serves
+        self.slept = 0
+
+    def _sleep(self, seconds: float) -> None:
+        self.slept += 1
 
     def _files(self, unit: str) -> list[Path]:
         fragment = self.config_root / unit
@@ -93,6 +98,9 @@ class FakeHost(Host):
         return {**env, **self.env_files.get(unit, {})}
 
     def _http(self, method: str, url: str) -> tuple[int, bytes]:
+        if self.not_listening > 0:
+            self.not_listening -= 1
+            return 0, b""
         if method == "GET":
             return 200, json.dumps({"recovery_read_only": self.web_read_only}).encode()
         if self.web_read_only:
@@ -155,6 +163,26 @@ def test_activation_installs_the_rendered_bytes_and_retires_the_old_release(rig)
     assert deadman.read_bytes() == (units / "trex-deadman.service").read_bytes()
     assert host.effective("trex-web.service")["ReadWritePaths"] == ""
     assert (evidence / f"activation-{HEAD[:12]}.applied.json").is_file()
+
+
+def test_a_web_still_starting_is_awaited_not_rolled_back(rig):
+    # systemctl restart returns once the process is forked; the server binds
+    # after its release gate and app start (live 2026-11-04: refused at once)
+    host, release_dir, receipt, evidence = rig
+    prepare(host, release_dir, receipt, evidence, NAMES)
+    host.not_listening = 3
+    assert apply(host, release_dir, receipt, evidence, restart=["trex-web.service"])["installed"]
+    assert host.slept == 3
+
+
+def test_a_web_that_never_listens_restores_every_byte(rig):
+    host, release_dir, receipt, evidence = rig
+    before = _tree(host.config_root)
+    prepare(host, release_dir, receipt, evidence, NAMES)
+    host.not_listening = 10**6
+    with pytest.raises(ActivationRefused, match="web_not_ready"):
+        apply(host, release_dir, receipt, evidence, restart=["trex-web.service"])
+    assert _tree(host.config_root) == before
 
 
 def test_rollback_restores_every_byte_after_a_completed_activation(rig):

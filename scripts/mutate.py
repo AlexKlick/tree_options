@@ -9093,6 +9093,15 @@ MUTANTS.extend(
             selectors=_ACT_TESTS,
             invariant="a read-only release proves the effective sandbox, not just its flag",
         ),
+        dict(
+            id="ACT-M8-web-start-not-awaited",
+            owner="test_a_web_still_starting_is_awaited_not_rolled_back",
+            file=_ACT,
+            anchor="for _ in range(WEB_READY_ATTEMPTS - 1):",
+            replacement="for _ in range(0):",
+            selectors=_ACT_TESTS,
+            invariant="a web still binding after restart is awaited, not judged",
+        ),
     ]
 )
 

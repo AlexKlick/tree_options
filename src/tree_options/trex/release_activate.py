@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Sequence
@@ -80,7 +81,8 @@ class Host:
     config_root: Path
     systemctl: Callable[[Sequence[str]], str]
     environ_of: Callable[[int], dict[str, str]]
-    http: Callable[[str, str], tuple[int, bytes]]
+    http: Callable[[str, str], tuple[int, bytes]]  # status 0: nothing listening yet
+    sleep: Callable[[float], None] = time.sleep
 
 
 def _systemctl(args: Sequence[str]) -> str:
@@ -106,6 +108,8 @@ def _http(method: str, url: str) -> tuple[int, bytes]:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
+    except (urllib.error.URLError, OSError):
+        return 0, b""  # refused or reset: the restarted server is not listening yet
 
 
 def real_host() -> Host:
@@ -349,8 +353,20 @@ def _check_unit(
                 raise ActivationRefused(f"process_environment_differs:{unit}:{key}")
 
 
+#: a restarted web serves after its release gate and app start (seconds)
+WEB_READY_ATTEMPTS = 60
+
+
 def _prove_web(host: Host, unit: str, read_only: bool, port: int) -> None:
-    status, body = host.http("GET", f"http://127.0.0.1:{port}/api/runtime-mode")
+    url = f"http://127.0.0.1:{port}/api/runtime-mode"
+    status, body = host.http("GET", url)
+    for _ in range(WEB_READY_ATTEMPTS - 1):
+        if status != 0:  # only "nothing listening yet" is retried
+            break
+        host.sleep(1.0)
+        status, body = host.http("GET", url)
+    if status == 0:
+        raise ActivationRefused("web_not_ready")
     if status != 200 or json.loads(body).get("recovery_read_only") is not read_only:
         raise ActivationRefused("web_runtime_mode_differs")
     if read_only:
