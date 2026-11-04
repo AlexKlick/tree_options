@@ -589,7 +589,9 @@ def create_app(
     # scenarios). RL-3 (forecast) still returns 410 Gone.
     from tree_options.trex_web.research_view import attach as attach_research
 
-    attach_research(app)
+    # The research worker writes from a background thread the recovery boundary
+    # cannot see; recovery never starts it, whatever the unit environment says.
+    attach_research(app, start_worker=False if recovery_read_only else None)
     from tree_options.trex_web.quant_view import attach as attach_quant
 
     attach_quant(app)

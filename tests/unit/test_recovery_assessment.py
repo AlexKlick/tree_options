@@ -72,6 +72,34 @@ def test_restore_rechecks_bytes_and_quarantine(
     assert assess(*custody, now=NOW)["read_only_recovery_artifacts_verified"] is False
 
 
+@pytest.mark.parametrize("receipt", ["[]", '"RESTORE"', "null", "7"])
+def test_malformed_receipt_is_blocked_not_a_crash(
+    custody: tuple[Path, Path, Path], receipt: str
+) -> None:
+    _, backup, scratch = custody
+    (scratch / "RESTORE.json").write_text(receipt)
+    with pytest.raises(ValueError, match="restore_receipt_invalid"):
+        verify_restoration(backup, scratch)
+    report = assess(*custody, now=NOW)
+    assert report["checks"]["local_custody"] == {"status": "BLOCKED"}
+    assert "local_custody_unverified" in report["blockers"]
+
+
+def test_restored_root_must_not_be_an_alias(
+    custody: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+    # A link named as the scratch restore would let any directory, the live run
+    # root included, be certified as an authority-free restoration.
+    inventory, backup, scratch = custody
+    alias = tmp_path / "scratch-alias"
+    alias.symlink_to(scratch, target_is_directory=True)
+    with pytest.raises(ValueError, match="restore_symlink"):
+        verify_restoration(backup, alias)
+    assert (
+        assess(inventory, backup, alias, now=NOW)["read_only_recovery_artifacts_verified"] is False
+    )
+
+
 def test_stale_inventory_is_blocked(custody: tuple[Path, Path, Path]) -> None:
     report = assess(*custody, now=datetime(2026, 11, 5, tzinfo=UTC))
     assert "inventory_unusable" in report["blockers"]

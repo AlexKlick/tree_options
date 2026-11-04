@@ -27,8 +27,12 @@ def _hash(path: Path) -> str:
 
 def verify_restoration(backup: Path, restored: Path) -> dict[str, Any]:
     """Rehash the restored bytes and independently check their active/archive disposition."""
+    if restored.is_symlink():
+        raise ValueError("restore_symlink")  # an alias can name any tree, the live root too
     manifest = verify(backup)
     receipt = json.loads((restored / RECEIPT).read_bytes())
+    if not isinstance(receipt, dict):
+        raise ValueError("restore_receipt_invalid")
     if (
         receipt.get("schema") != RESTORE_SCHEMA
         or receipt.get("backup_manifest_sha256") != _hash(backup / MANIFEST)

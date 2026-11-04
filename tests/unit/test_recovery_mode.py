@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
+from tree_options.research.runstate.worker import ResearchWorker
 from tree_options.trex_web.app import create_app
 from tree_options.trex_web.recovery_mode import ENV, enabled
 
@@ -54,6 +56,34 @@ def test_normal_paper_mode_is_preserved(tmp_path: Path, monkeypatch: pytest.Monk
     client = TestClient(create_app(static_dir=str(tmp_path)))
     assert client.get("/api/runtime-mode").json()["recovery_read_only"] is False
     assert "trex-recovery-mode" not in client.get("/").text
+
+
+def test_recovery_allows_head_and_refuses_websockets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ENV, "1")
+    client = TestClient(create_app(state_dir=str(tmp_path)))
+    # HEAD is a read: the boundary passes it to routing (FastAPI answers 405 for
+    # a GET-only route); it is never refused as a recovery mutation.
+    assert client.head("/api/runtime-mode").status_code != 403
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect("/api/any-socket"):
+            pass
+    assert closed.value.code == 1008
+
+
+@pytest.mark.parametrize("recovery", [True, False])
+def test_recovery_never_starts_the_research_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovery: bool
+) -> None:
+    # The worker is a background writer the HTTP boundary cannot see: recovery
+    # must not start it, whatever TREX_RESEARCH_WORKER the unit stack inherits.
+    started: list[object] = []
+    monkeypatch.setattr(ResearchWorker, "start", lambda self: started.append(self))
+    monkeypatch.setenv("TREX_RESEARCH_WORKER", "1")
+    monkeypatch.setenv("RESEARCH_WORKSPACE_DIR", str(tmp_path / "research"))
+    create_app(state_dir=str(tmp_path / "state"), recovery_read_only=recovery)
+    assert bool(started) is not recovery
 
 
 def test_explicit_recovery_flag_cannot_be_disabled_by_an_environment_file(

@@ -421,13 +421,18 @@ def rendered(release_config, tmp_path):
     return manifest, units
 
 
-def test_recovery_render_resets_writable_paths_and_freezes_read_only_mode(release_config, tmp_path):
+@pytest.mark.parametrize("web_unit", ["trex-web-release.conf", "trex-web-staging-release.conf"])
+def test_recovery_render_resets_writable_paths_and_freezes_read_only_mode(
+    release_config, tmp_path, web_unit
+):
+    # Every web process a recovery release renders is read-only, staging included:
+    # a writable :8091 beside a read-only :8090 is still a writable cockpit.
     release_config["recovery_read_only"] = True
     _copy_templates(Path(release_config["source"]))
     manifest = release.seal(release_config)
     units = _release_dir(tmp_path / "recovery-release", manifest) / "units"
     release.render_units(manifest, units)
-    pairs = _directives((units / "trex-web-release.conf").read_text())
+    pairs = _directives((units / web_unit).read_text())
     assert ("Environment", "TREX_RECOVERY_READ_ONLY=1") in pairs
     assert any(key == "ExecStart" and "--recovery-read-only" in value for key, value in pairs)
     assert [value for key, value in pairs if key == "ReadWritePaths"] == [""]
