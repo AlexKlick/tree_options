@@ -21,8 +21,8 @@ External portfolio context is opt-in per provider, minimized, and account scoped
 
 | Gate | Work and exit requirement | Current disposition |
 | --- | --- | --- |
-| P0 custody | Current unit/source/owner/state inventory, consistent backup, scratch restore, actual broker reconciliation and exit disposition | OPEN: local custody is inspectable; broker gateway is unavailable, so current account state and exits are unverified |
-| P1 reliability | Local immutable release, evidence publication, alerts, backup restoration; no lost history disguised as empty state | Recovery candidate; actual activation needs exact-head qualification and effective-unit review |
+| P0 custody | Current unit/source/owner/state inventory, consistent backup, scratch restore, actual broker reconciliation and exit disposition | OPEN (2026-11-04): local custody verified and restored off host; entries paused; the broker gateway is unavailable (RAID down, Docker data root on it), so account state and exits are unverified |
+| P1 reliability | Local immutable release, evidence publication, alerts, backup restoration; no lost history disguised as empty state | PARTIAL (2026-11-04): release 7ffcce69d921 on SSD (M0 9340/0/7, 685/685) runs the read-only web, publishers, premarket and deadman; off-host restic backup with a passing restore drill; dead-man URL and its delivery drill await the owner |
 | P2 supervised product | Qualify existing Wave 5 ideas/manual equity flow; complete policy editing, supported manual option tickets and unassisted phone/desktop lifecycle | Wave 5 source incorporated as the baseline; remaining product work not qualified |
 | P3 live foundation | Separate instance identities, credentials, state, authentication and broker-held protection; capability verdict per instrument | OPEN; no live activation or new account authority |
 | P4 owner paper acceptance | Ten consecutive qualifying NYSE sessions, ten completed lifecycles per kind in the streak and all seven drills | OPEN; repository tests do not count as observed broker sessions |
