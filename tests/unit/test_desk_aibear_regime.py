@@ -129,14 +129,19 @@ def test_state_at_d_ignores_everything_after_d() -> None:
     vix_vals = list(np.abs(rng.normal(20.0, 5.0, n)) + 5.0)
     vix = VixSeries(list(zip(dates, vix_vals, strict=True)))
     base = regime_series(dates, closes, vix, P)
+    base_features = regime_features(dates, closes, vix, P)
+    spike = 10.0 * max(closes)
     for k in (300, 555, 800):
-        poisoned = closes[: k + 1] + list(rng.uniform(1.0, 1000.0, n - k - 1))
+        # The first poisoned close is a new all-time high, so any read of the
+        # close after d moves d's drawdown even when the state does not flip.
+        poisoned = [*closes[: k + 1], spike, *rng.uniform(1.0, 1000.0, n - k - 2)]
         pvix = VixSeries(
             list(
                 zip(dates, vix_vals[: k + 1] + list(rng.uniform(5.0, 90.0, n - k - 1)), strict=True)
             )
         )
         assert regime_series(dates, poisoned, pvix, P)[: k + 1] == base[: k + 1]
+        assert regime_features(dates, poisoned, pvix, P)[: k + 1] == base_features[: k + 1]
 
 
 def test_bad_series_are_refused() -> None:
