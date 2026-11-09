@@ -45,7 +45,7 @@ import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +72,7 @@ from tree_options.desk.aibear.rules import (
 from tree_options.desk.indices import read_store
 from tree_options.desk.longrun import bootstrap_ci, holm, sign_flip_p
 from tree_options.desk.paths import store_root
+from tree_options.time import calendar_days
 
 Point = tuple[date, float]
 INDEX_NAMES = ("NDX", "SOX")
@@ -289,7 +290,7 @@ class Simulator:
         s0 = inst.closes[e]
         k_long, k_short = 100.0 * rule.long_moneyness, 100.0 * rule.short_moneyness
         width = abs(k_long - k_short)
-        expiry = inst.dates[e] + timedelta(days=rule.dte)
+        expiry = inst.dates[e] + calendar_days(rule.dte)
         iv = self._iv_or(e, 0.0)
         debit = self._quote(e, s0, k_long, k_short, expiry, iv).open_debit
         if not debit > 0.0:

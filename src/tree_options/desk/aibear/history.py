@@ -35,7 +35,7 @@ import math
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,7 @@ from typing import Any
 from tree_options.desk.http import TOOL_UA, Get, urllib_get
 from tree_options.desk.paths import store_root
 from tree_options.desk.store import atomic_write_bytes
+from tree_options.time.sessions import shift_instant
 from tree_options.trex.clock import ET
 
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
@@ -156,7 +157,7 @@ def parse_yahoo_chart(raw: bytes, sym: str) -> list[Point]:
     for ts, c in zip(stamps, closes, strict=True):
         if c is None:
             continue
-        d = (datetime.fromtimestamp(int(ts), UTC) + timedelta(seconds=offset)).date()
+        d = shift_instant(datetime.fromtimestamp(int(ts), UTC), offset).date()
         out.append((d, _finite_positive(float(c), f"Yahoo {sym} {d}")))
     return out
 

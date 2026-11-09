@@ -118,6 +118,100 @@ def test_a_card_signals_fills_marks_and_exits_on_consecutive_sessions() -> None:
     assert card["r"] == pytest.approx((proceeds - card["fill"]["debit"]) / card["fill"]["debit"])
 
 
+def _falls_setup(tail: list[str]):
+    rules = {"falls": RULES["falls"]}
+    states = ["RELIEF"] * 300 + tail
+    ser = _series(states, [100.0] * len(states), date(2025, 9, 1))
+    fwd = {**FWD, "control_probability": "0", "first_signal_session": ser.dates[300].isoformat()}
+    return rules, ser, fwd
+
+
+def test_a_signal_on_a_day_without_a_chain_still_counts_and_its_fill_waits() -> None:
+    rules, ser, fwd = _falls_setup(["BEAR", "BEAR", "BEAR", "BEAR", "BEAR"])
+    d0, d1, d2 = ser.dates[300:303]
+    book = mon.empty_book("x")
+    none = lambda sym: None  # noqa: E731
+    mon.process_session(book, d0, series={"QQQ": ser}, chains=none, rules=rules, fwd=fwd)
+    (card,) = book["cards"]
+    assert card["signal_session"] == d0.isoformat()  # signalled with no chain that day
+    mon.process_session(book, d1, series={"QQQ": ser}, chains=none, rules=rules, fwd=fwd)
+    assert card["status"] == "pending" and card["fill_wait"] == 1
+    exp = (d2 + timedelta(days=45)).isoformat()
+    ch = _chain(d2, 100.0, [("P", exp, 100.0, 4.0, 4.2), ("P", exp, 90.0, 1.0, 1.1)])
+    mon.process_session(book, d2, series={"QQQ": ser}, chains=lambda s: ch, rules=rules, fwd=fwd)
+    assert card["status"] == "open" and card["fill"]["session"] == d2.isoformat()
+
+
+def test_a_fill_that_never_finds_a_chain_becomes_unfillable() -> None:
+    rules, ser, fwd = _falls_setup(["BEAR"] * 5)
+    book = mon.empty_book("x")
+    for d in ser.dates[300:304]:
+        mon.process_session(
+            book, d, series={"QQQ": ser}, chains=lambda s: None, rules=rules, fwd=fwd
+        )
+    assert book["cards"][0]["status"] == "unfillable"
+    assert book["cards"][0]["unfillable_reason"] == "no chain within 3 sessions"
+
+
+def test_an_exit_with_a_zero_short_bid_uses_the_long_bid_and_short_ask() -> None:
+    rules, ser, fwd = _falls_setup(["BEAR", "BEAR", "RELIEF", "RELIEF"])
+    d0, d1, d2, d3 = ser.dates[300:304]
+    exp = (d1 + timedelta(days=45)).isoformat()
+    legs = [("P", exp, 100.0, 4.0, 4.2), ("P", exp, 90.0, 1.0, 1.1)]
+    book = mon.empty_book("x")
+    for d in (d0, d1, d2):
+        ch = _chain(d, 100.0, legs)
+        mon.process_session(
+            book, d, series={"QQQ": ser}, chains=lambda s, c=ch: c, rules=rules, fwd=fwd
+        )
+    card = book["cards"][0]
+    assert card["status"] == "exit_pending"
+    worthless_short = [("P", exp, 100.0, 4.1, 4.3), ("P", exp, 90.0, 0.0, 0.02)]
+    ch = _chain(d3, 100.0, worthless_short)
+    mon.process_session(book, d3, series={"QQQ": ser}, chains=lambda s: ch, rules=rules, fwd=fwd)
+    assert card["status"] == "closed" and card["exit"]["how"] == "quotes"
+    assert card["exit"]["proceeds"] == pytest.approx(4.1 - 0.02 - 0.013)
+
+
+def test_controls_are_drawn_only_inside_the_sleeve_context() -> None:
+    rules = {"falls": RULES["falls"]}
+    states = ["BULL"] * 300 + ["BULL", "BEAR"]
+    ser = _series(states, [100.0] * len(states), date(2025, 9, 1))
+    fwd = {**FWD, "control_probability": "1", "first_signal_session": ser.dates[300].isoformat()}
+    book = mon.empty_book("x")
+    mon.process_session(
+        book, ser.dates[300], series={"QQQ": ser}, chains=lambda s: None, rules=rules, fwd=fwd
+    )
+    assert book["cards"] == []  # BULL is outside falls' context (BEAR)
+    mon.process_session(
+        book, ser.dates[301], series={"QQQ": ser}, chains=lambda s: None, rules=rules, fwd=fwd
+    )
+    assert [c["kind"] for c in book["cards"]] == ["control"]
+    assert mon.in_control_context({"recent_capitulation_within": 20}, ["CAPITULATION", "BEAR"], 1)
+    assert not mon.in_control_context({"recent_capitulation_within": 20}, ["BEAR", "BEAR"], 1)
+
+
+def test_a_card_is_voided_when_the_panel_re_adjusts_its_fill_close() -> None:
+    rules, ser, fwd = _falls_setup(["BEAR", "BEAR", "BEAR"])
+    d0, d1, d2 = ser.dates[300:303]
+    exp = (d1 + timedelta(days=45)).isoformat()
+    legs = [("P", exp, 100.0, 4.0, 4.2), ("P", exp, 90.0, 1.0, 1.1)]
+    book = mon.empty_book("x")
+    for d in (d0, d1):
+        ch = _chain(d, 100.0, legs)
+        mon.process_session(
+            book, d, series={"QQQ": ser}, chains=lambda s, c=ch: c, rules=rules, fwd=fwd
+        )
+    assert book["cards"][0]["fill"]["panel_close"] == 100.0
+    split = mon.Series(
+        ser.dates, [c / 4.0 for c in ser.closes], ser.states, ser.features, ser.bull_run
+    )
+    mon.process_session(
+        book, d2, series={"QQQ": split}, chains=lambda s: None, rules=rules, fwd=fwd
+    )
+    assert book["cards"][0]["status"] == "void_corporate_action"
+
+
 def test_no_card_is_created_before_the_first_signal_session() -> None:
     states = ["RELIEF"] * 300 + ["BEAR"]
     ser = _series(states, [100.0] * len(states), date(2025, 9, 1))
@@ -206,26 +300,40 @@ def test_llm_brier_score_against_the_base_rate() -> None:
     assert got["scored"] == 1 and got["brier"] == pytest.approx(0.04)
 
 
-def test_forward_verdict_waits_for_twenty_closed_cards() -> None:
-    def card(kind: str, r: float, month: str) -> dict[str, Any]:
-        return {
-            "kind": kind,
-            "sleeve": "falls",
-            "status": "closed",
-            "r": r,
-            "fill": {"session": f"2026-{month}-02"},
-        }
-
-    few = {"cards": [card("rule", 1.0, "11")] * 5}
-    assert mon.forward_verdicts(few, FWD)["falls"]["verdict"] == "PENDING"
-    many = {
-        "cards": [card("rule", 0.5, f"{m:02d}") for m in range(1, 13)] * 2
-        + [card("control", -0.1, "05")] * 3
+def _closed(kind: str, r: float, n: int, month: int, day: int = 2) -> dict[str, Any]:
+    return {
+        "id": f"{kind}:falls:QQQ:{n:03d}",
+        "kind": kind,
+        "sleeve": "falls",
+        "status": "closed",
+        "r": r,
+        "fill": {"session": f"2027-{month:02d}-{day:02d}"},
+        "exit": {"session": f"2027-{month:02d}-{day + 1:02d}"},
     }
+
+
+def test_forward_verdict_waits_for_twenty_closed_cards() -> None:
+    few = {"cards": [_closed("rule", 1.0, n, 11) for n in range(5)]}
+    assert mon.forward_verdicts(few, FWD)["falls"]["verdict"] == "PENDING"
+    rules = [_closed("rule", 0.5, n, 1 + n // 2, 2 + n % 2 * 10) for n in range(24)]
+    many = {"cards": rules + [_closed("control", -0.1, 900 + n, 5) for n in range(3)]}
     v = mon.forward_verdicts(many, FWD)["falls"]
-    assert v["closed"] == 24 and v["verdict"] == "FORWARD-PASS"
-    worse = {"cards": many["cards"][:-3] + [card("control", 0.9, "05")] * 3}
+    assert v["closed"] == 24 and v["basis_cards"] == 20 and v["verdict"] == "FORWARD-PASS"
+    worse = {"cards": rules + [_closed("control", 0.9, 900 + n, 5) for n in range(3)]}
     assert mon.forward_verdicts(worse, FWD)["falls"]["checks"]["F3"] is False
+
+
+def test_the_verdict_is_fixed_at_the_twentieth_card() -> None:
+    first20 = [_closed("rule", 0.5, n, 1 + n // 2, 2 + n % 2 * 10) for n in range(20)]
+    ctrl = [_closed("control", -0.1, 900, 3)]
+    v0 = mon.forward_verdicts({"cards": first20 + ctrl}, FWD)["falls"]
+    # forty later losers and a later, better control do not move the verdict
+    later = [_closed("rule", -1.0, 100 + n, 12, 15) for n in range(40)]
+    late_ctrl = [_closed("control", 5.0, 901, 12, 20)]
+    v1 = mon.forward_verdicts({"cards": first20 + ctrl + later + late_ctrl}, FWD)["falls"]
+    assert v0["verdict"] == v1["verdict"] == "FORWARD-PASS"
+    assert v1["verdict_session"] == v0["verdict_session"] and v1["closed"] == 60
+    assert v1["running_total_r_all_closed"] < 0
 
 
 def test_both_sealed_parameter_files_load_under_their_pinned_digests() -> None:
@@ -260,3 +368,46 @@ def test_core2_stops_only_on_a_trend_reversal() -> None:
     # thirty BULL closes under a falling 200-day MA are not a reversal (001 stopped at 10)
     assert exit_reason(core2, **base, trend_up=False) is None
     assert exit_reason(core2, **{**base, "states": ["BEAR", "RELIEF"]}, trend_up=True) is None
+
+
+def test_a_second_run_for_the_same_session_changes_nothing_and_reads_once(tmp_path) -> None:
+    import json as _json
+
+    days = []
+    d = date(2025, 9, 1)
+    while len(days) < 320:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    assert days[-1] > date(2026, 11, 10)  # past the first signal session
+    panel = {s: {x.isoformat(): {"close": "100"} for x in days} for s in ("QQQ", "SMH")}
+    panel_path = tmp_path / "ohlc-panel.json"
+    panel_path.write_text(_json.dumps(panel))
+    store = tmp_path / "store"
+    (store / "indices").mkdir(parents=True)
+    (store / "indices" / "VIX.csv").write_text(
+        "date,open,high,low,close\n" + "".join(f"{x.isoformat()},,,,20\n" for x in days)
+    )
+    calls: list[int] = []
+
+    def ask(*a: Any, **k: Any):
+        calls.append(1)
+        return {"reads": [{"symbol": "QQQ", "stress_score": 10, "p_down10_20d": 0.1}]}, "m", {}
+
+    kw = dict(
+        use_llm=True,
+        store=store,
+        state=tmp_path / "state",
+        panel_path=panel_path,
+        require_sealed=False,
+        fetch_news=lambda s: [],
+        ask=ask,
+    )
+    first = mon.run_monitor(**kw)
+    book1 = (tmp_path / "state" / "aibear" / "book.json").read_bytes()
+    second = mon.run_monitor(**kw)
+    assert calls == [1]
+    assert second == first
+    assert (tmp_path / "state" / "aibear" / "book.json").read_bytes() == book1
+    log = (tmp_path / "state" / "aibear" / "llm.jsonl").read_text().splitlines()
+    assert len(log) == 1

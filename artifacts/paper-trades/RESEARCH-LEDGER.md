@@ -86,13 +86,16 @@ surviving must also survive the base-rate and holdout deflations below.
   Black-Scholes with calibrated IV and costs; 1997-01..2026-11; R
   clustered by entry month.
   - **Core** (270-DTE ATM/70 % put spreads while not BULL; 13 names):
-    −211.4 R over 767 trades, CI [−256, −167]. Worse than random timing
-    (null mean −139.7) and no better than an always-on ladder (−222.9).
+    −211.4 R over 767 trades, CI [−256, −167]. No better than an
+    always-on ladder (−222.9). The random null is not like-for-like (BULL-day
+    nulls stop out at once; correction in the results doc), so P2 carries no
+    weight; the FAIL rests on P1, P3 and P4.
   - **Falls** (45-DTE put spreads after failed rallies): −17.9 R over 97
     trades, CI [−29.5, −5.5]; Holm p_null 0.51.
   - **Relief** (45-DTE call spreads on the first up close after a
     capitulation): −32.4 R over 101 trades, CI [−46.8, −19.8]; 77 of 101
-    trades stopped below the capitulation low.
+    trades stopped below the capitulation low (a stop the random-day null
+    lacks, so its p_null is not a timing comparison).
   - **Even the hindsight-perfect window barely pays.** NDX peak to trough
     (2000-03-10..2002-10-09), the core made only +5.5 R over 68 trades.
     Bear-market rallies whipsaw the regime stop, and most bull years cost

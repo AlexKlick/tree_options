@@ -9174,8 +9174,8 @@ MUTANTS.extend(
             id="AIB-M7-forward-fill-at-mid",
             owner="test_a_card_signals_fills_marks_and_exits_on_consecutive_sessions",
             file=_AIB + "monitor.py",
-            anchor="debit = lq[1] - sq[0] + two_fills",
-            replacement="debit = (lq[0] + lq[1]) / 2 - (sq[0] + sq[1]) / 2 + two_fills",
+            anchor="debit = la - sb + two_fills",
+            replacement="debit = (la + sb) / 2 + two_fills",
             selectors=[
                 _AIB_MON + "test_a_card_signals_fills_marks_and_exits_on_consecutive_sessions"
             ],

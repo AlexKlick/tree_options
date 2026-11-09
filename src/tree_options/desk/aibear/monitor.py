@@ -159,11 +159,20 @@ class Chain:
             return None
         return cls(json.loads(gzip.decompress(path.read_bytes())))
 
-    def quote(self, occ: str) -> tuple[float, float] | None:
+    def ask(self, occ: str) -> float | None:
+        """The ask of a quoted row (ask > 0), else None."""
         r = self.rows.get(occ)
-        if r is None or not (r["bid"] > 0.0 and r["ask"] > 0.0):
-            return None
-        return r["bid"], r["ask"]
+        return r["ask"] if r is not None and r["ask"] > 0.0 else None
+
+    def bid(self, occ: str) -> float | None:
+        """The bid of a live row (one with an ask > 0). A zero bid is a real
+        bid (nobody pays for the contract), not a missing quote."""
+        r = self.rows.get(occ)
+        return r["bid"] if r is not None and r["ask"] > 0.0 else None
+
+    def mid(self, occ: str) -> float | None:
+        a, b = self.ask(occ), self.bid(occ)
+        return None if a is None or b is None else (a + b) / 2.0
 
     def pick(
         self, rule: SleeveRule, window: Sequence[int]
@@ -234,22 +243,40 @@ def process_session(
     rules: Mapping[str, SleeveRule],
     fwd: Mapping[str, Any],
 ) -> list[str]:
-    """Advance the book through session ``s``; returns human-readable events."""
+    """Advance the book through session ``s`` (every panel session, with or
+    without a recorded chain: ``chains`` returns None on a day without one);
+    returns human-readable events. Rules as amended by AI-BEAR-002 AMENDMENT 1."""
     events: list[str] = []
     cards: list[dict[str, Any]] = book["cards"]
     first = date.fromisoformat(fwd["first_signal_session"])
     windows = fwd["expiry_window_days"]
+    fill_wait = int(fwd.get("fill_wait_sessions", EXIT_WAIT_SESSIONS))
+    void_at = float(fwd.get("corporate_action_void_threshold", "0.05"))
+    contexts = fwd.get("control_context", {})
     two_fills = 2 * COMMISSION_PER_SHARE
+
+    # 0. a split re-adjusts the panel backwards: the fill session's close
+    # moves, and the card's strikes and stop are no longer in today's units
+    for c in cards:
+        if c["status"] not in ("open", "exit_pending"):
+            continue
+        ser = series.get(c["symbol"])
+        k = ser.index(date.fromisoformat(c["fill"]["session"])) if ser else None
+        then = c["fill"].get("panel_close")
+        if ser is not None and k is not None and then:
+            if abs(ser.closes[k] / then - 1.0) > void_at:
+                c.update(status="void_corporate_action", at=s.isoformat())
+                events.append(f"{c['id']}: void (the panel re-adjusted its fill close)")
 
     # 1. exits decided at an earlier close execute here
     for c in cards:
         if c["status"] != "exit_pending":
             continue
         ch = chains(c["symbol"])
-        lq = ch.quote(c["fill"]["long"]["occ"]) if ch else None
-        sq = ch.quote(c["fill"]["short"]["occ"]) if ch else None
-        if lq and sq:
-            proceeds, how = max(lq[0] - sq[1] - two_fills, 0.0), "quotes"
+        lb = ch.bid(c["fill"]["long"]["occ"]) if ch else None
+        sa = ch.ask(c["fill"]["short"]["occ"]) if ch else None
+        if lb is not None and sa is not None:
+            proceeds, how = max(lb - sa - two_fills, 0.0), "quotes"
         else:
             c["exit_wait"] = c.get("exit_wait", 0) + 1
             ser = series.get(c["symbol"])
@@ -267,48 +294,62 @@ def process_session(
         if c["status"] != "pending":
             continue
         ch = chains(c["symbol"])
-        picked = ch.pick(rules[c["sleeve"]], windows[c["sleeve"]]) if ch else None
-        if ch is None or picked is None:
-            c.update(
-                status="unfillable", unfillable_reason="no chain or no strikes", at=s.isoformat()
-            )
-            events.append(f"{c['id']}: unfillable (no chain/strikes)")
+        if ch is None:  # no recorded chain today: the fill waits
+            c["fill_wait"] = c.get("fill_wait", 0) + 1
+            if c["fill_wait"] >= fill_wait:
+                c.update(
+                    status="unfillable",
+                    unfillable_reason=f"no chain within {fill_wait} sessions",
+                    at=s.isoformat(),
+                )
+                events.append(f"{c['id']}: unfillable (no chain)")
+            continue
+        picked = ch.pick(rules[c["sleeve"]], windows[c["sleeve"]])
+        if picked is None:
+            c.update(status="unfillable", unfillable_reason="no strikes", at=s.isoformat())
+            events.append(f"{c['id']}: unfillable (no strikes)")
             continue
         long, short = picked
-        lq, sq = ch.quote(long["occ"]), ch.quote(short["occ"])
-        if not (lq and sq):
+        la, sb = ch.ask(long["occ"]), ch.bid(short["occ"])
+        if la is None or sb is None or not sb > 0.0:
             c.update(
-                status="unfillable", unfillable_reason="a leg without bid and ask", at=s.isoformat()
+                status="unfillable", unfillable_reason="no long ask or short bid", at=s.isoformat()
             )
             events.append(f"{c['id']}: unfillable (quotes)")
             continue
-        debit = lq[1] - sq[0] + two_fills
+        debit = la - sb + two_fills
         if not debit > 0.0:
             c.update(status="unfillable", unfillable_reason="non-positive debit", at=s.isoformat())
             continue
+        ser = series.get(c["symbol"])
+        j = ser.index(s) if ser else None
         c["status"] = "open"
         c["fill"] = {
             "session": s.isoformat(),
             "expiry": long["exp"].isoformat(),
             "spot": ch.spot,
-            "long": {"occ": long["occ"], "strike": long["strike"], "ask": lq[1]},
-            "short": {"occ": short["occ"], "strike": short["strike"], "bid": sq[0]},
+            "panel_close": None if ser is None or j is None else ser.closes[j],
+            "long": {"occ": long["occ"], "strike": long["strike"], "ask": la},
+            "short": {"occ": short["occ"], "strike": short["strike"], "bid": sb},
             "debit": debit,
         }
         events.append(f"{c['id']}: filled debit={debit:.2f} exp={long['exp']}")
 
-    # 3. marks and exit decisions at this close
+    # 3. marks and exit decisions at this close (stops and time stops run on
+    # every session; the take-profit needs a mark from this session)
     for c in cards:
         if c["status"] != "open":
             continue
         ser = series.get(c["symbol"])
         j = ser.index(s) if ser else None
         ch = chains(c["symbol"])
-        lq = ch.quote(c["fill"]["long"]["occ"]) if ch else None
-        sq = ch.quote(c["fill"]["short"]["occ"]) if ch else None
-        if lq and sq:
-            c["mark"] = {"session": s.isoformat(), "mid": (sum(lq) - sum(sq)) / 2.0}
-        if ser is None or j is None or "mark" not in c:
+        lm = ch.mid(c["fill"]["long"]["occ"]) if ch else None
+        sm = ch.mid(c["fill"]["short"]["occ"]) if ch else None
+        fresh = False
+        if lm is not None and sm is not None:
+            fresh = True
+            c["mark"] = {"session": s.isoformat(), "mid": lm - sm}
+        if ser is None or j is None:
             continue
         f = ser.features[j]
         fill_j = ser.index(date.fromisoformat(c["fill"]["session"]))
@@ -320,7 +361,7 @@ def process_session(
             bull_run=ser.bull_run[j],
             held_sessions=0 if fill_j is None else j - fill_j,
             dte_left=(date.fromisoformat(c["fill"]["expiry"]) - s).days,
-            value_mid=c["mark"]["mid"],
+            value_mid=c["mark"]["mid"] if fresh else float("-inf"),
             width=abs(c["fill"]["long"]["strike"] - c["fill"]["short"]["strike"]),
             stop_low=c["stop_low"],
             trend_up=f is not None and f.slope_slow > 0.0,
@@ -329,7 +370,8 @@ def process_session(
             c.update(status="exit_pending", decided={"session": s.isoformat(), "reason": reason})
             events.append(f"{c['id']}: exit decided ({reason})")
 
-    # 4. new signals (rule cards + seeded controls)
+    # 4. new signals: rule cards, and seeded controls inside the sleeve's
+    # regime context (so a control shares the rule's exits, stop included)
     if s >= first:
         live = {(c["kind"], c["sleeve"], c["symbol"]) for c in cards if c["status"] in LIVE}
         p_control = float(fwd["control_probability"])
@@ -337,7 +379,7 @@ def process_session(
             for sym in rule.instruments:
                 ser = series.get(sym)
                 j = ser.index(s) if ser else None
-                if ser is None or j is None:
+                if ser is None or j is None or ser.states[j] == NOT_EVALUABLE:
                     continue
                 stop = stop_level(rule, ser.states, ser.closes, j)
                 if ("rule", name, sym) not in live and entry_signal(
@@ -345,11 +387,24 @@ def process_session(
                 ):
                     cards.append(_new_card("rule", name, rule, sym, s, stop))
                     events.append(f"rule:{name}:{sym}: signal at {s} ({ser.states[j]})")
-                if ("control", name, sym) not in live and ser.states[j] != "NOT_EVALUABLE":
+                if ("control", name, sym) not in live and in_control_context(
+                    contexts.get(name), ser.states, j
+                ):
                     if _uniform(fwd["control_seed"], name, sym, s.isoformat()) < p_control:
                         cards.append(_new_card("control", name, rule, sym, s, stop))
     book["last_session"] = s.isoformat()
     return events
+
+
+def in_control_context(ctx: Mapping[str, Any] | None, states: Sequence[str], j: int) -> bool:
+    """Is session ``j`` inside the sleeve's regime context (AMENDMENT 1)?
+    No context configured = any evaluable session (the original rule)."""
+    if not ctx:
+        return True
+    if "states" in ctx and states[j] not in set(ctx["states"]):
+        return False
+    n = ctx.get("recent_capitulation_within")
+    return n is None or "CAPITULATION" in states[max(0, j - int(n)) : j]
 
 
 def forward_verdicts(book: Mapping[str, Any], fwd: Mapping[str, Any]) -> dict[str, Any]:
@@ -358,14 +413,26 @@ def forward_verdicts(book: Mapping[str, Any], fwd: Mapping[str, Any]) -> dict[st
     by: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for c in book["cards"]:
         by[(c["sleeve"], c["kind"])].append(c)
+
+    def exit_key(c: Mapping[str, Any]) -> tuple[str, str]:
+        return c["exit"]["session"], c["id"]
+
     for sleeve in sorted({c["sleeve"] for c in book["cards"]}):
-        closed = [c for c in by[(sleeve, "rule")] if c["status"] == "closed"]
-        ctrl = [c for c in by[(sleeve, "control")] if c["status"] == "closed"]
+        closed = sorted((c for c in by[(sleeve, "rule")] if c["status"] == "closed"), key=exit_key)
+        ctrl_all = sorted(
+            (c for c in by[(sleeve, "control")] if c["status"] == "closed"), key=exit_key
+        )
+        # AMENDMENT 1: the verdict is computed once, on the first `need`
+        # closed rule cards, and never moves afterwards (no optional stopping)
+        reached = len(closed) >= need
+        basis = closed[:need] if reached else closed
+        cutoff = basis[-1]["exit"]["session"] if reached else None
+        ctrl = [c for c in ctrl_all if cutoff is None or c["exit"]["session"] <= cutoff]
         months: dict[str, float] = defaultdict(float)
-        for c in closed:
+        for c in basis:
             months[c["fill"]["session"][:7]] += c["r"]
-        total = sum(c["r"] for c in closed)
-        mean = total / len(closed) if closed else 0.0
+        total = sum(c["r"] for c in basis)
+        mean = total / len(basis) if basis else 0.0
         ctrl_mean = sum(c["r"] for c in ctrl) / len(ctrl) if ctrl else None
         p = sign_flip_p(list(months.values()), draws=10000, seed=20261109) if months else 1.0
         checks = {
@@ -374,16 +441,15 @@ def forward_verdicts(book: Mapping[str, Any], fwd: Mapping[str, Any]) -> dict[st
             "F3": ctrl_mean is not None and mean > ctrl_mean,
         }
         verdict = (
-            "PENDING"
-            if len(closed) < need
-            else "FORWARD-PASS"
-            if all(checks.values())
-            else "FORWARD-FAIL"
+            "PENDING" if not reached else "FORWARD-PASS" if all(checks.values()) else "FORWARD-FAIL"
         )
         out[sleeve] = {
             "closed": len(closed),
+            "basis_cards": len(basis),
+            "verdict_session": cutoff,
             "open": sum(1 for c in by[(sleeve, "rule")] if c["status"] in LIVE),
             "unfillable": sum(1 for c in by[(sleeve, "rule")] if c["status"] == "unfillable"),
+            "void": sum(1 for c in by[(sleeve, "rule")] if c["status"] == "void_corporate_action"),
             "total_r": round(total, 4),
             "mean_r": round(mean, 4),
             "control_closed": len(ctrl),
@@ -391,6 +457,7 @@ def forward_verdicts(book: Mapping[str, Any], fwd: Mapping[str, Any]) -> dict[st
             "p_sign_flip": round(p, 4),
             "checks": checks,
             "verdict": verdict,
+            "running_total_r_all_closed": round(sum(c["r"] for c in closed), 4),
         }
     return out
 
@@ -561,14 +628,14 @@ def run_monitor(
     panel, panel_sha = read_panel_with_sha256(panel_path or paper_dir() / "ohlc-panel.json")
     vix = load_vix(store)
     syms = sorted({s for r in rules.values() for s in r.instruments} | set(llm_cfg["names"]))
-    sessions = chain_sessions(store)
+    # AMENDMENT 1: every panel session is processed (QQQ's dates are the
+    # session list); a session without a recorded chain still runs signals,
+    # stops and time stops, while fills and exits wait for a chain
+    sessions = sorted(date.fromisoformat(k) for k in (panel.get("QQQ") or {}))
     if session is None:
-        qqq = panel.get("QQQ") or {}
-        latest_panel = max((date.fromisoformat(k) for k in qqq), default=None)
-        candidates = [s for s in sessions if latest_panel is None or s <= latest_panel]
-        if not candidates:
-            raise RuntimeError("no chain session with panel closes")
-        session = candidates[-1]
+        if not sessions:
+            raise RuntimeError("the panel has no QQQ sessions")
+        session = sessions[-1]
 
     book = _read_json(out_dir / "book.json", empty_book(params_sha))
     if book.get("params_sha256") != params_sha:
@@ -576,6 +643,12 @@ def run_monitor(
     last = date.fromisoformat(book["last_session"]) if book["last_session"] else None
     first = date.fromisoformat(fwd["first_signal_session"])
     todo = [s for s in sessions if s <= session and s >= first and (last is None or s > last)]
+    day_doc = out_dir / f"{session.isoformat()}.json"
+    if not todo and day_doc.exists():
+        # already processed (a holiday morning, or a re-run): change nothing,
+        # and never take a second LLM read for the same session
+        existing: dict[str, Any] = json.loads(day_doc.read_text())
+        return existing
     events: list[str] = []
     for s in todo:
         ser_s = build_series(panel, syms, vix, doc, s)
@@ -609,8 +682,17 @@ def run_monitor(
                 signals.append(f"{name}:{sym}")
 
     now = clock()
+    llm_log = out_dir / "llm.jsonl"
+    past = (
+        [json.loads(x) for x in llm_log.read_text().splitlines() if x.strip()]
+        if llm_log.exists()
+        else []
+    )
     llm_line: dict[str, Any] = {"status": "skipped"}
-    if use_llm:
+    already_read = any(x.get("session") == session.isoformat() for x in past)
+    if use_llm and already_read:
+        llm_line = {"status": "already_read", "session": session.isoformat()}
+    elif use_llm:
         from tree_options.trex.discovery import llm as llm_mod
         from tree_options.trex.discovery import market
 
@@ -622,12 +704,6 @@ def run_monitor(
             ask=ask or llm_mod.ask_json,
             now=now,
         )
-    llm_log = out_dir / "llm.jsonl"
-    past = (
-        [json.loads(x) for x in llm_log.read_text().splitlines() if x.strip()]
-        if llm_log.exists()
-        else []
-    )
     verdicts = forward_verdicts(book, fwd)
     result = {
         "schema": DOC_SCHEMA,
@@ -658,11 +734,8 @@ def run_monitor(
         atomic_write_bytes(
             out_dir / "book.json", (json.dumps(book, indent=1, sort_keys=True) + "\n").encode()
         )
-        atomic_write_bytes(
-            out_dir / f"{session.isoformat()}.json",
-            (json.dumps(result, indent=1, sort_keys=True) + "\n").encode(),
-        )
-        if use_llm:
-            with (out_dir / "llm.jsonl").open("a", encoding="utf-8") as fh:
+        atomic_write_bytes(day_doc, (json.dumps(result, indent=1, sort_keys=True) + "\n").encode())
+        if use_llm and not already_read:
+            with llm_log.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(llm_line, sort_keys=True) + "\n")
     return result

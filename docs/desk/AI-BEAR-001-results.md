@@ -21,6 +21,11 @@
 
 - P1, P2 and P3 fail for every sleeve. For core, P4 fails too: −9.16 R per
   bull-era year, against −9.55 for the always-on ladder.
+- **Correction (2026-11-09, independent review):** the random null, and so
+  P2, is not a like-for-like timing comparison for core or relief. See
+  "Correction: what the random null does and does not show" below. The
+  verdict stands without P2, because each sleeve fails P1 and P3 (and core
+  fails P4) on its own.
 - Sensitivity with flat IV and no skew, for information only: core −246.33,
   falls −18.64, relief −31.65. The direction is unchanged.
 
@@ -43,9 +48,10 @@
 ### Core
 
 - **Its regime gate does no better than no gate.** The core's 767 trades
-  lose about as much as the always-on ladder's 668 (−211 vs −223 R) and
-  more than random timing. 593 of 767 trades end by the regime stop (10
-  BULL closes) at −0.2..−0.6 R each.
+  lose about as much as the always-on ladder's 668 (−211 vs −223 R). The
+  ladder is the like-for-like baseline: the same structure, and no regime
+  stop for either entry rule to exploit. 593 of 767 trades end by the regime
+  stop (10 BULL closes) at −0.2..−0.6 R each.
   - A 5 % dip below the 200-day MA reads as TOPPING. In a bull market
     those dips mostly recover, so the gate keeps buying puts after a drop,
     with IV already up, right before the bounce. The ledger's short-horizon
@@ -70,10 +76,46 @@
 
 ### Relief
 
-- **Much worse than random timing.** 77 of 101 trades are stopped by a
-  close below the capitulation low.
+- **77 of 101 trades are stopped by a close below the capitulation low.**
 - In real bears (2000–02, 2008, 2022) capitulations come in waves: the
   first up close after one is usually not the bottom.
+- Its gap to the null (−32.4 vs −5.3 R) is mostly that stop, which the null
+  trades do not have. See the correction below.
+
+## Correction: what the random null does and does not show
+
+The independent code review of 2026-11-09 found this (`desk/aibear/rules.py`
+`stop_level`; `backtest.py` `null_total`). The sealed null keeps "the same
+structure and exits", but two exits depend on the entry's own context, so
+random-day entries do not really share them.
+
+- **Relief:** the stop "close below the capitulation episode's low" only
+  exists when the prior close was a CAPITULATION. A random-day null trade
+  almost never has one, so it runs to its take-profit or time stop. That
+  stop ended 77 of 101 observed relief trades. "Worse than the null" here
+  mostly measures the stop, not the timing.
+- **Core:** a random entry on a BULL day already has a long BULL run, so
+  the 10-BULL-close stop fires at once. It becomes a one-day trade that
+  loses about the round-trip cost. The null's −139.7 R is largely such
+  trades, which makes "worse than random timing" an artifact too.
+- **Falls:** its RELIEF/BULL stop also fires at once on a random BULL day,
+  so the same caveat applies, more weakly.
+
+What still holds:
+
+- the absolute losses with their clustered CIs (P1);
+- the bear-era results (P3);
+- the core's bull-era bleed against the always-on ladder (P4, a fair
+  comparison);
+- the descriptive breakdowns above.
+
+The P2 numbers are reported as computed by the sealed rule, but they carry
+no weight in the verdict. The fix for the forward test is
+`docs/desk/AI-BEAR-002-AMENDMENT-1.md` rule 3: controls drawn inside the
+sleeve's regime context, so they share the rule's stop. A minor point from
+the same review: the null refuses a trade that starts on the exit day of the
+previous one, while the strategy allows it. That only makes the null
+slightly harder to fit.
 
 ## What this means for the program (per the pre-registration)
 

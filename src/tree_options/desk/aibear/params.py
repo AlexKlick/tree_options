@@ -21,9 +21,9 @@ PARAMS_RELPATH = Path("data/desk/aibear/AI-BEAR-001.params.json")
 #: sha256 of the sealed parameter file; set when AI-BEAR-001 was sealed
 SEALED_PARAMS_SHA256 = "072ab78199ba2d33dd63f639d6682e35e2d771ded2113b769497ee33559ecd53"
 
-#: AI-BEAR-002: the forward-only redesign the daily monitor records and scores
-FORWARD_PARAMS_RELPATH = Path("data/desk/aibear/AI-BEAR-002.params.json")
-SEALED_FORWARD_PARAMS_SHA256 = "a20dfa060a30cdcdfec8ce196d9d4ad84de772581f1ccc4c5c81b39c5217f282"
+#: AI-BEAR-002 as amended (AMENDMENT 1): the forward-only redesign the monitor runs
+FORWARD_PARAMS_RELPATH = Path("data/desk/aibear/AI-BEAR-002-A1.params.json")
+SEALED_FORWARD_PARAMS_SHA256 = "1ec43b1b4f2f42e2aaf6b9251dd302e0ef6ccdda4e4ffbf45b432fea3ea9f685"
 
 STATES = ("BULL", "TOPPING", "BEAR", "RELIEF", "CAPITULATION")
 NOT_EVALUABLE = "NOT_EVALUABLE"
