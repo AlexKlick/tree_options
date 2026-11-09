@@ -1,0 +1,115 @@
+{
+  "schema": "aibear-params/1",
+  "id": "AI-BEAR-001",
+  "written": "2026-11-09",
+  "regime": {
+    "ma_fast": 50,
+    "ma_slow": 200,
+    "slope_lag": 20,
+    "high_window": 252,
+    "mom_window": 20,
+    "vix_median_window": 60,
+    "vix_max_staleness_days": 5,
+    "bear_drawdown": "-0.20",
+    "topping_drawdown": "-0.10",
+    "capitulation_drawdown": "-0.20",
+    "capitulation_momentum": "-0.10",
+    "capitulation_vix_ratio": "1.25"
+  },
+  "sleeves": {
+    "core": {
+      "right": "P",
+      "long_moneyness": "1.00",
+      "short_moneyness": "0.70",
+      "dte": 270,
+      "entry_states": ["TOPPING", "BEAR", "RELIEF"],
+      "take_profit_width_frac": "0.80",
+      "regime_stop_bull_sessions": 10,
+      "cooldown_after_regime_stop": 20,
+      "exit_dte": 90,
+      "max_hold_sessions": null,
+      "instruments": ["NDX", "SOX", "CSCO", "INTC", "ORCL", "QCOM", "MSFT", "AMD", "NVDA", "AVGO", "TSLA", "META", "PLTR"]
+    },
+    "falls": {
+      "right": "P",
+      "long_moneyness": "1.00",
+      "short_moneyness": "0.90",
+      "dte": 45,
+      "entry_states": ["BEAR"],
+      "entry_prior_states": ["RELIEF", "TOPPING"],
+      "take_profit_width_frac": "0.70",
+      "stop_states": ["RELIEF", "BULL"],
+      "exit_dte": 10,
+      "max_hold_sessions": 25,
+      "instruments": ["NDX", "SOX"]
+    },
+    "relief": {
+      "right": "C",
+      "long_moneyness": "1.00",
+      "short_moneyness": "1.10",
+      "dte": 45,
+      "entry_prior_states": ["CAPITULATION"],
+      "entry_requires_up_close": true,
+      "take_profit_width_frac": "0.70",
+      "stop": "close_below_episode_low",
+      "exit_dte": 10,
+      "max_hold_sessions": 20,
+      "instruments": ["NDX", "SOX"]
+    }
+  },
+  "baselines": {
+    "random_null_seeds": 200,
+    "ladder_every_sessions": 21
+  },
+  "pricing": {
+    "model": "black_scholes",
+    "index_iv": "VXN",
+    "pre_vxn_iv": "VIX x k_vxn; k_vxn = median(VXN/VIX) over the first 252 sessions both series share",
+    "relative_vol_window": 60,
+    "relative_vol_clip": ["1.0", "3.0"],
+    "atm_factor": "0.8655",
+    "relative_vol_exponent": "0.78",
+    "atm_iv_model": "VXN_eq x atm_factor x clip(rv60_X / rv60_NDX, 1, 3) ^ relative_vol_exponent (NDX: ratio 1)",
+    "iv_calibration_log_sha256": "5ea48291acc123b48f582d8d90d4abf3910441a92f7abb874ada1e98aef3a02a",
+    "skew_beta": "0.5",
+    "skew_floor": "0.5",
+    "rate": "DTB3 / 100, last value on or before the date",
+    "dividend_yield": "0",
+    "spot_normalized_to": "100"
+  },
+  "costs": {
+    "half_spread_pct_of_mid": {"NDX": "0.03", "SOX": "0.08", "single": "0.05"},
+    "half_spread_floor_per_share": "0.02",
+    "commission_per_leg_fill": "0.65",
+    "multiplier": 100,
+    "calibration_log_sha256": "46f4b5a900fb495eb32d7f730db2202ccff8d053cbd28fb4b1651b23d2429892"
+  },
+  "entry_timing": "signal at the close of t from data on or before t; entry at the close of t+1",
+  "eras": [
+    {"name": "late-90s", "kind": "bull", "start": "1997-01-02", "end": "1998-12-31"},
+    {"name": "dotcom", "kind": "bear", "start": "1999-01-04", "end": "2003-03-31"},
+    {"name": "bull-2003-07", "kind": "bull", "start": "2003-04-01", "end": "2007-06-29"},
+    {"name": "gfc", "kind": "bear", "start": "2007-07-02", "end": "2009-12-31"},
+    {"name": "bull-2010-19", "kind": "bull", "start": "2010-01-04", "end": "2019-12-31"},
+    {"name": "covid-2020", "kind": "shock", "start": "2020-01-02", "end": "2020-12-31"},
+    {"name": "bull-2021", "kind": "bull", "start": "2021-01-04", "end": "2021-10-29"},
+    {"name": "bear-2022", "kind": "bear", "start": "2021-11-01", "end": "2023-03-31"},
+    {"name": "bull-2023-26", "kind": "bull", "start": "2023-04-03", "end": "2026-11-06"}
+  ],
+  "scoring_start": "1997-01-02",
+  "scoring_end": "2026-11-06",
+  "statistics": {
+    "cluster": "calendar month of entry",
+    "bootstrap_draws": 10000,
+    "seed": 20261109,
+    "holm_family": ["core", "falls", "relief"],
+    "alpha": "0.05"
+  },
+  "pass_bar": {
+    "P1": "full-window total net R > 0 and its month-clustered 95% CI lower bound > 0",
+    "P2": "Holm-adjusted random-null p < alpha (entry timing beats random timing)",
+    "P3": "total net R > 0 in at least 2 of the 3 bear eras",
+    "P4_core_only": "core loss per bull-era year <= 0.5 x the always-on ladder's loss per bull-era year",
+    "verdict": "PASS = all applicable; INSURANCE = P2 and P3 (and P4 for core) but not P1; FAIL otherwise"
+  }
+}
