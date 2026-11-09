@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the AI-BEAR monitor the morning after each session
+
+[Timer]
+# 07:15 ET, Tuesday to Saturday. The monitor needs session D's EOD chain
+# (desk-chain 17:45 ET), its panel close (desk-eod-equity 16:40/20:40 ET) and
+# its VIX close, which CBOE publishes at ~21:50 ET and desk-indices records at
+# 06:40 ET the next morning. Running earlier would compute CAPITULATION from
+# the prior day's VIX. The headlines the LLM reads at 07:15 are pre-market,
+# before the D+1 close at which a card signalled at D fills. Idempotent:
+# sessions already in book.json are never processed twice, and missed days
+# are caught up in order.
+OnCalendar=Tue..Sat *-*-* 07:15:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

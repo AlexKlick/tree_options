@@ -9106,6 +9106,135 @@ MUTANTS.extend(
 )
 
 
+# AI-BEAR (docs/desk/AI-BEAR-001.md, AI-BEAR-002.md): regime thresholds,
+# no-lookahead guards, execution timing, seals and the read-only surfaces.
+_AIB = "src/tree_options/desk/aibear/"
+_AIB_REGIME = "tests/unit/test_desk_aibear_regime.py::"
+_AIB_BT = "tests/unit/test_desk_aibear_backtest.py::"
+_AIB_MON = "tests/unit/test_desk_aibear_monitor.py::"
+MUTANTS.extend(
+    [
+        dict(
+            id="AIB-M1-capitulation-ignores-vix",
+            owner="test_day_after_the_crash_is_bear",
+            file=_AIB + "regime_engine.py",
+            anchor="and f.vix_ratio >= p.capitulation_vix_ratio",
+            replacement="and f.vix_ratio >= 0.0",
+            selectors=[_AIB_REGIME + "test_day_after_the_crash_is_bear"],
+            invariant="capitulation needs the VIX spike, not just a drawdown",
+        ),
+        dict(
+            id="AIB-M2-no-relief-state",
+            owner="test_bear_market_rally_above_the_50_day_is_relief",
+            file=_AIB + "regime_engine.py",
+            anchor='return "RELIEF" if f.close > f.ma_fast else "BEAR"',
+            replacement='return "BEAR"',
+            selectors=[_AIB_REGIME + "test_bear_market_rally_above_the_50_day_is_relief"],
+            invariant="a bear-market rally over the 50-day MA is RELIEF",
+        ),
+        dict(
+            id="AIB-M3-drawdown-peeks-tomorrow",
+            owner="test_state_at_d_ignores_everything_after_d",
+            file=_AIB + "regime_engine.py",
+            anchor="high = max(closes[i - p.high_window + 1 : i + 1])",
+            replacement="high = max(closes[i - p.high_window + 1 : i + 2])",
+            selectors=[_AIB_REGIME + "test_state_at_d_ignores_everything_after_d"],
+            invariant="the state at d reads no close after d",
+        ),
+        dict(
+            id="AIB-M4-entry-at-signal-close",
+            owner="test_entry_is_at_the_next_close_and_priced_at_spot_100",
+            file=_AIB + "backtest.py",
+            anchor="        e = i + 1\n",
+            replacement="        e = i\n",
+            selectors=[_AIB_BT + "test_entry_is_at_the_next_close_and_priced_at_spot_100"],
+            invariant="a signal at the close of t enters at the close of t+1",
+        ),
+        dict(
+            id="AIB-M5-exit-at-decision-close",
+            owner="test_take_profit_is_decided_at_one_close_and_executed_at_the_next",
+            file=_AIB + "backtest.py",
+            anchor="x = decided + 1  # decided",
+            replacement="x = decided  # decided",
+            selectors=[
+                _AIB_BT + "test_take_profit_is_decided_at_one_close_and_executed_at_the_next"
+            ],
+            invariant="an exit decided at the close of d executes at d+1",
+        ),
+        dict(
+            id="AIB-M6-unsealed-params-accepted",
+            owner="test_an_edited_parameter_file_is_refused_by_the_sealed_loader",
+            file=_AIB + "params.py",
+            anchor="if digest != sealed_sha256:",
+            replacement="if False:",
+            selectors=[_AIB_BT + "test_an_edited_parameter_file_is_refused_by_the_sealed_loader"],
+            invariant="the scorer and monitor run only the sealed parameter files",
+        ),
+        dict(
+            id="AIB-M7-forward-fill-at-mid",
+            owner="test_a_card_signals_fills_marks_and_exits_on_consecutive_sessions",
+            file=_AIB + "monitor.py",
+            anchor="debit = lq[1] - sq[0] + two_fills",
+            replacement="debit = (lq[0] + lq[1]) / 2 - (sq[0] + sq[1]) / 2 + two_fills",
+            selectors=[
+                _AIB_MON + "test_a_card_signals_fills_marks_and_exits_on_consecutive_sessions"
+            ],
+            invariant="forward cards fill at the crossing prices, never the mid",
+        ),
+        dict(
+            id="AIB-M8-cards-before-forward-start",
+            owner="test_no_card_is_created_before_the_first_signal_session",
+            file=_AIB + "monitor.py",
+            anchor="    if s >= first:",
+            replacement="    if True:",
+            selectors=[_AIB_MON + "test_no_card_is_created_before_the_first_signal_session"],
+            invariant="no forward card is created before the sealed first signal session",
+        ),
+        dict(
+            id="AIB-M9-relief2-ignores-recency",
+            owner="test_relief2_needs_a_capitulation_in_the_last_20_sessions",
+            file=_AIB + "rules.py",
+            anchor='if n is not None and "CAPITULATION" not in states',
+            replacement='if False and "CAPITULATION" not in states',
+            selectors=[_AIB_MON + "test_relief2_needs_a_capitulation_in_the_last_20_sessions"],
+            invariant="relief2 enters only within 20 sessions of a capitulation",
+        ),
+        dict(
+            id="AIB-M10-no-trend-reversal-stop",
+            owner="test_core2_stops_only_on_a_trend_reversal",
+            file=_AIB + "rules.py",
+            anchor='and rule.stop_on_trend_reversal and states[j] == "BULL" and trend_up',
+            replacement='and rule.stop_on_trend_reversal and states[j] == "BULL" and False',
+            selectors=[_AIB_MON + "test_core2_stops_only_on_a_trend_reversal"],
+            invariant="core2 stops on BULL with a rising 200-day MA",
+        ),
+        dict(
+            id="AIB-M11-in-progress-session-stored",
+            owner="test_fetch_records_completed_sessions_only",
+            file=_AIB + "history.py",
+            anchor="points = [(d, v) for d, v in points if d < today_et]",
+            replacement="points = list(points)",
+            selectors=[
+                "tests/unit/test_desk_aibear_history.py::test_fetch_records_completed_sessions_only"
+            ],
+            invariant="the history store holds completed sessions only",
+        ),
+        dict(
+            id="AIB-M12-web-serves-unpublished-fields",
+            owner="test_the_latest_session_document_is_served_with_no_execution_authority",
+            file="src/tree_options/trex_web/aibear_view.py",
+            anchor="body = {k: doc[k] for k in _FIELDS if k in doc}",
+            replacement="body = dict(doc)",
+            selectors=[
+                "tests/unit/test_trex_web_aibear.py::"
+                "test_the_latest_session_document_is_served_with_no_execution_authority"
+            ],
+            invariant="the AI-BEAR route publishes only its declared fields",
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

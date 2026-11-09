@@ -65,9 +65,9 @@ from tree_options.desk.aibear.rules import (
     SleeveRule,
     bull_runs,
     entry_signal,
-    episode_low,
     exit_reason,
     sleeve_rules,
+    stop_level,
 )
 from tree_options.desk.indices import read_store
 from tree_options.desk.longrun import bootstrap_ci, holm, sign_flip_p
@@ -294,7 +294,7 @@ class Simulator:
         debit = self._quote(e, s0, k_long, k_short, expiry, iv).open_debit
         if not debit > 0.0:
             return None
-        stop_low = episode_low(inst.states, inst.closes, i) if rule.stop_below_episode_low else None
+        stop_low = stop_level(rule, inst.states, inst.closes, i)
         reason, decided = None, n - 1
         for j in range(e, n):
             iv = self._iv_or(j, iv)  # a day without an IV keeps the last one

@@ -21,6 +21,10 @@ PARAMS_RELPATH = Path("data/desk/aibear/AI-BEAR-001.params.json")
 #: sha256 of the sealed parameter file; set when AI-BEAR-001 was sealed
 SEALED_PARAMS_SHA256 = "072ab78199ba2d33dd63f639d6682e35e2d771ded2113b769497ee33559ecd53"
 
+#: AI-BEAR-002: the forward-only redesign the daily monitor records and scores
+FORWARD_PARAMS_RELPATH = Path("data/desk/aibear/AI-BEAR-002.params.json")
+SEALED_FORWARD_PARAMS_SHA256 = "a20dfa060a30cdcdfec8ce196d9d4ad84de772581f1ccc4c5c81b39c5217f282"
+
 STATES = ("BULL", "TOPPING", "BEAR", "RELIEF", "CAPITULATION")
 NOT_EVALUABLE = "NOT_EVALUABLE"
 
@@ -79,13 +83,22 @@ def params_path() -> Path:
     return repo_root() / PARAMS_RELPATH
 
 
+def forward_params_path() -> Path:
+    return repo_root() / FORWARD_PARAMS_RELPATH
+
+
 def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_params(path: Path | None = None, *, require_sealed: bool = False) -> dict[str, Any]:
+def load_params(
+    path: Path | None = None,
+    *,
+    require_sealed: bool = False,
+    sealed_sha256: str = SEALED_PARAMS_SHA256,
+) -> dict[str, Any]:
     """The parameter document. ``require_sealed`` refuses a file whose digest
-    is not ``SEALED_PARAMS_SHA256`` (the scorer's guard)."""
+    is not ``sealed_sha256`` (AI-BEAR-001's by default)."""
     p = path or params_path()
     try:
         raw = p.read_bytes()
@@ -93,10 +106,9 @@ def load_params(path: Path | None = None, *, require_sealed: bool = False) -> di
         raise ParamsError(f"cannot read {p}: {exc.strerror}") from None
     if require_sealed:
         digest = hashlib.sha256(raw).hexdigest()
-        if digest != SEALED_PARAMS_SHA256:
+        if digest != sealed_sha256:
             raise ParamsError(
-                f"{p.name} sha256 {digest[:12]} is not the sealed AI-BEAR-001 digest "
-                f"{SEALED_PARAMS_SHA256[:12]}"
+                f"{p.name} sha256 {digest[:12]} is not the sealed digest {sealed_sha256[:12]}"
             )
     try:
         doc = json.loads(raw)

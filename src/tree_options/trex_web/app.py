@@ -600,6 +600,11 @@ def create_app(
 
     attach_experiments(app)
 
+    # AI-BEAR monitor (read-only research/advisory document).
+    from tree_options.trex_web.aibear_view import attach as attach_aibear
+
+    attach_aibear(app)
+
     from tree_options.trex_web.paper_view import attach as attach_paper_workspace
     from tree_options.trex_web.quant_jobs_view import attach as attach_quant_jobs
 
