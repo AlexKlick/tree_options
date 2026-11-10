@@ -35,14 +35,30 @@ def test_relief2_needs_a_capitulation_in_the_last_20_sessions() -> None:
     assert not entry_signal(r, ["CAPITULATION", "RELIEF", "RELIEF"], [1.0] * 3, 2)  # not first
 
 
+def _occ(root: str, exp: str, right: str, strike: float) -> str:
+    """An OCC symbol written out by hand: root, YYMMDD, right, strike x 1000 (8 digits)."""
+    return f"{root}{exp[2:4]}{exp[5:7]}{exp[8:10]}{right}{round(strike * 1000):08d}"
+
+
 def _chain(
-    session: date, spot: float, rows: list[tuple[str, str, float, float, float]]
+    session: date,
+    spot: float,
+    rows: list[tuple[str, str, float, float, float]],
+    roots: list[str] | None = None,
 ) -> mon.Chain:
-    """rows: (right, expiry ISO, strike, bid, ask)."""
-    occs = [f"X{exp}{right}{strike}" for right, exp, strike, _, _ in rows]
+    """rows: (right, expiry ISO, strike, bid, ask); roots: per-row OCC root (default XYZ)."""
+    roots = roots or ["XYZ"] * len(rows)
+    occs = [
+        _occ(root, exp, right, strike)
+        for root, (right, exp, strike, _, _) in zip(roots, rows, strict=True)
+    ]
     return mon.Chain(
         {
-            "header": {"session": session.isoformat(), "underlying_quote": {"close": spot}},
+            "header": {
+                "session": session.isoformat(),
+                "underlying": "XYZ",
+                "underlying_quote": {"close": spot},
+            },
             "columns": {
                 "occ": occs,
                 "exp": [r[1] for r in rows],
@@ -75,6 +91,32 @@ def test_strike_rule_picks_the_nearest_expiry_and_strikes() -> None:
     assert long["exp"].isoformat() == e45  # 46 days is nearer to 45 than 39
     assert long["strike"] == 100.0  # nearest to 101 x 1.00
     assert short["strike"] == 91.0  # nearest to 101 x 0.90 = 90.9
+
+
+def test_only_standard_root_contracts_are_quoted() -> None:
+    """The recorded NVDA chain of 2026-11-09 lists B1VDA261224P00170000 at
+    0.24/0.54 (open interest 0) just before NVDA261224P00170000 at 9.05/9.50.
+    A card must fill, mark and exit only on the standard contract."""
+    s = date(2026, 11, 10)
+    e45 = (s + timedelta(days=46)).isoformat()
+    ch = _chain(
+        s,
+        101.0,
+        [
+            ("P", e45, 100.0, 0.24, 0.54),
+            ("P", e45, 100.0, 4.0, 4.2),
+            ("P", e45, 91.0, 0.01, 0.30),
+            ("P", e45, 91.0, 1.1, 1.2),
+        ],
+        roots=["B1YZ", "XYZ", "B1YZ", "XYZ"],
+    )
+    picked = ch.pick(RULES["falls"], FWD["expiry_window_days"]["falls"])
+    assert picked is not None
+    long, short = picked
+    assert (long["occ"], long["bid"], long["ask"]) == (_occ("XYZ", e45, "P", 100.0), 4.0, 4.2)
+    assert (short["occ"], short["bid"], short["ask"]) == (_occ("XYZ", e45, "P", 91.0), 1.1, 1.2)
+    assert ch.ask(_occ("B1YZ", e45, "P", 100.0)) is None
+    assert ch.nonstandard == 2
 
 
 def _series(states: list[str], closes: list[float], start: date) -> mon.Series:
