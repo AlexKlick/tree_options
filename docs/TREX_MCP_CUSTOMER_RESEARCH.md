@@ -124,3 +124,11 @@ included. They would require separate versioned contracts, narrow capabilities,
 per-entry customer consent, the supervisor's risk gate and replay-tested
 reconciliation before being considered. No LLM-supplied numbers may become an
 order by crossing this bridge directly.
+
+
+## Wave 2 hardening candidate (2026-11-10)
+
+See [`TREX_MCP_WAVE2_HARDENING.md`](TREX_MCP_WAVE2_HARDENING.md) for bounded-I/O,
+shared HTTP pooling, per-worker admission, source-provenance controls,
+fail-closed negative tests and the operator release gates. This is a
+**separate review candidate**, not a production authorization or deployment.
