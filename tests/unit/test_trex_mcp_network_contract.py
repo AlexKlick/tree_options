@@ -58,7 +58,7 @@ class Harness:
         self.count["trex"] += 1
         assert request.method == "GET"
         assert request.headers.get("authorization") is None  # No OAuth token egress.
-        assert request.url.path in ("/api/market/TSLA", "/api/market/TSLA/options")
+        assert request.url.path in ("/api/market/TSLA/quote", "/api/market/TSLA/options")
         self.account_requests.append(f"{request.url.port}:{request.url.path}")
         if request.url.port == 8090:
             spot = 375.0
@@ -101,7 +101,7 @@ def test_actual_oauth_to_isolated_trex_paths_and_no_token_egress() -> None:
         assert a.json()["result"]["structuredContent"]["quote"]["last"] == 375
         assert b.json()["result"]["structuredContent"]["quote"]["last"] == 380
         assert option.json()["result"]["structuredContent"]["recorded"]["returned_rows"][0]["ask"] == 26.75
-        assert h.account_requests == ["8090:/api/market/TSLA", "8091:/api/market/TSLA", "8090:/api/market/TSLA/options"]
+        assert h.account_requests == ["8090:/api/market/TSLA/quote", "8091:/api/market/TSLA/quote", "8090:/api/market/TSLA/options"]
         assert h.count["oauth"] == 3
         assert h.count["trex"] == 3
         assert "customer-alpha" not in str(a.json())
