@@ -222,8 +222,16 @@ def _slice_rows(
     _strikes = cols.get("strike")
     strikes: list[Any] = _strikes if isinstance(_strikes, list) else []
     by_exp: dict[str, list[int]] = {}
-    for i, e in enumerate(exps):
-        by_exp.setdefault(e, []).append(i)
+    if expiration is None:
+        for i, e in enumerate(exps):
+            by_exp.setdefault(e, []).append(i)
+    else:
+        # The exact-expiration lane scans the column once but retains only
+        # matching indexes; never allocate an index list for every other
+        # expiration in a multi-year recorded chain.
+        indices = [i for i, e in enumerate(exps) if e == expiration]
+        if indices:
+            by_exp[expiration] = indices
     rows: list[dict[str, Any]] = []
     for exp in select_expiries(by_exp, max_expiries=max_expiries, expiration=expiration):
         idxs = by_exp[exp]
