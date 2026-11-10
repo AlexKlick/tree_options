@@ -42,9 +42,9 @@ python -m compileall -q src/tree_options/trex_mcp
 ```
 
 The 11 initial provenance tests failed **red** before implementation (missing
-`gateway_at` contract). Two more tests cover NY date rollover and real MCP
-endpoint rejection. With the proposed implementation **103/103 targeted tests
-passed** on the isolated 2026-11-10 candidate. No performance improvement is
+`gateway_at` contract). Three more tests cover NY date rollover, real MCP
+endpoint rejection, and enforcement by the operator pilot gate. With the proposed
+implementation **104/104 targeted tests passed** on the isolated 2026-11-10 candidate. No performance improvement is
 claimed from a microbenchmark; the design uses one clock parse per response.
 
 ## Remaining blocking gates
