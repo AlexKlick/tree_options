@@ -1,0 +1,28 @@
+# Candidate only. This USER unit must be rendered and reviewed by the operator.
+# Do not install/activate until TREX P0–P6 and OAuth/market-data gates pass.
+[Unit]
+Description=TREX customer read-only MCP research gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@RELEASE_DIR@
+EnvironmentFile=@SECRET_ENV_FILE@
+ExecStart=@PYTHON@ -m tree_options.trex_mcp
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+TasksMax=48
+MemoryMax=256M
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
