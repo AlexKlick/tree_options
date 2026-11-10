@@ -755,3 +755,54 @@ def test_clock_without_capture_degrades_to_cards_only_honestly(tmp_path: Path) -
 def test_bad_clock_query_is_a_422(client: TestClient) -> None:
     for bad in ("9:30", "25:00", "1300", "13:00:00", "eod"):
         assert client.get(f"/api/market/{SYM}/options?clock={bad}").status_code == 422, bad
+
+
+def test_exact_expiry_bypasses_nearest_twelve_recorded_contracts(tmp_path: Path) -> None:
+    """A distant observed contract survives the nearest-12 cap."""
+    store = tmp_path / "store"
+    _write_features(store, SESSION, {SYM: _feature_name(101.0)})
+    extras = [
+        "2027-02-19", "2027-03-19", "2027-04-16", "2027-05-21",
+        "2027-07-16", "2027-08-20", "2027-09-17", "2027-10-15",
+        "2027-11-19", "2028-01-21",
+    ]
+    expiries = sorted(set(EXPIRIES + extras))
+    assert expiries.index("2028-01-21") >= 12
+    _write_chain(store, SESSION, SYM, expiries, STRIKES)
+    client = _client(store)
+    nearest = _get(client, f"/api/market/{SYM}/options?window=0&max_expiries=12")
+    assert "2028-01-21" not in {r["exp"] for r in nearest["recorded"]["slice"]}
+    exact = _get(
+        client, f"/api/market/{SYM}/options?window=0&max_expiries=1&expiration=2028-01-21"
+    )
+    rows = exact["recorded"]["slice"]
+    assert len(rows) == 2  # P + C at ATM, not a fabricated full chain
+    assert {r["exp"] for r in rows} == {"2028-01-21"}
+    assert {r["right"] for r in rows} == {"P", "C"}
+    assert all(r["bid"] is not None for r in rows)
+    absent = _get(client, f"/api/market/{SYM}/options?expiration=2028-12-15")
+    assert absent["recorded"]["slice"] == []
+
+
+def test_exact_expiry_bypasses_nearest_live_viewchain(tmp_path: Path) -> None:
+    """Delayed-cache YYYYMMDD keys must support a distant ISO-date request."""
+    discovery = tmp_path / "disc"
+    payload = _viewchain_payload()
+    payload["expiries"]["20280121"] = payload["expiries"]["20270319"]
+    _write_viewchain(discovery, SYM, payload, LIVE_NOW)
+    args = (tmp_path / "store", SYM, 1, 1, LIVE_NOW)
+    base = options_payload(*args, market_cache_dir=discovery / "market" / "cache")
+    assert "2028-01-21" not in {r["exp"] for r in base["live"]["slice"]}
+    exact = options_payload(
+        *args, market_cache_dir=discovery / "market" / "cache", expiration="2028-01-21"
+    )
+    assert {r["exp"] for r in exact["live"]["slice"]} == {"2028-01-21"}
+    missing = options_payload(
+        *args, market_cache_dir=discovery / "market" / "cache", expiration="2028-12-15"
+    )
+    assert missing["live"]["slice"] == []
+
+
+@pytest.mark.parametrize("invalid", ["2028-2-3", "2028-02-30", "2028-01-21/../api/commands"])
+def test_exact_expiration_bad_request_fails_422(client: TestClient, invalid: str) -> None:
+    assert client.get(f"/api/market/{SYM}/options", params={"expiration": invalid}).status_code == 422
