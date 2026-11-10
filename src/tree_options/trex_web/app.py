@@ -21,6 +21,7 @@ from tree_options.trex.clock import now_et
 from tree_options.trex.contracts import CommandAuthority
 from tree_options.trex.discovery.artifact import write_request, write_scan_request
 from tree_options.trex_web.discovery_view import discovery_payload
+from tree_options.trex_web.market_quote import read_market_quote, validate_quote_symbol
 from tree_options.trex_web.payoff import (
     payoff_series,
     pnl_history_series,
@@ -740,16 +741,11 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown symbol")
         now = now_et()
         cache = MarketCache(discovery_root / "market" / "cache")
-        quote_doc = None
-        market_path = discovery_root / "market.json"
-        if market_path.exists():
-            try:
-                quote_doc = json.loads(market_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                quote_doc = None
-        quote = (quote_doc or {}).get("symbols", {}).get(sym_up)
-        if quote is None:
-            quote = cache.get("quote", sym_up, now)
+        quote = read_market_quote(
+            discovery_root / "market.json",
+            sym_up,
+            lambda: cache.get("quote", sym_up, now),
+        )
         bars_env = cache.get_envelope("bars", sym_up)
         news_env = cache.get_envelope("news", sym_up)
         bars_payload = bars_env.get("payload") if bars_env else None
@@ -766,6 +762,35 @@ def create_app(
             "bars_age_seconds": _age(bars_env.get("fetched_at"), now) if bars_env else None,
             "news": news[:12] if isinstance(news, list) else [],
             "news_age_seconds": _age(news_env.get("fetched_at"), now) if news_env else None,
+        }
+
+    @app.get("/api/market/{sym}/quote")
+    def api_market_symbol_quote(sym: str) -> dict[str, object]:
+        """Quote-only read for the tenant-bound MCP gateway.
+
+        Uses the same persisted market.json precedence and TTL fallback as
+        the cockpit symbol view. Does not read bars, news, positions, account
+        data, or issue refresh requests. Missing quotes remain null.
+        """
+        from tree_options.trex.discovery.market import MarketCache
+        from tree_options.trex_web.discovery_view import _age
+
+        try:
+            sym_up = validate_quote_symbol(sym)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="unknown symbol") from exc
+        now = now_et()
+        cache = MarketCache(discovery_root / "market" / "cache")
+        quote = read_market_quote(
+            discovery_root / "market.json",
+            sym_up,
+            lambda: cache.get("quote", sym_up, now),
+        )
+        return {
+            "now": now.isoformat(),
+            "symbol": sym_up,
+            "quote": quote,
+            "quote_age_seconds": _age((quote or {}).get("source_as_of"), now),
         }
 
     @app.get("/api/market/{sym}/history")

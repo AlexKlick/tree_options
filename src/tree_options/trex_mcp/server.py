@@ -253,7 +253,7 @@ async def _read_trex(
     """Only allowlisted local GETs; responses and transport cost are capped."""
     if tenant not in config.tenants:
         raise AccessDenied("unknown tenant")
-    match = re.fullmatch(r"/api/market/([A-Z]+(?:\.[A-Z]+)?)(?:/options)?", path)
+    match = re.fullmatch(r"/api/market/([A-Z]+(?:\.[A-Z]+)?)(?:/(?:options|quote))?", path)
     if match is None or len(match.group(1)) > 6:
         # Dot-only/adjacent-dot segments normalize to parent routes in HTTP.
         raise UpstreamUnavailable("endpoint not in MCP allowlist")
@@ -789,7 +789,7 @@ def create_app(
         if name == "trex_market_snapshot":
             _require_exact_fields(args, {"symbol"})
             sym = symbol_value(args.get("symbol"))
-            doc = await _fetch(principal.tenant_id, f"/api/market/{sym}", {})
+            doc = await _fetch(principal.tenant_id, f"/api/market/{sym}/quote", {})
             return _safe_market_view(doc, sym)
         if name == "trex_options_surface":
             _require_exact_fields(args, {"symbol", "expiration", "right"})

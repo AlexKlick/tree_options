@@ -20,7 +20,10 @@ multiplier is 100. Optional `short_strike`, `contracts` (1-100) and
 **not verified quotes**. Returns at expiration exclude fees and volatility,
 and are never advertised as returns achievable today.
 
-The options surface uses `/api/market/{symbol}/options` with
+The market snapshot tool reads `/api/market/{symbol}/quote` (not the
+full symbol view), avoiding bars and news I/O. TREX and MCP share the same
+recorded quote and source timestamp, with no implicit refresh. The options
+surface uses `/api/market/{symbol}/options` with
 `window=15&max_expiries=12`. TREX limits this to the nearest expiries and
 strikes around ATM; not seeing a distant LEAPS contract **does not mean that
 contract is unavailable**. The cache may be delayed or stale. Never present
