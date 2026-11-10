@@ -281,6 +281,13 @@ def _safe_options_view(doc: dict[str, Any], symbol: str, exp: str | None, right:
         "cache_is_not_executable_quote": True,
         "nearest_expiry_slice_is_not_a_complete_option_chain": True,
     }
+    permitted_rows = {
+        "exp", "dte", "right", "strike", "atm", "bid", "ask", "mid",
+        "iv", "delta", "gamma", "theta", "vega", "oi", "volume",
+    }
+    permitted_cards = {
+        "iv", "iv_rank", "skew25", "term_slope", "yz22_ann", "liquidity_score", "earnings",
+    }
     for kind in ("recorded", "live"):
         raw = doc.get(kind)
         if not isinstance(raw, dict):
@@ -303,11 +310,18 @@ def _safe_options_view(doc: dict[str, Any], symbol: str, exp: str | None, right:
             "age_seconds": raw.get("age_seconds"),
             "ttl_seconds": raw.get("ttl_seconds"),
             "spot": raw.get("spot"),
-            "cards": raw.get("cards") if kind == "recorded" else None,
+            "cards": (
+                {k: v for k, v in raw["cards"].items() if k in permitted_cards}
+                if kind == "recorded" and isinstance(raw.get("cards"), dict)
+                else None
+            ),
             "expiries_in_retrieved_slice": expiries,
             "expiry_found": exp is None or exp in expiries,
             "matching_rows": len(filtered),
-            "returned_rows": filtered[:80],
+            "returned_rows": [
+                {k: v for k, v in row.items() if k in permitted_rows}
+                for row in filtered[:80]
+            ],
             "truncated": len(filtered) > 80,
         }
     return result

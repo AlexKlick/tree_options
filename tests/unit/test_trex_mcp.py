@@ -34,9 +34,9 @@ def _client(*, allowed_origins: frozenset[str] = frozenset()) -> tuple[TestClien
                 "warnings": ["recorded chain may be stale"],
                 "recorded": {
                     "session": "2026-11-09", "age_seconds": 100000, "spot": 378.05,
-                    "cards": {"iv": 0.8},
+                    "cards": {"iv": 0.8, "account_id": "do-not-leak"},
                     "slice": [
-                        {"exp": "2027-09-17", "right": "P", "strike": 300, "ask": 26.75, "bid": 25.6},
+                        {"exp": "2027-09-17", "right": "P", "strike": 300, "ask": 26.75, "bid": 25.6, "account_id": "do-not-leak"},
                         {"exp": "2027-09-17", "right": "C", "strike": 400, "ask": 49.0},
                         {"exp": "2027-10-15", "right": "P", "strike": 300, "ask": None},
                     ],
@@ -46,7 +46,7 @@ def _client(*, allowed_origins: frozenset[str] = frozenset()) -> tuple[TestClien
         return {
             "now": "2026-11-10T10:12:00-05:00",
             "quote_age_seconds": 3600,
-            "quote": {"last": 378.05, "source_as_of": "2026-11-09T16:00:00-05:00"},
+            "quote": {"last": 378.05, "source_as_of": "2026-11-09T16:00:00-05:00", "account_id": "do-not-leak"},
             "news": [{"title": "should not be exposed"}],
         }
 
@@ -143,6 +143,7 @@ def test_market_and_options_tools_are_tenant_scoped_get_only() -> None:
     assert result["symbol"] == "TSLA"
     assert result["quote_age_seconds"] == 3600
     assert "news" not in result
+    assert "account_id" not in result["quote"]
     assert calls == [("b", "/api/market/TSLA", {})]
 
     result = _post(c, _rpc("tools/call", params={
@@ -152,6 +153,8 @@ def test_market_and_options_tools_are_tenant_scoped_get_only() -> None:
     assert result["recorded"]["expiries_in_retrieved_slice"] == ["2027-09-17", "2027-10-15"]
     assert result["recorded"]["matching_rows"] == 1
     assert result["recorded"]["returned_rows"][0]["bid"] == 25.6
+    assert "account_id" not in result["recorded"]["returned_rows"][0]
+    assert "account_id" not in result["recorded"]["cards"]
     assert result["recorded"]["age_seconds"] == 100000
     assert result["live"] is None
     assert calls[1] == ("a", "/api/market/TSLA/options", {"window": 15, "max_expiries": 12})
