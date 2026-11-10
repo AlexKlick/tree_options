@@ -158,7 +158,7 @@ def test_market_and_options_tools_are_tenant_scoped_get_only() -> None:
     assert "account_id" not in result["recorded"]["cards"]
     assert result["recorded"]["age_seconds"] == 100000
     assert result["live"] is None
-    assert calls[1] == ("a", "/api/market/TSLA/options", {"window": 15, "max_expiries": 12})
+    assert calls[1] == ("a", "/api/market/TSLA/options", {"window": 15, "max_expiries": 12, "expiration": "2027-09-17"})
 
 
 def test_missing_expiry_is_disclosed_not_fabricated() -> None:
