@@ -35,6 +35,7 @@ from tree_options.trex.discovery.market import MarketCache, nearest_rung
 from tree_options.trex.series import decimate_pairs, level_extent
 from tree_options.trex_web.discovery_view import _age
 from tree_options.trex_web.symbol_history import _ts_ms, history_age_seconds
+from tree_options.trex_web.expiry_filter import select_expiries
 
 DEFAULT_WINDOW = 5
 MIN_WINDOW, MAX_WINDOW = 0, 15
@@ -208,7 +209,8 @@ def _row(
 
 
 def _slice_rows(
-    chain: dict[str, Any], session: str, spot: float, window: int, max_expiries: int
+    chain: dict[str, Any], session: str, spot: float, window: int, max_expiries: int,
+    expiration: str | None = None,
 ) -> list[dict[str, Any]]:
     """Nearest ``max_expiries`` expiries, +/- ``window`` ladder rungs around
     that expiry's ATM strike (nearest to spot), both rights, sorted by
@@ -220,10 +222,18 @@ def _slice_rows(
     _strikes = cols.get("strike")
     strikes: list[Any] = _strikes if isinstance(_strikes, list) else []
     by_exp: dict[str, list[int]] = {}
-    for i, e in enumerate(exps):
-        by_exp.setdefault(e, []).append(i)
+    if expiration is None:
+        for i, e in enumerate(exps):
+            by_exp.setdefault(e, []).append(i)
+    else:
+        # The exact-expiration lane scans the column once but retains only
+        # matching indexes; never allocate an index list for every other
+        # expiration in a multi-year recorded chain.
+        indices = [i for i, e in enumerate(exps) if e == expiration]
+        if indices:
+            by_exp[expiration] = indices
     rows: list[dict[str, Any]] = []
-    for exp in sorted(by_exp)[:max_expiries]:
+    for exp in select_expiries(by_exp, max_expiries=max_expiries, expiration=expiration):
         idxs = by_exp[exp]
         ladder = sorted({strikes[i] for i in idxs if isinstance(strikes[i], (int, float))})
         if not ladder:
@@ -315,7 +325,8 @@ def _live_row(
 
 
 def _live_slice(
-    payload: dict[str, Any], spot: float | None, window: int, max_expiries: int, now: datetime
+    payload: dict[str, Any], spot: float | None, window: int, max_expiries: int, now: datetime,
+    expiration: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """The viewchain expiries -> recorded-shaped rows: nearest
     ``max_expiries`` expiries, +/- ``window`` rungs around the ATM (nearest
@@ -325,7 +336,7 @@ def _live_slice(
     if not isinstance(raw, dict) or not raw:
         return None
     rows: list[dict[str, Any]] = []
-    for exp in sorted(raw)[:max_expiries]:
+    for exp in select_expiries(raw, max_expiries=max_expiries, expiration=expiration, compact=True):
         try:
             exp_date = datetime.strptime(exp, "%Y%m%d").date()
         except ValueError:
@@ -371,6 +382,7 @@ def _live_section(
     window: int,
     max_expiries: int,
     now: datetime,
+    expiration: str | None = None,
 ) -> dict[str, Any] | None:
     """The live slot: the discovery lane's viewchain envelope (delayed CBOE
     chain, TTL-warmed by market_cycle's force path). Absent or junk
@@ -388,7 +400,7 @@ def _live_section(
         "age_seconds": _age(env.get("fetched_at"), now),
         "ttl_seconds": _int(env.get("ttl_seconds")),
         "spot": spot,
-        "slice": _live_slice(payload, spot, window, max_expiries, now),
+        "slice": _live_slice(payload, spot, window, max_expiries, now, expiration=expiration),
     }
 
 
@@ -403,6 +415,7 @@ def options_payload(
     now: datetime,
     market_cache_dir: Path | None = None,
     clock: str | None = None,
+    expiration: str | None = None,
 ) -> dict[str, Any]:
     """The /api/market/{sym}/options body: the recorded surface (cards +
     atm_term + slice), the iv30 history, and the live viewchain section.
@@ -456,7 +469,7 @@ def options_payload(
             spot = header_spot
         slice_rows: list[dict[str, Any]] | None = None
         if chain is not None and spot is not None:
-            slice_rows = _slice_rows(chain, session, spot, w, cap)
+            slice_rows = _slice_rows(chain, session, spot, w, cap, expiration=expiration)
         elif chain is not None:
             warnings.append("no spot in features or chain header; slice null")
         recorded = {
@@ -480,7 +493,7 @@ def options_payload(
         "symbol": sym,
         "recorded": recorded,
         "iv30_history": _iv30_history(store_root, sym),
-        "live": _live_section(_market_cache_root(market_cache_dir), sym, w, cap, now),
+        "live": _live_section(_market_cache_root(market_cache_dir), sym, w, cap, now, expiration=expiration),
         "available": available,
         "warnings": warnings,
     }

@@ -801,7 +801,7 @@ def create_app(
             doc = await _fetch(
                 principal.tenant_id,
                 f"/api/market/{sym}/options",
-                {"window": 15, "max_expiries": 12},
+                {"window": 15, "max_expiries": 12, **({"expiration": expiry} if expiry is not None else {})},
             )
             return _safe_options_view(doc, sym, expiry, right)
         raise InvalidScenario("unknown MCP tool")

@@ -24,6 +24,8 @@ TESTS = (
     "tests/unit/test_trex_mcp_bearish_compare.py",
     "tests/unit/test_trex_mcp_network_contract.py",
     "tests/unit/test_trex_mcp_provenance.py",
+    "tests/unit/test_trex_mcp_expiration_forward.py",
+    "tests/unit/test_trex_exact_expiry_selection.py",
 )
 FORBIDDEN_IMPORTS = (
     "ib_async", "snaptrade_python_sdk", "snaptrade", "tree_options.trex.",
