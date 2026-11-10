@@ -141,3 +141,16 @@ def test_http_mcp_tool_rejects_self_consistent_future_source_clock() -> None:
     assert r.json()["result"]["isError"] is True
     assert r.json()["result"]["content"][0]["text"] == (
         "TREX read unavailable; no quote inferred")
+
+
+def test_pilot_gate_includes_new_provenance_suite() -> None:
+    """The operator's exact-head gate must not silently skip this new suite."""
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "scripts/trex_mcp_pilot_gate.py"
+    spec = importlib.util.spec_from_file_location("trex_mcp_pilot_gate_provenance", script)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert "tests/unit/test_trex_mcp_provenance.py" in mod.TESTS
