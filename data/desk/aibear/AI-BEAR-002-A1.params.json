@@ -1,0 +1,178 @@
+{
+  "schema": "aibear-params/1",
+  "id": "AI-BEAR-002",
+  "written": "2026-11-09",
+  "mode": "forward_only",
+  "supersedes_for_forward": "AI-BEAR-001 (FAIL on 1997-2026; docs/desk/AI-BEAR-001-results.md)",
+  "regime": {
+    "ma_fast": 50,
+    "ma_slow": 200,
+    "slope_lag": 20,
+    "high_window": 252,
+    "mom_window": 20,
+    "vix_median_window": 60,
+    "vix_max_staleness_days": 5,
+    "bear_drawdown": "-0.20",
+    "topping_drawdown": "-0.10",
+    "capitulation_drawdown": "-0.20",
+    "capitulation_momentum": "-0.10",
+    "capitulation_vix_ratio": "1.25"
+  },
+  "sleeves": {
+    "core2": {
+      "right": "P",
+      "long_moneyness": "1.00",
+      "short_moneyness": "0.60",
+      "dte": 365,
+      "entry_states": [
+        "BEAR"
+      ],
+      "entry_prior_states": [
+        "RELIEF"
+      ],
+      "take_profit_width_frac": "0.90",
+      "stop": "trend_reversal",
+      "exit_dte": 120,
+      "max_hold_sessions": null,
+      "instruments": [
+        "QQQ",
+        "SMH",
+        "INTC",
+        "QCOM",
+        "MSFT",
+        "AMD",
+        "NVDA",
+        "AVGO",
+        "TSLA",
+        "META",
+        "PLTR"
+      ]
+    },
+    "falls": {
+      "right": "P",
+      "long_moneyness": "1.00",
+      "short_moneyness": "0.90",
+      "dte": 45,
+      "entry_states": [
+        "BEAR"
+      ],
+      "entry_prior_states": [
+        "RELIEF",
+        "TOPPING"
+      ],
+      "take_profit_width_frac": "0.70",
+      "stop_states": [
+        "RELIEF",
+        "BULL"
+      ],
+      "exit_dte": 10,
+      "max_hold_sessions": 25,
+      "instruments": [
+        "QQQ",
+        "SMH"
+      ]
+    },
+    "relief2": {
+      "right": "C",
+      "long_moneyness": "1.00",
+      "short_moneyness": "1.10",
+      "dte": 45,
+      "entry_states": [
+        "RELIEF"
+      ],
+      "entry_prior_states": [
+        "BULL",
+        "TOPPING",
+        "BEAR",
+        "CAPITULATION"
+      ],
+      "recent_capitulation_within": 20,
+      "take_profit_width_frac": "0.70",
+      "stop": "close_below_episode_low",
+      "exit_dte": 10,
+      "max_hold_sessions": 20,
+      "instruments": [
+        "QQQ",
+        "SMH"
+      ]
+    }
+  },
+  "forward": {
+    "first_signal_session": "2026-11-10",
+    "states_from": "artifacts/paper-trades/ohlc-panel.json closes (Polygon EOD) + indices/VIX.csv",
+    "prices_from": "artifacts/desk-store/chains/<session>/<SYM>.json.gz (clock eod)",
+    "expiry_window_days": {
+      "core2": [
+        270,
+        450
+      ],
+      "falls": [
+        30,
+        60
+      ],
+      "relief2": [
+        30,
+        60
+      ]
+    },
+    "strike_rule": "the listed strike nearest spot x moneyness in the chosen expiry; spot = the chain's underlying close at the fill session",
+    "fill": "entry at the next session's chain: long at ask, short at bid; exit at the session after the decision: long at bid, short at ask; $0.65 per leg per fill",
+    "missing_quote": "an entry leg without a positive bid and ask makes the card unfillable (recorded, excluded); an exit waits up to 3 sessions for quotes, then closes at intrinsic value",
+    "control_probability": "0.05",
+    "control_seed": "AI-BEAR-002",
+    "min_closed_cards": 20,
+    "pass_bar": {
+      "F1": "total net R of closed cards > 0",
+      "F2": "month-clustered one-sided sign-flip p < 0.10",
+      "F3": "mean R > the same sleeve's control cards' mean R",
+      "verdict": "PENDING below min_closed_cards; then FORWARD-PASS = F1, F2 and F3; FORWARD-FAIL otherwise"
+    },
+    "session_source": "every QQQ session in the panel (not only sessions with a recorded chain)",
+    "fill_wait_sessions": 3,
+    "exit_quotes": "exit and marks need the long leg's bid (>= 0, on a live row with ask > 0) and the short leg's ask (> 0); a zero bid is a real bid",
+    "take_profit_needs_fresh_mark": true,
+    "control_context": {
+      "core2": {
+        "states": [
+          "BEAR",
+          "RELIEF"
+        ]
+      },
+      "falls": {
+        "states": [
+          "BEAR"
+        ]
+      },
+      "relief2": {
+        "recent_capitulation_within": 20
+      }
+    },
+    "corporate_action_void_threshold": "0.05",
+    "verdict_basis": "the first min_closed_cards closed rule cards in exit order (exit session, then card id) and the control cards closed on or before that session; fixed once reached"
+  },
+  "llm": {
+    "names": [
+      "TSLA",
+      "NVDA",
+      "AVGO",
+      "AMD",
+      "PLTR",
+      "META",
+      "MSFT",
+      "QQQ",
+      "SMH",
+      "SOXX"
+    ],
+    "provider": "local",
+    "fallback": "zai",
+    "timeout_s": 240,
+    "max_tokens": 3000,
+    "horizon_sessions": 20,
+    "down_threshold": "-0.10",
+    "role": "advisory only: recorded and scored forward (Brier vs the base rate); never an input to any card",
+    "once_per_session": true
+  },
+  "amendment": 1,
+  "amends_params_sha256": "a20dfa060a30cdcdfec8ce196d9d4ad84de772581f1ccc4c5c81b39c5217f282",
+  "amendment_doc": "docs/desk/AI-BEAR-002-AMENDMENT-1.md"
+}

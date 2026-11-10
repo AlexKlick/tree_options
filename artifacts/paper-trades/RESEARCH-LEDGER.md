@@ -80,6 +80,28 @@ surviving must also survive the base-rate and holdout deflations below.
   INVERTED pre-2024-09 (-1.83%/day, t -9.64) — see the SURVIVORS revision.
 - Shorts at every horizon, both time-series and the XSMOM short leg
   (consistent -0.1%..-3.4%/trade, t to -13).
+- **Regime-gated bearish debit spreads, AI-BEAR-001 (2026-11-09):** FAIL on
+  all three sleeves. Source: `docs/desk/AI-BEAR-001{,-results}.md`;
+  pre-registered and sealed at `4c30374` before scoring; synthetic
+  Black-Scholes with calibrated IV and costs; 1997-01..2026-11; R
+  clustered by entry month.
+  - **Core** (270-DTE ATM/70 % put spreads while not BULL; 13 names):
+    −211.4 R over 767 trades, CI [−256, −167]. No better than an
+    always-on ladder (−222.9). The random null is not like-for-like (BULL-day
+    nulls stop out at once; correction in the results doc), so P2 carries no
+    weight; the FAIL rests on P1, P3 and P4.
+  - **Falls** (45-DTE put spreads after failed rallies): −17.9 R over 97
+    trades, CI [−29.5, −5.5]; Holm p_null 0.51.
+  - **Relief** (45-DTE call spreads on the first up close after a
+    capitulation): −32.4 R over 101 trades, CI [−46.8, −19.8]; 77 of 101
+    trades stopped below the capitulation low (a stop the random-day null
+    lacks, so its p_null is not a timing comparison).
+  - **Even the hindsight-perfect window barely pays.** NDX peak to trough
+    (2000-03-10..2002-10-09), the core made only +5.5 R over 68 trades.
+    Bear-market rallies whipsaw the regime stop, and most bull years cost
+    −1.7 to −16.3 R each (`run-001/by-year.txt`).
+  - **No redesign can be judged on 1997–2026 now**, because that path has
+    been seen. A redesign needs forward-only evidence.
 - All short-horizon long rules on the 2021-24 holdout (OOS-2021.md): MR h1
   -0.27%/trade, negative both sub-halves; R3f+up/R3f/R1/VOLSPIKE
   regime-dependent (negative 2021-22, positive 2023-24). The sealed RULES.md

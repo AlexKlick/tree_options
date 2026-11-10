@@ -1,0 +1,23 @@
+[Unit]
+Description=AI-BEAR monitor: read-only regime states, AI-BEAR-002 forward shadow cards, advisory LLM read
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/AI-BEAR-002.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# Import the main checkout's code whatever the shared .venv's editable pointer says.
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+Environment=UV_NO_SYNC=1
+# The zai fallback key for the advisory LLM read (local Qwen :18000 answers first).
+EnvironmentFile=-%h/.claude/.env
+# Reads: artifacts/paper-trades/ohlc-panel.json (shared lock),
+# artifacts/desk-store/{indices,chains}/. Writes only ~/.local/state/trex-desk/aibear/
+# (TREX_DESK_STATE overrides). Places, queues and approves nothing.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk.aibear monitor --llm
+# One local 27B call (~45 s for 10 names) plus 10 news fetches; generous bound.
+TimeoutStartSec=1200
