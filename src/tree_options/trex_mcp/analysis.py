@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 MULTIPLIER = Decimal(100)
-SYMBOL = re.compile(r"^[A-Z.]{1,6}$")
+SYMBOL = re.compile(r"^[A-Z]+(?:\.[A-Z]+)?$")
 
 
 class InvalidScenario(ValueError):
@@ -24,8 +24,8 @@ def symbol_value(raw: object) -> str:
     if not isinstance(raw, str):
         raise InvalidScenario("symbol must be a string")
     sym = raw.upper()
-    if not SYMBOL.fullmatch(sym):
-        raise InvalidScenario("symbol must be 1-6 letters or periods")
+    if len(sym) > 6 or not SYMBOL.fullmatch(sym):
+        raise InvalidScenario("symbol must be 1-6 letters with at most one internal class period")
     return sym
 
 
