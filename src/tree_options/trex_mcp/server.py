@@ -13,12 +13,13 @@ import math
 import os
 import re
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Request
@@ -39,6 +40,8 @@ MAX_OPTION_ROWS = 80
 MAX_WARNINGS = 8
 MAX_INFLIGHT_CALLS = 16
 ADMISSION_TIMEOUT_SECONDS = 0.1
+MAX_SOURCE_CLOCK_SKEW = timedelta(seconds=60)
+REPORTED_AGE_TOLERANCE_SECONDS = 60
 
 
 class AccessDenied(Exception):
@@ -299,39 +302,74 @@ def _verify_symbol(doc: dict[str, Any], symbol: str) -> None:
         raise UpstreamUnavailable("market source returned a mismatched symbol")
 
 
-def _verify_observed_time(source: object, now: object) -> None:
-    """Reject a claimed observation published in the future of the TREX read.
-
-    No timestamp is fabricated when one is missing. Naive/invalid observed
-    timestamps cannot be certified and therefore fail closed when supplied.
-    """
-    if source is None:
-        return
-    if not isinstance(source, str):
-        raise UpstreamUnavailable("invalid market observation timestamp")
+def _aware_time(value: object, *, description: str) -> datetime:
+    """Parse a claimed source clock, never localize a naive timestamp silently."""
+    if not isinstance(value, str):
+        raise UpstreamUnavailable(f"invalid {description}")
     try:
-        observed = datetime.fromisoformat(source)
-        current = datetime.fromisoformat(now) if isinstance(now, str) else None
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise UpstreamUnavailable("malformed market observation timestamp") from exc
-    if observed.tzinfo is None or (current is not None and current.tzinfo is None):
-        raise UpstreamUnavailable("market observations must be timezone-aware")
-    if current is not None and observed > current + timedelta(seconds=60):
-        raise UpstreamUnavailable("future-dated market observation")
+        raise UpstreamUnavailable(f"invalid {description}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise UpstreamUnavailable(f"{description} must contain a timezone")
+    return parsed
 
 
-def _verify_recorded_session(session: object, now: object) -> None:
-    if session is None or now is None:
+def _validate_provider_clock(now: object, gateway_at: datetime) -> datetime | None:
+    """TREX's JSON `now` is data, not authority over physical time.
+
+    A self-consistent but future-dated provider clock and quote once passed
+    the original provider-relative source checks. Compare to gateway wall time.
+    """
+    if now is None:
+        return None
+    provider_at = _aware_time(now, description="TREX provider clock")
+    if provider_at > gateway_at + MAX_SOURCE_CLOCK_SKEW:
+        raise UpstreamUnavailable("TREX provider clock is in the future")
+    return provider_at
+
+
+def _verify_observed_time(
+    source: object, provider_at: datetime | None, gateway_at: datetime
+) -> datetime | None:
+    """Validate source time against clocks already parsed once per response."""
+    if source is None:
+        return None
+    observed_at = _aware_time(source, description="market observation timestamp")
+    if observed_at > gateway_at + MAX_SOURCE_CLOCK_SKEW:
+        raise UpstreamUnavailable("market observation is in the future of gateway time")
+    if provider_at is not None and observed_at > provider_at + MAX_SOURCE_CLOCK_SKEW:
+        raise UpstreamUnavailable("market observation is in the future of TREX clock")
+    return observed_at
+
+
+def _verify_recorded_session(
+    session: object, provider_at: datetime | None, gateway_at: datetime
+) -> None:
+    """An EOD session cannot be dated after the gateway's NY market date."""
+    if session is None:
         return
+    if not isinstance(session, str):
+        raise UpstreamUnavailable("invalid recorded options session")
     try:
-        if not isinstance(session, str) or not isinstance(now, str):
-            raise ValueError("non-string session")
         observed_session = date.fromisoformat(session)
-        today = datetime.fromisoformat(now).date()
     except ValueError as exc:
         raise UpstreamUnavailable("invalid recorded options session") from exc
-    if observed_session > today:
+    if observed_session.isoformat() != session:
+        raise UpstreamUnavailable("invalid recorded options session")
+    ny = ZoneInfo("America/New_York")
+    if observed_session > gateway_at.astimezone(ny).date():
         raise UpstreamUnavailable("recorded options session is from the future")
+    if provider_at is not None and observed_session > provider_at.astimezone(ny).date():
+        raise UpstreamUnavailable("recorded options session is in the future of TREX clock")
+
+
+def _gateway_timestamp(gateway_at: datetime | None) -> datetime:
+    """Pin one independent observation clock for all projections in a reply."""
+    value = gateway_at if gateway_at is not None else datetime.now(timezone.utc)
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("gateway_at must be timezone-aware")
+    return value.astimezone(timezone.utc)
 
 
 TOOLS = [
@@ -444,16 +482,21 @@ def _expiry_param(value: object) -> str | None:
     return value
 
 
-def _safe_market_view(doc: dict[str, Any], symbol: str) -> dict[str, Any]:
+def _safe_market_view(
+    doc: dict[str, Any], symbol: str, *, gateway_at: datetime | None = None
+) -> dict[str, Any]:
+    read_at = _gateway_timestamp(gateway_at)
     _verify_symbol(doc, symbol)
+    provider_at = _validate_provider_clock(doc.get("now"), read_at)
     # Deliberately exclude TREX's news, bars, account and portfolio metadata.
     raw_quote = doc.get("quote")
     quote: dict[str, Any] | None = None
+    source_at: datetime | None = None
     if isinstance(raw_quote, dict):
         nested_symbol = raw_quote.get("symbol")
         if nested_symbol is not None and nested_symbol != symbol:
             raise UpstreamUnavailable("quote symbol contradicts requested symbol")
-        _verify_observed_time(raw_quote.get("source_as_of"), doc.get("now"))
+        source_at = _verify_observed_time(raw_quote.get("source_as_of"), provider_at, read_at)
         quote = {}
         for key in ("last", "price", "close", "bid", "ask", "volume", "previous_close"):
             quote[key] = _safe_number(raw_quote.get(key), nonnegative=True)
@@ -462,21 +505,45 @@ def _safe_market_view(doc: dict[str, Any], symbol: str) -> dict[str, Any]:
         for key in ("source_as_of", "source"):
             quote[key] = _safe_text(raw_quote.get(key))
         quote["symbol"] = symbol
-    age = _safe_number(doc.get("quote_age_seconds"), nonnegative=True)
+    reported_age = _safe_number(doc.get("quote_age_seconds"), nonnegative=True)
+    gateway_age = (
+        max(0, int((read_at - source_at).total_seconds())) if source_at is not None else None
+    )
+    age_consistent: bool | None = None
+    if reported_age is not None and source_at is not None and provider_at is not None:
+        expected_at_provider = max(0.0, (provider_at - source_at).total_seconds())
+        age_consistent = abs(reported_age - expected_at_provider) <= REPORTED_AGE_TOLERANCE_SECONDS
+    freshness_known = gateway_age is not None and age_consistent is not False
+    if source_at is None:
+        basis = "unverified_trex_report" if reported_age is not None else "unknown"
+    elif age_consistent is False:
+        basis = "reported_age_conflicts_with_source"
+    else:
+        basis = "verified_source_timestamp"
     return {
         "schema": "trex-mcp-market/1",
         "symbol": symbol,
         "trex_now": _safe_text(doc.get("now")),
+        "gateway_checked_at": read_at.isoformat(),
         "quote": quote,
-        "quote_age_seconds": age,
-        "freshness_known": age is not None,
-        "source": "TREX discovery cache; quote_age_seconds is not a live execution guarantee",
+        # Backwards-compatible, *reported* age, never silently reclassified.
+        "quote_age_seconds": reported_age,
+        "gateway_quote_age_seconds": gateway_age,
+        "reported_age_consistent": age_consistent,
+        "quote_age_basis": basis,
+        "freshness_known": freshness_known,
+        "source": "TREX discovery cache; quote_age_seconds is provider-reported, not an execution quote",
         "executable": False,
     }
 
 
-def _safe_options_view(doc: dict[str, Any], symbol: str, exp: str | None, right: str) -> dict[str, Any]:
+def _safe_options_view(
+    doc: dict[str, Any], symbol: str, exp: str | None, right: str,
+    *, gateway_at: datetime | None = None,
+) -> dict[str, Any]:
+    read_at = _gateway_timestamp(gateway_at)
     _verify_symbol(doc, symbol)
+    provider_at = _validate_provider_clock(doc.get("now"), read_at)
     raw_warnings = doc.get("warnings")
     warnings = (
         [w for w in raw_warnings if isinstance(w, str)][:MAX_WARNINGS]
@@ -487,6 +554,7 @@ def _safe_options_view(doc: dict[str, Any], symbol: str, exp: str | None, right:
         "schema": "trex-mcp-options/1",
         "symbol": symbol,
         "trex_now": _safe_text(doc.get("now")),
+        "gateway_checked_at": read_at.isoformat(),
         "available": doc.get("available") is True,
         "warnings": warnings,
         "requested_expiration": exp,
@@ -504,10 +572,11 @@ def _safe_options_view(doc: dict[str, Any], symbol: str, exp: str | None, right:
         if not isinstance(raw, dict):
             result[kind] = None
             continue
+        observed_at: datetime | None = None
         if kind == "recorded":
-            _verify_recorded_session(raw.get("session"), doc.get("now"))
+            _verify_recorded_session(raw.get("session"), provider_at, read_at)
         else:
-            _verify_observed_time(raw.get("fetched_at"), doc.get("now"))
+            observed_at = _verify_observed_time(raw.get("fetched_at"), provider_at, read_at)
         rows = raw.get("slice")
         if not isinstance(rows, list):
             rows = []
@@ -560,12 +629,17 @@ def _safe_options_view(doc: dict[str, Any], symbol: str, exp: str | None, right:
             cards["earnings"] = _safe_text(earnings)
         age = _safe_number(raw.get("age_seconds"), nonnegative=True)
         ttl = _safe_number(raw.get("ttl_seconds"), nonnegative=True)
+        verified_age = (
+            max(0, int((read_at - observed_at).total_seconds())) if observed_at is not None else None
+        )
         result[kind] = {
             "session": _safe_text(raw.get("session")),
             "fetched_at": _safe_text(raw.get("fetched_at")),
-            "age_seconds": age,
+            "age_seconds": age,  # TREX-reported, not an independently verified age.
+            "gateway_age_seconds": verified_age,
+            "cache_age_verified": verified_age is not None,
             "ttl_seconds": ttl,
-            "cache_expired": age > ttl if age is not None and ttl is not None else None,
+            "cache_expired": verified_age > ttl if verified_age is not None and ttl is not None else None,
             "spot": _safe_number(raw.get("spot"), nonnegative=True),
             "cards": cards,
             "expiries_in_retrieved_slice": sorted(expiries),
