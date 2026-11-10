@@ -9231,6 +9231,15 @@ MUTANTS.extend(
             ],
             invariant="the AI-BEAR route publishes only its declared fields",
         ),
+        dict(
+            id="AIB-M13-nonstandard-root-quoted",
+            owner="test_only_standard_root_contracts_are_quoted",
+            file=_AIB + "monitor.py",
+            anchor="            if not standard.fullmatch(occ):",
+            replacement="            if not occ:",
+            selectors=[_AIB_MON + "test_only_standard_root_contracts_are_quoted"],
+            invariant="forward cards fill, mark and exit only on standard OCC contracts",
+        ),
     ]
 )
 

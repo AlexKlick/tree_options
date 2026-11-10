@@ -34,6 +34,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -133,16 +134,34 @@ def chain_sessions(store: Path) -> list[date]:
     return sorted(out)
 
 
+def standard_occ(underlying: str) -> re.Pattern[str]:
+    """The OCC symbol of a standard contract on ``underlying``: the root, YYMMDD,
+    the right and the strike x 1000 in 8 digits (``NVDA261224P00170000``)."""
+    return re.compile(re.escape(underlying) + r"\d{6}[CP]\d{8}")
+
+
 class Chain:
-    """One recorded EOD chain: quotes by OCC symbol, plus the underlying close."""
+    """One recorded EOD chain: quotes by OCC symbol, plus the underlying close.
+
+    Only standard contracts are kept (AMENDMENT 2). Since 2026-11-05 the NVDA
+    and TSLA chains also list ``B1VDA…``/``B1SLA…`` roots at the standard
+    expiries and strikes, ahead of the standard rows. They carry no open
+    interest and a price unrelated to the stock, and the strike rule's
+    tie-break would pick them.
+    """
 
     def __init__(self, doc: Mapping[str, Any]) -> None:
         cols = doc["columns"]
         self.session = date.fromisoformat(doc["header"]["session"])
         uq = doc["header"].get("underlying_quote") or {}
         self.spot: float | None = uq.get("close") or uq.get("current_price")
+        standard = standard_occ(doc["header"]["underlying"])
         self.rows: dict[str, dict[str, Any]] = {}
+        self.nonstandard = 0
         for i, occ in enumerate(cols["occ"]):
+            if not standard.fullmatch(occ):
+                self.nonstandard += 1
+                continue
             self.rows[occ] = {
                 "occ": occ,
                 "exp": date.fromisoformat(cols["exp"][i]),
