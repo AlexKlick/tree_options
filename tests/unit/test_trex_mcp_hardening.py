@@ -327,3 +327,64 @@ def test_not_before_claim_cannot_grant_future_access() -> None:
             with pytest.raises(AccessDenied):
                 await server._introspect("token", config(), client)
     asyncio.run(run())
+
+
+def test_slow_client_body_times_out_and_releases_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server, "MAX_BODY_READ_SECONDS", 0.01, raising=False)
+    async def scenario() -> None:
+        seen = 0
+        async def auth(_: str) -> Principal:
+            nonlocal seen
+            seen += 1
+            return Principal("tenant-1")
+        app = server.create_app(config=config(), authenticate=auth, fetcher=_tenant_read,
+                                max_inflight=1)
+        async def delayed_body():
+            yield b'{"jsonrpc":"2.0","method":"tools/list","id":1'
+            await asyncio.sleep(0.2)
+            yield b'}'
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as client:
+            response = await client.post('/mcp', content=delayed_body(),
+                                         headers={"Authorization":"Bearer token",
+                                                  "Content-Type":"application/json"})
+            assert response.status_code == 408
+            # The timeout must free the worker slot.
+            next_response = await client.post('/mcp', json={"jsonrpc":"2.0","id":1,
+                                             "method":"tools/list"},
+                                              headers={"Authorization":"Bearer token"})
+            assert next_response.status_code == 200
+            assert seen == 2
+    asyncio.run(scenario())
+
+
+async def _tenant_read(tenant: str, path: str, params: dict[str, Any]) -> dict[str, Any]:
+    return {"symbol": "TSLA", "quote": {"last": 378}, "quote_age_seconds": 60}
+
+
+@pytest.mark.parametrize("ticker", [".", "..", "...", "A..", "A.", ".A", "A..B"])
+def test_symbol_value_refuses_dot_segments(ticker: str) -> None:
+    from tree_options.trex_mcp.analysis import InvalidScenario, symbol_value
+    with pytest.raises(InvalidScenario):
+        symbol_value(ticker)
+    assert symbol_value("brk.b") == "BRK.B"
+
+
+def test_direct_upstream_reader_rejects_dot_segment_without_network() -> None:
+    requests: list[str] = []
+    def read(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, json={"quote": {"last": 100}})
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(read)) as client:
+            with pytest.raises(UpstreamUnavailable):
+                await server._read_trex(config(), "tenant-1", "/api/market/..", {}, client)
+    asyncio.run(run())
+    assert requests == []
+
+
+def test_mcp_tool_schema_discloses_bounded_ticker_contract() -> None:
+    for tool in server.TOOLS:
+        ticker = tool["inputSchema"]["properties"]["symbol"]
+        assert ticker["maxLength"] == 6
+        assert ticker["pattern"] == r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"

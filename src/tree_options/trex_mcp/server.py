@@ -30,6 +30,7 @@ MCP_VERSION = "2026-07-28"
 SUPPORTED_VERSIONS = {MCP_VERSION, "2025-11-25", "2025-06-18"}
 REQUIRED_SCOPE = "trex:research:read"
 MAX_REQUEST_BYTES = 65_536
+MAX_BODY_READ_SECONDS = 5.0
 MAX_TOKEN_BYTES = 4_096
 MAX_OAUTH_REPLY_BYTES = 16_384
 MAX_TREX_REPLY_BYTES = 1_048_576
@@ -231,7 +232,9 @@ async def _read_trex(
     """Only allowlisted local GETs; responses and transport cost are capped."""
     if tenant not in config.tenants:
         raise AccessDenied("unknown tenant")
-    if not re.fullmatch(r"/api/market/[A-Z.]{1,6}(?:/options)?", path):
+    match = re.fullmatch(r"/api/market/([A-Z]+(?:\.[A-Z]+)?)(?:/options)?", path)
+    if match is None or len(match.group(1)) > 6:
+        # Dot-only/adjacent-dot segments normalize to parent routes in HTTP.
         raise UpstreamUnavailable("endpoint not in MCP allowlist")
     if client is None:
         async with _http_client() as owned:
@@ -320,7 +323,7 @@ TOOLS = [
             "Read a tenant's TREX recorded/delayed quote with original age and source timestamp. "
             "Never asserts a live executable price; no portfolio or order data."
         ),
-        "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string", "description": "Ticker, e.g. TSLA"}}, "required": ["symbol"], "additionalProperties": False},
+        "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$", "description": "Ticker, e.g. TSLA or BRK.B"}}, "required": ["symbol"], "additionalProperties": False},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
     },
     {
@@ -333,7 +336,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"},
                 "expiration": {"type": "string", "description": "Optional YYYY-MM-DD expiry filter"},
                 "right": {"type": "string", "enum": ["put", "call", "both"]},
             },
@@ -351,7 +354,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "symbol": {"type": "string"},
+                "symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"},
                 "expiration": {"type": "string", "description": "YYYY-MM-DD"},
                 "strategy": {"type": "string", "enum": ["long_put", "put_debit_spread"]},
                 "spot": {"type": "number", "exclusiveMinimum": 0},
@@ -695,9 +698,13 @@ def create_app(
             except ValueError:
                 return Response(status_code=400)
         try:
-            body = await _read_bounded_body(request)
+            body = await asyncio.wait_for(
+                _read_bounded_body(request), timeout=MAX_BODY_READ_SECONDS
+            )
         except RequestTooLarge:
             return Response(status_code=413)
+        except TimeoutError:
+            return Response(status_code=408)
         try:
             payload = json.loads(body, parse_constant=_reject_json_constant)
         except (ValueError, UnicodeDecodeError, RecursionError):

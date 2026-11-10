@@ -15,10 +15,11 @@ Never treat a cached midpoint or scenario premium as a tradeable price.
 
 | Surface | Invariant | Implementation |
 | --- | --- | --- |
-| Inbound body | Bound reads even without `Content-Length` | Incremental ASGI request stream; 65,536 decoded request bytes max; 413 on excess |
+| Inbound body | Bound reads even without `Content-Length` | Incremental ASGI request stream; 65,536 request bytes max; 5 s total body read deadline (408); 413 on excess |
 | Untrusted JSON | No `NaN`, `Infinity`, excessive recursive arrays or invalid IDs | Strict JSON constant parsing; recursion error mapped to JSON-RPC parse rejection; primitive ID validation |
 | Authorization | Validate every call without caching a positive grant | Per-request OAuth introspection; audience/scope/tenant/sub/active, plus `exp` and `nbf` consistency checks |
 | Token | Reject oversized bearer headers before introspection | 4,096-character limit |
+| Ticker paths | No HTTP path-normalizing dot segments | At most six letters with optional internal class period; enforced in tool schemas, decoder and upstream GET allowlist |
 | Tenant registry | One loopback port cannot silently serve multiple customers | Unique port check even across localhost aliases |
 | Upstream OAuth JSON | Prevent giant introspection replies or decompression bombs | At most 16,384 decoded bytes; fail closed |
 | Upstream TREX JSON | Refuse giant option trees and decompression bombs | At most 1,048,576 decoded bytes; non-200/invalid JSON rejected |
@@ -37,6 +38,7 @@ from buffering oversized uploads. Do not turn off upstream TLS validation.
 
 - `401`: missing, malformed, overlong, expired, or unauthorized bearer token.
 - `403`: disallowed `Origin` or token tenant not in the configured registry.
+- `408`: inbound request stream did not finish within five seconds; admission slot released.
 - `413`: inbound MCP body exceeds budget, even when streamed/chunked.
 - `429` + `Retry-After`: local worker is saturated; no tool side effect.
 - `503`: OAuth introspection unavailable; never use cached/reused authority.
@@ -56,9 +58,9 @@ PYTHONPATH=src pytest -q tests/unit/test_trex_mcp.py tests/unit/test_trex_mcp_ha
 python -m compileall -q src/tree_options/trex_mcp
 ```
 
-Observed on 2026-11-10: **42 passed**, compileall passed. Red-first tests failed
+Observed on 2026-11-10: **52 passed**, compileall passed. Red-first tests failed
 before implementation for missing network bounds, client reuse, token limits,
-invalid quote state, namespace pollution, exhaustion and payload bombs.
+invalid quote state, path-normalization probes, exhaustion, slow-client stalls and payload bombs.
 
 An illustrative in-memory projection of 768 synthetic chain rows, of which
 384 were put rows, returned 80 bounded records in ~1.83 ms/call over 500
