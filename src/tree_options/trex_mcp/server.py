@@ -34,6 +34,7 @@ MAX_BODY_READ_SECONDS = 5.0
 MAX_TOKEN_BYTES = 4_096
 MAX_OAUTH_REPLY_BYTES = 16_384
 MAX_TREX_REPLY_BYTES = 1_048_576
+MAX_UPSTREAM_TOTAL_SECONDS = 8.0  # Wall-clock bound, including slow streamed chunks.
 MAX_OPTION_ROWS = 80
 MAX_WARNINGS = 8
 MAX_INFLIGHT_CALLS = 16
@@ -100,6 +101,7 @@ class Config:
                 or parsed.username
                 or parsed.password
                 or parsed.port is None
+                or parsed.port == 0
             ):
                 raise ValueError("TREX upstreams must be fixed loopback HTTP instances")
             # Avoid aliases like localhost/127.0.0.1 silently mapping two
@@ -110,13 +112,25 @@ class Config:
         public_url = os.environ["TREX_MCP_PUBLIC_URL"].rstrip("/")
         auth_server = os.environ["TREX_MCP_AUTHORIZATION_SERVER"].rstrip("/")
         introspection = os.environ["TREX_MCP_INTROSPECTION_URL"]
-        if not all(urlsplit(u).scheme == "https" for u in (public_url, auth_server, introspection)):
-            raise ValueError("public MCP and OAuth endpoints must all use HTTPS")
+        for label, url in (("public MCP", public_url), ("authorization server", auth_server),
+                           ("token introspection", introspection)):
+            parsed = urlsplit(url)
+            if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.query or parsed.fragment):
+                raise ValueError(f"{label} URL must be absolute HTTPS without credentials, query or fragment")
         if not public_url.endswith("/mcp"):
             raise ValueError("TREX_MCP_PUBLIC_URL must be the public HTTPS .../mcp endpoint")
         origins = frozenset(
             o.strip() for o in os.environ.get("TREX_MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()
         )
+        for origin in origins:
+            parsed = urlsplit(origin)
+            if (parsed.scheme not in ("https", "http") or not parsed.hostname
+                or parsed.username or parsed.password or parsed.path not in ("", "/")
+                or parsed.query or parsed.fragment or parsed.netloc == "*"):
+                raise ValueError("TREX_MCP_ALLOWED_ORIGINS must contain exact URL origins")
+            if parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+                raise ValueError("plaintext origins are permitted only for localhost testing")
         return cls(
             public_url=public_url,
             authorization_server=auth_server,
@@ -150,22 +164,25 @@ async def _limited_json(
     client: httpx.AsyncClient, method: str, url: str, max_bytes: int, **kwargs: Any
 ) -> Any:
     """Budget decoded bytes before parsing; compressed/streamed replies included."""
-    async with client.stream(method, url, **kwargs) as response:
-        if response.status_code != 200:
-            raise UpstreamUnavailable(f"upstream returned HTTP {response.status_code}")
-        advertised = response.headers.get("content-length")
-        if advertised is not None:
-            try:
-                if int(advertised) > max_bytes:
+    # Per-socket read timeouts do not constrain an upstream that continuously
+    # drips bytes. Limit the entire operation in addition to decoded bytes.
+    async with asyncio.timeout(MAX_UPSTREAM_TOTAL_SECONDS):
+        async with client.stream(method, url, **kwargs) as response:
+            if response.status_code != 200:
+                raise UpstreamUnavailable(f"upstream returned HTTP {response.status_code}")
+            advertised = response.headers.get("content-length")
+            if advertised is not None:
+                try:
+                    if int(advertised) > max_bytes:
+                        raise UpstreamUnavailable("upstream payload exceeds byte budget")
+                except ValueError as exc:
+                    raise UpstreamUnavailable("invalid upstream content-length") from exc
+            chunks = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(chunk) > max_bytes - len(chunks):
                     raise UpstreamUnavailable("upstream payload exceeds byte budget")
-            except ValueError as exc:
-                raise UpstreamUnavailable("invalid upstream content-length") from exc
-        chunks = bytearray()
-        async for chunk in response.aiter_bytes():
-            if len(chunk) > max_bytes - len(chunks):
-                raise UpstreamUnavailable("upstream payload exceeds byte budget")
-            chunks.extend(chunk)
-        return json.loads(chunks, parse_constant=_reject_json_constant)
+                chunks.extend(chunk)
+            return json.loads(chunks, parse_constant=_reject_json_constant)
 
 
 async def _introspect(
@@ -182,14 +199,14 @@ async def _introspect(
             data={"token": token, "token_type_hint": "access_token"},
             auth=(config.client_id, config.client_secret),
         )
-    except (httpx.HTTPError, ValueError, RecursionError) as exc:
+    except (httpx.HTTPError, ValueError, RecursionError, TimeoutError) as exc:
         raise UpstreamUnavailable("OAuth introspection failed closed") from exc
     if not isinstance(claims, dict) or claims.get("active") is not True:
         raise AccessDenied("inactive access token")
     # `active` is authoritative, but fail closed on an inconsistent expiry or
     # not-before claim instead of granting access from an incorrect response.
     now = time.time()
-    for name in ("exp", "nbf"):
+    for name in ("exp", "nbf", "iat"):
         value = claims.get(name)
         if value is not None and (
             isinstance(value, bool)
@@ -197,7 +214,7 @@ async def _introspect(
             or abs(value) > 1e15
             or (isinstance(value, float) and not math.isfinite(value))
             or (name == "exp" and value <= now)
-            or (name == "nbf" and value > now)
+            or (name in ("nbf", "iat") and value > now)
         ):
             raise AccessDenied(f"invalid {name} claim")
     audience = claims.get("aud")
@@ -242,7 +259,7 @@ async def _read_trex(
     url = config.tenants[tenant].rstrip("/") + path
     try:
         data = await _limited_json(client, "GET", url, MAX_TREX_REPLY_BYTES, params=params)
-    except (httpx.HTTPError, ValueError, RecursionError) as exc:
+    except (httpx.HTTPError, ValueError, RecursionError, TimeoutError) as exc:
         raise UpstreamUnavailable("TREX market read failed") from exc
     if not isinstance(data, dict):
         raise UpstreamUnavailable("TREX market response must be a JSON object")
