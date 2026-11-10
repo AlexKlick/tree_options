@@ -56,6 +56,7 @@ class RequestTooLarge(Exception):
 @dataclass(frozen=True)
 class Principal:
     tenant_id: str
+    subject: str = ""  # nonempty for production OAuth; defaults for legacy tests.
 
 
 @dataclass(frozen=True)
@@ -239,7 +240,7 @@ async def _introspect(
         or tenant not in config.tenants
     ):
         raise AccessDenied("token lacks permitted audience, scope or tenant")
-    return Principal(tenant_id=tenant)
+    return Principal(tenant_id=tenant, subject=claims["sub"])
 
 
 async def _read_trex(
@@ -576,6 +577,9 @@ def create_app(
     authenticate: AuthResolver | None = None,
     fetcher: ReadFetcher | None = None,
     max_inflight: int = MAX_INFLIGHT_CALLS,
+    quota_per_subject: int = 60,
+    quota_per_tenant: int = 300,
+    quota_max_identities: int = 2_048,
 ) -> FastAPI:
     """Build the gateway; injectable auth/fetcher are for isolated contract tests.
 
@@ -594,6 +598,10 @@ def create_app(
     if max_inflight < 1 or max_inflight > 256:
         raise ValueError("max_inflight must be 1-256")
     inflight = asyncio.Semaphore(max_inflight)
+    from .quota import QuotaLimiter
+
+    quotas = QuotaLimiter(subject_limit=quota_per_subject, tenant_limit=quota_per_tenant,
+                          max_subject_keys=quota_max_identities)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -703,6 +711,8 @@ def create_app(
             return Response(status_code=503)
         if principal.tenant_id not in current_config.tenants:
             return Response(status_code=403)
+        if not await quotas.admit(principal):
+            return Response(status_code=429, headers={"Retry-After": "60", "Cache-Control": "no-store"})
         if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
             return Response(status_code=415)
         length_header = request.headers.get("content-length")
