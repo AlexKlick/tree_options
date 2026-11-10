@@ -145,7 +145,7 @@ def test_market_and_options_tools_are_tenant_scoped_get_only() -> None:
     assert result["quote_age_seconds"] == 3600
     assert "news" not in result
     assert "account_id" not in result["quote"]
-    assert calls == [("b", "/api/market/TSLA", {})]
+    assert calls == [("b", "/api/market/TSLA/quote", {})]
 
     result = _post(c, _rpc("tools/call", params={
         "name": "trex_options_surface",
@@ -268,7 +268,7 @@ def test_modern_discovery_and_tool_result_type() -> None:
     request, headers = _modern_rpc("tools/call", name="trex_market_snapshot")
     response = _post(c, request, **headers)
     assert response.json()["result"]["structuredContent"]["symbol"] == "TSLA"
-    assert calls == [("a", "/api/market/TSLA", {})]
+    assert calls == [("a", "/api/market/TSLA/quote", {})]
 
 
 def test_modern_header_mismatch_and_missing_capabilities_rejected() -> None:
