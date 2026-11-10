@@ -24,7 +24,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .analysis import InvalidScenario, evaluate_bearish_scenario, symbol_value
+from .analysis import InvalidScenario, compare_bearish_scenarios, evaluate_bearish_scenario, symbol_value
 
 MCP_VERSION = "2026-07-28"
 SUPPORTED_VERSIONS = {MCP_VERSION, "2025-11-25", "2025-06-18"}
@@ -56,6 +56,7 @@ class RequestTooLarge(Exception):
 @dataclass(frozen=True)
 class Principal:
     tenant_id: str
+    subject: str = ""  # nonempty for production OAuth; defaults for legacy tests.
 
 
 @dataclass(frozen=True)
@@ -239,7 +240,7 @@ async def _introspect(
         or tenant not in config.tenants
     ):
         raise AccessDenied("token lacks permitted audience, scope or tenant")
-    return Principal(tenant_id=tenant)
+    return Principal(tenant_id=tenant, subject=claims["sub"])
 
 
 async def _read_trex(
@@ -358,6 +359,38 @@ TOOLS = [
                 "right": {"type": "string", "enum": ["put", "call", "both"]},
             },
             "required": ["symbol"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "trex_bearish_compare",
+        "description": (
+            "Compare 2-6 caller-priced long-put or put-debit-spread alternatives at "
+            "their respective expirations. No quote, recommendation or order authority."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"},
+                "spot": {"type": "number", "exclusiveMinimum": 0},
+                "target_prices": {"type": "array", "minItems": 1, "maxItems": 12,
+                                  "items": {"type": "number", "minimum": 0}},
+                "max_risk_budget": {"type": "number", "exclusiveMinimum": 0},
+                "candidates": {"type": "array", "minItems": 2, "maxItems": 6,
+                    "items": {"type": "object", "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 32,
+                               "pattern": "^[A-Za-z0-9_-]+$"},
+                        "expiration": {"type": "string"},
+                        "strategy": {"type": "string", "enum": ["long_put", "put_debit_spread"]},
+                        "long_strike": {"type": "number", "exclusiveMinimum": 0},
+                        "short_strike": {"type": "number", "exclusiveMinimum": 0},
+                        "net_debit": {"type": "number", "exclusiveMinimum": 0},
+                        "contracts": {"type": "integer", "minimum": 1, "maximum": 100},
+                    }, "required": ["id", "expiration", "strategy", "long_strike", "net_debit"],
+                    "additionalProperties": False}},
+            },
+            "required": ["symbol", "spot", "target_prices", "candidates"],
             "additionalProperties": False,
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
@@ -576,6 +609,10 @@ def create_app(
     authenticate: AuthResolver | None = None,
     fetcher: ReadFetcher | None = None,
     max_inflight: int = MAX_INFLIGHT_CALLS,
+    quota_per_subject: int = 60,
+    quota_per_tenant: int = 300,
+    quota_max_identities: int = 2_048,
+    http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
 ) -> FastAPI:
     """Build the gateway; injectable auth/fetcher are for isolated contract tests.
 
@@ -594,10 +631,16 @@ def create_app(
     if max_inflight < 1 or max_inflight > 256:
         raise ValueError("max_inflight must be 1-256")
     inflight = asyncio.Semaphore(max_inflight)
+    from .quota import QuotaLimiter
+
+    quotas = QuotaLimiter(subject_limit=quota_per_subject, tenant_limit=quota_per_tenant,
+                          max_subject_keys=quota_max_identities)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        async with _http_client() as pooled:
+        # Factory injection is exclusively for deterministic offline tests;
+        # production retains its TLS-verified, no-redirect shared HTTP pool.
+        async with (http_client_factory or _http_client)() as pooled:
             app.state.research_http_client = pooled
             yield
 
@@ -665,6 +708,8 @@ def create_app(
         }
 
     async def invoke_tool(name: str, args: dict[str, Any], principal: Principal) -> dict[str, Any]:
+        if name == "trex_bearish_compare":
+            return compare_bearish_scenarios(args)
         if name == "trex_bearish_payoff":
             return evaluate_bearish_scenario(args)
         if name == "trex_market_snapshot":
@@ -703,6 +748,8 @@ def create_app(
             return Response(status_code=503)
         if principal.tenant_id not in current_config.tenants:
             return Response(status_code=403)
+        if not await quotas.admit(principal):
+            return Response(status_code=429, headers={"Retry-After": "60", "Cache-Control": "no-store"})
         if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
             return Response(status_code=415)
         length_header = request.headers.get("content-length")
