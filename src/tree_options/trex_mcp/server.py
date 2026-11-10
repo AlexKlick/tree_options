@@ -24,7 +24,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .analysis import InvalidScenario, evaluate_bearish_scenario, symbol_value
+from .analysis import InvalidScenario, compare_bearish_scenarios, evaluate_bearish_scenario, symbol_value
 
 MCP_VERSION = "2026-07-28"
 SUPPORTED_VERSIONS = {MCP_VERSION, "2025-11-25", "2025-06-18"}
@@ -364,6 +364,38 @@ TOOLS = [
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
     },
     {
+        "name": "trex_bearish_compare",
+        "description": (
+            "Compare 2-6 caller-priced long-put or put-debit-spread alternatives at "
+            "their respective expirations. No quote, recommendation or order authority."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"},
+                "spot": {"type": "number", "exclusiveMinimum": 0},
+                "target_prices": {"type": "array", "minItems": 1, "maxItems": 12,
+                                  "items": {"type": "number", "minimum": 0}},
+                "max_risk_budget": {"type": "number", "exclusiveMinimum": 0},
+                "candidates": {"type": "array", "minItems": 2, "maxItems": 6,
+                    "items": {"type": "object", "properties": {
+                        "id": {"type": "string", "minLength": 1, "maxLength": 32,
+                               "pattern": "^[A-Za-z0-9_-]+$"},
+                        "expiration": {"type": "string"},
+                        "strategy": {"type": "string", "enum": ["long_put", "put_debit_spread"]},
+                        "long_strike": {"type": "number", "exclusiveMinimum": 0},
+                        "short_strike": {"type": "number", "exclusiveMinimum": 0},
+                        "net_debit": {"type": "number", "exclusiveMinimum": 0},
+                        "contracts": {"type": "integer", "minimum": 1, "maximum": 100},
+                    }, "required": ["id", "expiration", "strategy", "long_strike", "net_debit"],
+                    "additionalProperties": False}},
+            },
+            "required": ["symbol", "spot", "target_prices", "candidates"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
+    },
+    {
         "name": "trex_bearish_payoff",
         "description": (
             "Deterministic long-put or put-debit-spread expiration P&L from caller-supplied "
@@ -673,6 +705,8 @@ def create_app(
         }
 
     async def invoke_tool(name: str, args: dict[str, Any], principal: Principal) -> dict[str, Any]:
+        if name == "trex_bearish_compare":
+            return compare_bearish_scenarios(args)
         if name == "trex_bearish_payoff":
             return evaluate_bearish_scenario(args)
         if name == "trex_market_snapshot":

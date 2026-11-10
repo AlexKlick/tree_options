@@ -140,3 +140,69 @@ def evaluate_bearish_scenario(data: dict[str, Any]) -> dict[str, Any]:
         result["max_risk_budget_usd"] = _money(budget)
         result["fits_assumed_risk_budget"] = total_risk <= budget
     return result
+
+
+COMPARE_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+MAX_COMPARE_CANDIDATES = 6
+
+
+def compare_bearish_scenarios(data: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate 2–6 **alternative** structures using one shared price grid.
+
+    Each candidate retains its own expiration; a shared target is *hypothetically*
+    reached on each contract's expiry, not a single portfolio snapshot. Never
+    add the risks as if all candidates were being purchased together.
+    """
+    allowed = {"symbol", "spot", "target_prices", "max_risk_budget", "candidates"}
+    if not isinstance(data, dict) or set(data) - allowed:
+        raise InvalidScenario("comparison has unsupported input fields")
+    sym = symbol_value(data.get("symbol"))
+    spot = positive_decimal(data.get("spot"), "spot")
+    targets = data.get("target_prices")
+    if not isinstance(targets, list) or not 1 <= len(targets) <= 12:
+        raise InvalidScenario("target_prices must contain 1-12 prices")
+    # Check the grid once, before evaluating candidates; Decimal rejects NaN
+    # and Infinity and provides exact cents at the presentation boundary.
+    for target in targets:
+        positive_decimal(target, "target_prices item", allow_zero=True)
+    raw = data.get("candidates")
+    if not isinstance(raw, list) or not 2 <= len(raw) <= MAX_COMPARE_CANDIDATES:
+        raise InvalidScenario("compare must contain 2-6 candidate structures")
+    budget = data.get("max_risk_budget")
+    if budget is not None:
+        positive_decimal(budget, "max_risk_budget")
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for index, candidate in enumerate(raw):
+        if not isinstance(candidate, dict):
+            raise InvalidScenario(f"candidate {index} must be an object")
+        candidate_id = candidate.get("id")
+        if not isinstance(candidate_id, str) or not COMPARE_ID.fullmatch(candidate_id):
+            raise InvalidScenario(f"candidate {index} id must be 1-32 ASCII letters, digits, _ or -")
+        if candidate_id in seen:
+            raise InvalidScenario("candidate ids must be unique")
+        seen.add(candidate_id)
+        if set(candidate) - {"id", "expiration", "strategy", "long_strike", "short_strike", "net_debit", "contracts"}:
+            raise InvalidScenario(f"candidate {candidate_id} has unsupported fields")
+        inputs = {"symbol": sym, "spot": spot, "target_prices": targets}
+        inputs.update({key: val for key, val in candidate.items() if key != "id"})
+        if budget is not None:
+            inputs["max_risk_budget"] = budget
+        result.append({"id": candidate_id, **evaluate_bearish_scenario(inputs)})
+    return {
+        "schema": "trex-mcp-bearish-comparison/1",
+        "symbol": sym,
+        "assumed_spot": _money(spot),
+        "assumed_underlying_prices": [_money(positive_decimal(t, "target_prices", allow_zero=True)) for t in targets],
+        "candidates": result,
+        "different_expirations": len({r["expiration"] for r in result}) > 1,
+        "risk_semantics": "Candidates are alternatives, not simultaneous positions. Each risk budget applies independently.",
+        "market_quote_verified": False,
+        "execution_eligible": False,
+        "order_intent_created": False,
+        "limitations": (
+            "Caller-supplied premiums and spot are not verified option quotes; commissions and taxes excluded. "
+            "Each target is a hypothetical underlying price at that candidate's separate expiration; "
+            "not a common-date portfolio forecast or a pre-expiry option mark."
+        ),
+    }

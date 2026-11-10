@@ -130,6 +130,7 @@ def test_mcp_initialize_and_tools_are_read_only() -> None:
     tools = _post(c, _rpc("tools/list")).json()["result"]["tools"]
     assert {x["name"] for x in tools} == {
         "trex_market_snapshot", "trex_options_surface", "trex_bearish_payoff",
+        "trex_bearish_compare",
     }
     assert all(x["annotations"]["readOnlyHint"] for x in tools)
     assert calls == []
@@ -263,7 +264,7 @@ def test_modern_discovery_and_tool_result_type() -> None:
     request, headers = _modern_rpc("tools/list")
     response = _post(c, request, **headers)
     assert response.json()["result"]["resultType"] == "complete"
-    assert len(response.json()["result"]["tools"]) == 3
+    assert len(response.json()["result"]["tools"]) == 4
     request, headers = _modern_rpc("tools/call", name="trex_market_snapshot")
     response = _post(c, request, **headers)
     assert response.json()["result"]["structuredContent"]["symbol"] == "TSLA"
