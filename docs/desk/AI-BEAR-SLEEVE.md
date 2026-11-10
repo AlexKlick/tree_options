@@ -1,6 +1,7 @@
 # AI-BEAR thesis sleeve: the Phase 3 design for P2 lanes A and B
 
-**Status:** DESIGN. Nothing here is built. It lands with the P2 lanes
+**Status:** DESIGN, with the limits ruled by the owner on 2026-11-09 (see the
+last section). Nothing here is built. It lands with the P2 lanes
 (`docs/product/P2-PLAN.md`) after P0 closes, as additions to lanes A and B,
 not as a parallel lane. Owner decisions 2026-11-09: buy-side debit spreads
 only, a separate thesis sleeve, and paper only. Live trading stays
@@ -24,9 +25,9 @@ is in the default sleeve and today's limits apply unchanged.
 ```json
 "sleeves": {
   "aibear": {
-    "max_trade_loss_usd": "<owner>",
-    "max_open_loss_usd": "<owner>",
-    "short_beta_delta_floor_usd": "<owner, negative, per 1% SPY>",
+    "max_trade_loss_usd": "500",
+    "max_open_loss_usd": "2500",
+    "short_beta_delta_floor_usd": "-1000",
     "long_beta_delta_cap_usd": "250",
     "allowed_names": ["TSLA", "NVDA", "AVGO", "AMD", "PLTR", "META", "MSFT", "QQQ", "SMH", "SOXX"],
     "allowed_kinds": ["debit_vertical"],
@@ -88,9 +89,21 @@ The rails rules:
 - **Credit spreads stay blocked** (`credit_open_not_supported_v1`). The owner
   chose buy-side only.
 
-## Owner ruling to fill in (proposed numbers, not decided)
+## Owner ruling (2026-11-09): the proposed numbers are adopted
 
-| Field | Proposed | Why |
+The owner approved these numbers as proposed on 2026-11-09. They are the
+values lane A writes into the `aibear` sleeve and the host profile's
+`aibear-thesis/1`. Nothing is enforced yet:
+
+- the sleeve, the per-sleeve beta-delta check and the ticket field are not
+  built;
+- they land with P2 lanes A and B after P0 closes;
+- until then no `aibear` ticket can exist, and every limit in force today
+  is unchanged.
+
+Live trading stays unauthorized.
+
+| Field | Ruled | Why |
 |---|---|---|
 | `max_trade_loss_usd` | 500 | today's per-trade rail; one core spread at quantity 1 is about $500–1,500 of debit on these names, so some names need narrower strikes |
 | `max_open_loss_usd` | 2,500 | half the $5,000 paper book |
