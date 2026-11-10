@@ -12,6 +12,8 @@ inspection, user-supplied upstream URL, or deployment performed by this PR.
    and differing expirations are disclosed, never ranked as one-day outcomes.
 4. Pilot local gate, release service *template*, and operator checklist — stacks
    on (3); no service is installed or enabled by repository commits.
+5. Offline HTTP transport contract — stacks on (4), exercises OAuth introspection
+   through the actual production read path and verifies isolation/revocation.
 
 ## Local gate before merging
 

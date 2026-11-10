@@ -612,6 +612,7 @@ def create_app(
     quota_per_subject: int = 60,
     quota_per_tenant: int = 300,
     quota_max_identities: int = 2_048,
+    http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
 ) -> FastAPI:
     """Build the gateway; injectable auth/fetcher are for isolated contract tests.
 
@@ -637,7 +638,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        async with _http_client() as pooled:
+        # Factory injection is exclusively for deterministic offline tests;
+        # production retains its TLS-verified, no-redirect shared HTTP pool.
+        async with (http_client_factory or _http_client)() as pooled:
             app.state.research_http_client = pooled
             yield
 
