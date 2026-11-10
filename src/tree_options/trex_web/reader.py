@@ -8,6 +8,7 @@ running IB Gateway.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -17,6 +18,7 @@ from typing import Literal
 from tree_options.trex.clock import now_et
 from tree_options.trex.plan import TradePlan, load_plan
 from tree_options.trex.state import BookState, Status, StructureState
+from tree_options.trex_web.plan_resolution import requires_legacy_resolution
 
 # The arm-gate freshness window. Mirrors ``monitor.HEARTBEAT_FRESH_SECONDS``
 # so the "armed" pill on the GUI matches what ``enter.py`` would accept.
@@ -249,13 +251,21 @@ def _resolve_plan_toml(plan_id: str, plans_root: Path) -> Path | None:
     return None
 
 
-def load_plan_view(plan_id: str, state_root: Path, plans_root: Path) -> PlanView | None:
+def load_plan_view(
+    plan_id: str, state_root: Path, plans_root: Path,
+    *, _prevalidated_plan: TradePlan | None = None,
+) -> PlanView | None:
     """Load a plan + its persisted state. Returns None if no TOML has the
     given ``id`` (an unknown id is a 404 from the route, not a render)."""
-    toml_path = _resolve_plan_toml(plan_id, plans_root)
-    if toml_path is None:
-        return None
-    plan = load_plan(toml_path)
+    if _prevalidated_plan is None:
+        toml_path = _resolve_plan_toml(plan_id, plans_root)
+        if toml_path is None:
+            return None
+        plan = load_plan(toml_path)
+    else:
+        if _prevalidated_plan.id != plan_id:
+            raise ValueError("prevalidated plan id does not match lookup")
+        plan = _prevalidated_plan
 
     state_dir = state_root / plan_id
     book_path = state_dir / "book.json"
@@ -300,13 +310,25 @@ def list_plans(state_root: Path, plans_root: Path) -> list[PlanView]:
     a plan exists before the monitor arms it."""
     if not plans_root.exists():
         return []
-    out: list[PlanView] = []
+    # Parse each TOML once. The legacy list -> lookup -> glob path rescanned
+    # every TOML for each plan (quadratic parsing) despite holding its model.
+    parsed: list[tuple[Path, TradePlan]] = []
     for toml_path in sorted(plans_root.glob("*.toml")):
         try:
             plan = load_plan(toml_path)
         except (OSError, ValueError):
             continue
-        view = load_plan_view(plan.id, state_root, plans_root)
+        parsed.append((toml_path, plan))
+    counts = Counter(plan.id for _, plan in parsed)
+    out: list[PlanView] = []
+    for toml_path, plan in parsed:
+        # Preserve original duplicate-ID and matching-filename precedence.
+        if requires_legacy_resolution(plan.id, toml_path, plans_root, counts):
+            view = load_plan_view(plan.id, state_root, plans_root)
+        else:
+            view = load_plan_view(
+                plan.id, state_root, plans_root, _prevalidated_plan=plan
+            )
         if view is not None:
             out.append(view)
     return out
