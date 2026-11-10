@@ -22,6 +22,7 @@ TESTS = (
     "tests/unit/test_trex_mcp_oauth_transport.py",
     "tests/unit/test_trex_mcp_quotas.py",
     "tests/unit/test_trex_mcp_bearish_compare.py",
+    "tests/unit/test_trex_mcp_network_contract.py",
 )
 FORBIDDEN_IMPORTS = (
     "ib_async", "snaptrade_python_sdk", "snaptrade", "tree_options.trex.",
