@@ -9243,6 +9243,135 @@ MUTANTS.extend(
     ]
 )
 
+# DESK-BT-001 (docs/desk/DESK-BT-001.md as amended + the 2026-11-14
+# clarifications): the sealed never-run modeled options backtest. Seals,
+# window pins, no-lookahead entry anchoring, the measured haircut, the
+# placebo draw/path, and the sealed statistics.
+_BT = "src/tree_options/desk/"
+_BT_T = "tests/unit/test_desk_bt001.py::"
+MUTANTS.extend(
+    [
+        dict(
+            id="BT-M1-unsealed-spec-accepted",
+            owner="test_edited_sealed_document_is_refused",
+            file=_BT + "bt001.py",
+            anchor=(
+                "if got != want:\n"
+                '            raise Refused(f"{name} sha256 {got} is not the sealed {want}")'
+            ),
+            replacement=(
+                "if False:\n"
+                '            raise Refused(f"{name} sha256 {got} is not the sealed {want}")'
+            ),
+            selectors=[_BT_T + "TestSealEnforcement::test_edited_sealed_document_is_refused"],
+            invariant="the runner scores only under the sealed spec bytes",
+        ),
+        dict(
+            id="BT-M2-window-shift-ignored",
+            owner="test_wrong_first_twenty_refused",
+            file=_BT + "bt001.py",
+            anchor="if tuple(twenty) != pins.first_twenty:",
+            replacement="if False:",
+            selectors=[_BT_T + "TestWindowPins::test_wrong_first_twenty_refused"],
+            invariant="the haircut window is the pinned first 20 recorded sessions (A6)",
+        ),
+        dict(
+            id="BT-M3-slice-pin-ignored",
+            owner="test_run_refuses_a_drifted_panel_slice",
+            file=_BT + "bt001.py",
+            anchor="if got_panel != slice_pins.panel_sha256:",
+            replacement="if False:",
+            selectors=[_BT_T + "TestSlicePins::test_run_refuses_a_drifted_panel_slice"],
+            invariant="a growing input's consumed history cannot move (A4)",
+        ),
+        dict(
+            id="BT-M4-entry-at-signal-session",
+            owner="test_entry_is_priced_at_the_next_session_after_the_signal",
+            file=_BT + "bt001.py",
+            anchor="e0 = first_session_after(entry.session, inputs.cal)",
+            replacement="e0 = entry.session",
+            selectors=[
+                _BT_T + "TestNoLookahead::test_entry_is_priced_at_the_next_session_after_the_signal"
+            ],
+            invariant="a close-based signal enters at the NEXT session's VWAP (A1)",
+        ),
+        dict(
+            id="BT-M5-haircut-skipped",
+            owner="test_fill_prices_apply_the_haircut_by_side",
+            file=_BT + "bt001.py",
+            anchor="factor = (1.0 + haircut) if signed > 0 else (1.0 - haircut)",
+            replacement="factor = 1.0",
+            selectors=[
+                _BT_T + "TestStructureSelection::test_fill_prices_apply_the_haircut_by_side"
+            ],
+            invariant="a buy pays VWAP*(1+h) and a sell receives VWAP*(1-h)",
+        ),
+        dict(
+            id="BT-M6-placebo-hash-token-dropped",
+            owner="test_draw_is_the_hash_index_of_the_sorted_candidates",
+            file=_BT + "bt001.py",
+            anchor=('token = f"{PLACEBO_PREFIX}|{e0.isoformat()}|{name}|{structure}"'),
+            replacement='token = f"{PLACEBO_PREFIX}|{e0.isoformat()}|{name}"',
+            selectors=[_BT_T + "TestPlacebo::test_draw_is_the_hash_index_of_the_sorted_candidates"],
+            invariant="the placebo draw hashes E0, X and the literal S1/S2/S3 token (A2)",
+        ),
+        dict(
+            id="BT-M7-rank-basis-per-right",
+            owner="test_strike_ranks_count_distinct_strikes_not_per_right",
+            file=_BT + "bt001.py",
+            anchor="strikes=tuple(sorted(sides)),",
+            replacement='strikes=tuple(sorted(k for k, r in sides.items() if "C" in r)),',
+            selectors=[
+                _BT_T
+                + "TestStructureSelection::test_strike_ranks_count_distinct_strikes_not_per_right"
+            ],
+            invariant="ranks count distinct strikes with ANY bar, not per-right ladders (A1)",
+        ),
+        dict(
+            id="BT-M8-moneyness-on-spot",
+            owner="test_moneyness_is_tested_on_the_forward_not_the_spot",
+            file=_BT + "bt001.py",
+            anchor="if abs(math.log(k0 / forward)) > MONEYNESS_MAX:",
+            replacement="if abs(k0 / spot - 1.0) > MONEYNESS_MAX:",
+            selectors=[
+                _BT_T
+                + "TestStructureSelection::test_moneyness_is_tested_on_the_forward_not_the_spot"
+            ],
+            invariant="K0 must sit within 3% of the FORWARD, not the spot",
+        ),
+        dict(
+            id="BT-M9-exit-dte-floor-dropped",
+            owner="test_exit_walks_back_to_the_last_session_with_dte_at_least_7",
+            file=_BT + "bt001.py",
+            anchor="while limit > i and (expiry - sessions[limit]).days < MIN_EXIT_DTE:",
+            replacement="while False:",
+            selectors=[
+                _BT_T
+                + "TestStructureSelection::test_exit_walks_back_to_the_last_session_with_dte_at_least_7"
+            ],
+            invariant="the exit never holds past the last session with DTE >= 7",
+        ),
+        dict(
+            id="BT-M10-dsr-n-trials-not-six",
+            owner="test_dsr_hand_computed",
+            file=_BT + "bt001.py",
+            anchor='N_TRIALS = 6  # "N = 6 always"',
+            replacement='N_TRIALS = 12  # "N = 6 always"',
+            selectors=[_BT_T + "TestStatistics::test_dsr_hand_computed"],
+            invariant="the deflated Sharpe deflates against N = 6 trials exactly",
+        ),
+        dict(
+            id="BT-M11-stress-haircut-not-doubled",
+            owner="test_stress_doubles_the_haircut",
+            file=_BT + "bt001.py",
+            anchor="stress = _r(2.0)",
+            replacement="stress = _r(1.0)",
+            selectors=[_BT_T + "TestStructureSelection::test_stress_doubles_the_haircut"],
+            invariant="test (d) prices the whole sealed formula at 2h, not h",
+        ),
+    ]
+)
+
 
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
