@@ -356,6 +356,7 @@ def measure_haircuts(
     29 bar-names (A2's pool)."""
     per_name: dict[str, list[float]] = {}
     skipped_chains = 0
+    monthly: dict[date, bool] = {}  # the expiry check is per-row; memoize it
     for session in sessions:
         folder = store / "chains" / session.isoformat()
         for path in sorted(folder.glob("*.json.gz")):
@@ -370,10 +371,12 @@ def measure_haircuts(
                 continue
             vals = per_name.setdefault(name, [])
             for row in chain.rows.values():
-                if not ivhist.is_monthly_expiry_session(row["exp"], cal):
-                    continue
                 dte = (row["exp"] - session).days
                 if not MIN_ENTRY_DTE <= dte <= MAX_ENTRY_DTE:
+                    continue
+                if monthly.get(row["exp"]) is None:
+                    monthly[row["exp"]] = ivhist.is_monthly_expiry_session(row["exp"], cal)
+                if not monthly[row["exp"]]:
                     continue
                 forward = chain.spot * math.exp(rate * dte / 365.0)
                 if abs(math.log(row["strike"] / forward)) > HAIRCUT_MONEYNESS_MAX:
