@@ -820,7 +820,10 @@ def create_app(
 
     @app.get("/api/market/{sym}/options")
     def api_market_symbol_options(
-        sym: str, window: int = 5, max_expiries: int = 6, clock: str | None = None,
+        sym: str,
+        window: int = 5,
+        max_expiries: int = 6,
+        clock: str | None = None,
         expiration: str | None = None,
     ) -> dict[str, object]:
         """The desk's RECORDED per-name options surface (features cards +
@@ -845,7 +848,9 @@ def create_app(
                 if date.fromisoformat(expiration).isoformat() != expiration:
                     raise ValueError("noncanonical expiration")
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail="expiration must be YYYY-MM-DD") from exc
+                raise HTTPException(
+                    status_code=422, detail="expiration must be YYYY-MM-DD"
+                ) from exc
         return options_payload(
             desk_store_root,
             sym_up,

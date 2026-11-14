@@ -3,6 +3,7 @@
 Ordinary uniquely identified plans do not need to be resolved and reparsed.
 Ambiguous IDs and filename precedence retain the existing legacy resolver.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

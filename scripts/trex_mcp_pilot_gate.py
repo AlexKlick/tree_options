@@ -4,6 +4,7 @@ The TREX repository deliberately uses its local gates, not GitHub CI. This
 runner makes the MCP slice reproducible and emits an explicit non-release
 verdict. `--full` additionally runs the repository's existing M0 gate.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,8 +29,12 @@ TESTS = (
     "tests/unit/test_trex_exact_expiry_selection.py",
 )
 FORBIDDEN_IMPORTS = (
-    "ib_async", "snaptrade_python_sdk", "snaptrade", "tree_options.trex.",
-    "tree_options.desk.", "tree_options.execution.",
+    "ib_async",
+    "snaptrade_python_sdk",
+    "snaptrade",
+    "tree_options.trex.",
+    "tree_options.desk.",
+    "tree_options.execution.",
 )
 
 
@@ -44,7 +49,10 @@ def unsafe_imports(source: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             names = [node.module] if node.level == 0 else []
         for name in names:
-            if any(name == root.removesuffix(".") or name.startswith(root) for root in FORBIDDEN_IMPORTS):
+            if any(
+                name == root.removesuffix(".") or name.startswith(root)
+                for root in FORBIDDEN_IMPORTS
+            ):
                 found.append(f"L{node.lineno}: {name}")
     return found
 
@@ -70,22 +78,35 @@ def static_gate(root: Path) -> list[str]:
 def run_command(command: list[str], root: Path) -> dict[str, Any]:
     start = time.monotonic()
     try:
-        p = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=1800, check=False)
-        return {"command": command, "exit_code": p.returncode,
-                "duration_seconds": round(time.monotonic() - start, 3),
-                "stdout_tail": p.stdout[-3000:], "stderr_tail": p.stderr[-1500:]}
+        p = subprocess.run(
+            command, cwd=root, capture_output=True, text=True, timeout=1800, check=False
+        )
+        return {
+            "command": command,
+            "exit_code": p.returncode,
+            "duration_seconds": round(time.monotonic() - start, 3),
+            "stdout_tail": p.stdout[-3000:],
+            "stderr_tail": p.stderr[-1500:],
+        }
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"command": command, "exit_code": 125,
-                "duration_seconds": round(time.monotonic() - start, 3),
-                "error": type(exc).__name__}
+        return {
+            "command": command,
+            "exit_code": 125,
+            "duration_seconds": round(time.monotonic() - start, 3),
+            "error": type(exc).__name__,
+        }
 
 
 def gate(root: Path, *, full: bool = False, static_only: bool = False) -> dict[str, Any]:
     errors = static_gate(root)
-    evidence: dict[str, Any] = {"schema": "trex-mcp-pilot-gate/1",
+    evidence: dict[str, Any] = {
+        "schema": "trex-mcp-pilot-gate/1",
         "checks": {"static_broker_boundary": {"passed": not errors, "errors": errors}},
-        "full_repo_gate_requested": full, "host_deployment_checked": False,
-        "oauth_interoperability_checked": False, "customer_activation_authorized": False}
+        "full_repo_gate_requested": full,
+        "host_deployment_checked": False,
+        "oauth_interoperability_checked": False,
+        "customer_activation_authorized": False,
+    }
     if errors:
         evidence["verdict"] = "BLOCKED_STATIC"
         return evidence
@@ -108,8 +129,12 @@ def gate(root: Path, *, full: bool = False, static_only: bool = False) -> dict[s
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--full", action="store_true", help="Run M0 and mutation gate after MCP slice")
-    parser.add_argument("--static-only", action="store_true", help="Non-mutating import boundary checks")
+    parser.add_argument(
+        "--full", action="store_true", help="Run M0 and mutation gate after MCP slice"
+    )
+    parser.add_argument(
+        "--static-only", action="store_true", help="Non-mutating import boundary checks"
+    )
     parser.add_argument("--repo", type=Path, default=HERE)
     args = parser.parse_args()
     if args.full and args.static_only:

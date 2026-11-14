@@ -3,6 +3,7 @@
 This is defense in depth only: identity-provider and HTTPS ingress quotas must
 span workers and hosts. No subject or bearer token is kept in the registry.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,12 +26,20 @@ class QuotaLimiter:
     """
 
     def __init__(
-        self, *, subject_limit: int = 60, tenant_limit: int = 300,
-        window_seconds: float = 60.0, max_subject_keys: int = 2_048,
+        self,
+        *,
+        subject_limit: int = 60,
+        tenant_limit: int = 300,
+        window_seconds: float = 60.0,
+        max_subject_keys: int = 2_048,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if (subject_limit < 1 or tenant_limit < subject_limit
-            or not 0 < window_seconds <= 86_400 or max_subject_keys < 1):
+        if (
+            subject_limit < 1
+            or tenant_limit < subject_limit
+            or not 0 < window_seconds <= 86_400
+            or max_subject_keys < 1
+        ):
             raise ValueError("invalid MCP quota configuration")
         self.subject_limit = subject_limit
         self.tenant_limit = tenant_limit

@@ -209,7 +209,11 @@ def _row(
 
 
 def _slice_rows(
-    chain: dict[str, Any], session: str, spot: float, window: int, max_expiries: int,
+    chain: dict[str, Any],
+    session: str,
+    spot: float,
+    window: int,
+    max_expiries: int,
     expiration: str | None = None,
 ) -> list[dict[str, Any]]:
     """Nearest ``max_expiries`` expiries, +/- ``window`` ladder rungs around
@@ -325,7 +329,11 @@ def _live_row(
 
 
 def _live_slice(
-    payload: dict[str, Any], spot: float | None, window: int, max_expiries: int, now: datetime,
+    payload: dict[str, Any],
+    spot: float | None,
+    window: int,
+    max_expiries: int,
+    now: datetime,
     expiration: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """The viewchain expiries -> recorded-shaped rows: nearest
@@ -493,7 +501,9 @@ def options_payload(
         "symbol": sym,
         "recorded": recorded,
         "iv30_history": _iv30_history(store_root, sym),
-        "live": _live_section(_market_cache_root(market_cache_dir), sym, w, cap, now, expiration=expiration),
+        "live": _live_section(
+            _market_cache_root(market_cache_dir), sym, w, cap, now, expiration=expiration
+        ),
         "available": available,
         "warnings": warnings,
     }

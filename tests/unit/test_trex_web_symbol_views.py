@@ -762,9 +762,16 @@ def test_exact_expiry_bypasses_nearest_twelve_recorded_contracts(tmp_path: Path)
     store = tmp_path / "store"
     _write_features(store, SESSION, {SYM: _feature_name(101.0)})
     extras = [
-        "2027-02-19", "2027-03-19", "2027-04-16", "2027-05-21",
-        "2027-07-16", "2027-08-20", "2027-09-17", "2027-10-15",
-        "2027-11-19", "2028-01-21",
+        "2027-02-19",
+        "2027-03-19",
+        "2027-04-16",
+        "2027-05-21",
+        "2027-07-16",
+        "2027-08-20",
+        "2027-09-17",
+        "2027-10-15",
+        "2027-11-19",
+        "2028-01-21",
     ]
     expiries = sorted(set(EXPIRIES + extras))
     assert expiries.index("2028-01-21") >= 12
@@ -772,9 +779,7 @@ def test_exact_expiry_bypasses_nearest_twelve_recorded_contracts(tmp_path: Path)
     client = _client(store)
     nearest = _get(client, f"/api/market/{SYM}/options?window=0&max_expiries=12")
     assert "2028-01-21" not in {r["exp"] for r in nearest["recorded"]["slice"]}
-    exact = _get(
-        client, f"/api/market/{SYM}/options?window=0&max_expiries=1&expiration=2028-01-21"
-    )
+    exact = _get(client, f"/api/market/{SYM}/options?window=0&max_expiries=1&expiration=2028-01-21")
     rows = exact["recorded"]["slice"]
     assert len(rows) == 2  # P + C at ATM, not a fabricated full chain
     assert {r["exp"] for r in rows} == {"2028-01-21"}
@@ -805,4 +810,6 @@ def test_exact_expiry_bypasses_nearest_live_viewchain(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("invalid", ["2028-2-3", "2028-02-30", "2028-01-21/../api/commands"])
 def test_exact_expiration_bad_request_fails_422(client: TestClient, invalid: str) -> None:
-    assert client.get(f"/api/market/{SYM}/options", params={"expiration": invalid}).status_code == 422
+    assert (
+        client.get(f"/api/market/{SYM}/options", params={"expiration": invalid}).status_code == 422
+    )

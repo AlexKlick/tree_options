@@ -37,7 +37,9 @@ def positive_decimal(raw: object, field: str, *, allow_zero: bool = False) -> De
     except InvalidOperation as exc:
         raise InvalidScenario(f"{field} must be a finite decimal number") from exc
     if not result.is_finite() or result < 0 or (not allow_zero and result == 0):
-        raise InvalidScenario(f"{field} must be finite and {'nonnegative' if allow_zero else 'positive'}")
+        raise InvalidScenario(
+            f"{field} must be finite and {'nonnegative' if allow_zero else 'positive'}"
+        )
     if result > Decimal("1000000"):
         raise InvalidScenario(f"{field} is outside supported bounds")
     return result
@@ -50,8 +52,16 @@ def _money(raw: Decimal) -> float:
 def evaluate_bearish_scenario(data: dict[str, Any]) -> dict[str, Any]:
     """Evaluate an explicitly priced long put or put debit vertical at expiry."""
     allowed = {
-        "symbol", "expiration", "strategy", "spot", "long_strike",
-        "short_strike", "net_debit", "contracts", "target_prices", "max_risk_budget",
+        "symbol",
+        "expiration",
+        "strategy",
+        "spot",
+        "long_strike",
+        "short_strike",
+        "net_debit",
+        "contracts",
+        "target_prices",
+        "max_risk_budget",
     }
     extra = set(data) - allowed
     if extra:
@@ -178,11 +188,21 @@ def compare_bearish_scenarios(data: dict[str, Any]) -> dict[str, Any]:
             raise InvalidScenario(f"candidate {index} must be an object")
         candidate_id = candidate.get("id")
         if not isinstance(candidate_id, str) or not COMPARE_ID.fullmatch(candidate_id):
-            raise InvalidScenario(f"candidate {index} id must be 1-32 ASCII letters, digits, _ or -")
+            raise InvalidScenario(
+                f"candidate {index} id must be 1-32 ASCII letters, digits, _ or -"
+            )
         if candidate_id in seen:
             raise InvalidScenario("candidate ids must be unique")
         seen.add(candidate_id)
-        if set(candidate) - {"id", "expiration", "strategy", "long_strike", "short_strike", "net_debit", "contracts"}:
+        if set(candidate) - {
+            "id",
+            "expiration",
+            "strategy",
+            "long_strike",
+            "short_strike",
+            "net_debit",
+            "contracts",
+        }:
             raise InvalidScenario(f"candidate {candidate_id} has unsupported fields")
         inputs = {"symbol": sym, "spot": spot, "target_prices": targets}
         inputs.update({key: val for key, val in candidate.items() if key != "id"})
@@ -193,7 +213,9 @@ def compare_bearish_scenarios(data: dict[str, Any]) -> dict[str, Any]:
         "schema": "trex-mcp-bearish-comparison/1",
         "symbol": sym,
         "assumed_spot": _money(spot),
-        "assumed_underlying_prices": [_money(positive_decimal(t, "target_prices", allow_zero=True)) for t in targets],
+        "assumed_underlying_prices": [
+            _money(positive_decimal(t, "target_prices", allow_zero=True)) for t in targets
+        ],
         "candidates": result,
         "different_expirations": len({r["expiration"] for r in result}) > 1,
         "risk_semantics": "Candidates are alternatives, not simultaneous positions. Each risk budget applies independently.",

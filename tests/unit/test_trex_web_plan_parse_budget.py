@@ -3,6 +3,7 @@
 These tests require the full TREX checkout; the isolated policy suite is
 separately runnable without the broker-dependent plan model.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,7 +21,9 @@ def _write(plans: Path, filename: str, plan_id: str) -> None:
     (plans / filename).write_text(text)
 
 
-def test_unique_plans_parse_once_not_quadratically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unique_plans_parse_once_not_quadratically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     plans = tmp_path / "plans"
     for i in range(20):
         _write(plans, f"batch-{i:03d}.toml", f"batch-plan-{i:03d}")

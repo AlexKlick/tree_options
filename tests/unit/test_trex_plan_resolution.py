@@ -1,4 +1,5 @@
 """TDD for plan fast-path eligibility and canonical-resolution safety."""
+
 from pathlib import Path
 
 from tree_options.trex_web.plan_resolution import requires_legacy_resolution

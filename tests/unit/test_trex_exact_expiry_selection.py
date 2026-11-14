@@ -1,4 +1,5 @@
 """Pure selector TDD: exact expiration bypasses nearest-12 truncation."""
+
 from __future__ import annotations
 
 import pytest
@@ -20,7 +21,9 @@ def test_target_bypasses_twelve_without_fabricating() -> None:
 
 def test_live_compact_keys_select_far_expiry() -> None:
     names = {"20261120": {}, "20270115": {}, "20280915": {}}
-    assert select_expiries(names, max_expiries=1, expiration="2028-09-15", compact=True) == ("20280915",)
+    assert select_expiries(names, max_expiries=1, expiration="2028-09-15", compact=True) == (
+        "20280915",
+    )
     assert select_expiries(names, max_expiries=1, expiration="2028-09-22", compact=True) == ()
 
 

@@ -505,9 +505,7 @@ def test_a_backdated_llm_session_is_refused_fail_closed(tmp_path) -> None:
     assert out["llm"]["natural_session"] == natural.isoformat()
     assert len(calls) == 1  # no second model call, no headlines fetched for the old day
     assert (tmp_path / "state" / "aibear" / "llm.jsonl").read_text() == log_before
-    doc = json.loads(
-        (tmp_path / "state" / "aibear" / f"{missed.isoformat()}.json").read_text()
-    )
+    doc = json.loads((tmp_path / "state" / "aibear" / f"{missed.isoformat()}.json").read_text())
     assert doc["llm"]["status"] == "refused_backdated"
     assert any("refused" in e for e in doc["events"])
 
@@ -568,8 +566,9 @@ def test_a_torn_final_llm_line_is_skipped_and_the_next_run_survives(tmp_path) ->
     while nxt.weekday() >= 5:
         nxt += timedelta(days=1)
     panel_path, store = _write_env(tmp_path, [*days, nxt])
-    out = mon.run_monitor(**{**kw, "panel_path": panel_path, "store": store,
-                             "clock": lambda: _at(nxt)})
+    out = mon.run_monitor(
+        **{**kw, "panel_path": panel_path, "store": store, "clock": lambda: _at(nxt)}
+    )
     assert out["llm"]["status"] == "ok"
     assert out["llm_log_skipped_lines"] == 1
     assert any("unparseable" in e for e in out["events"])

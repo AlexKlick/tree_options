@@ -252,8 +252,11 @@ def _resolve_plan_toml(plan_id: str, plans_root: Path) -> Path | None:
 
 
 def load_plan_view(
-    plan_id: str, state_root: Path, plans_root: Path,
-    *, _prevalidated_plan: TradePlan | None = None,
+    plan_id: str,
+    state_root: Path,
+    plans_root: Path,
+    *,
+    _prevalidated_plan: TradePlan | None = None,
 ) -> PlanView | None:
     """Load a plan + its persisted state. Returns None if no TOML has the
     given ``id`` (an unknown id is a 404 from the route, not a render)."""
@@ -326,9 +329,7 @@ def list_plans(state_root: Path, plans_root: Path) -> list[PlanView]:
         if requires_legacy_resolution(plan.id, toml_path, plans_root, counts):
             view = load_plan_view(plan.id, state_root, plans_root)
         else:
-            view = load_plan_view(
-                plan.id, state_root, plans_root, _prevalidated_plan=plan
-            )
+            view = load_plan_view(plan.id, state_root, plans_root, _prevalidated_plan=plan)
         if view is not None:
             out.append(view)
     return out

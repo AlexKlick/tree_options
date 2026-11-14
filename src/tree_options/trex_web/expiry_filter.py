@@ -3,6 +3,7 @@
 A requested canonical ISO date bypasses nearest-N truncation. This does not
 prove exchange listing, market entitlement, liquidity, or strike existence.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -10,8 +11,11 @@ from typing import Any, Mapping
 
 
 def select_expiries(
-    expiries: Mapping[str, Any], *, max_expiries: int,
-    expiration: str | None = None, compact: bool = False,
+    expiries: Mapping[str, Any],
+    *,
+    max_expiries: int,
+    expiration: str | None = None,
+    compact: bool = False,
 ) -> tuple[str, ...]:
     """Return only an observed exact expiry or the existing nearest-N keys.
 

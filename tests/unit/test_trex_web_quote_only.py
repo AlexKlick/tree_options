@@ -3,6 +3,7 @@
 This module runs in the full tree_options checkout alongside existing
 test_trex_web.py; it does not require a running broker or market connection.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,7 +35,9 @@ def _client(tmp_path: Path) -> tuple[TestClient, Path]:
 def _seed(discovery: Path) -> dict[str, object]:
     discovery.mkdir(parents=True, exist_ok=True)
     quote: dict[str, object] = {
-        "last": 378.05, "bid": 377.50, "ask": 378.25,
+        "last": 378.05,
+        "bid": 377.50,
+        "ask": 378.25,
         "source_as_of": datetime.now(ET).isoformat(),
         "source": "test fixture",
     }
@@ -82,9 +85,7 @@ def test_quote_source_fallback_respects_market_cache(tmp_path: Path) -> None:
     (discovery / "market").mkdir(parents=True, exist_ok=True)
     (discovery / "market.json").write_text("{bad json")
     quote = {"last": 333.0, "source_as_of": datetime.now(ET).isoformat()}
-    MarketCache(discovery / "market" / "cache").put(
-        "quote", "TSLA", quote, datetime.now(ET)
-    )
+    MarketCache(discovery / "market" / "cache").put("quote", "TSLA", quote, datetime.now(ET))
     response = client.get("/api/market/TSLA/quote")
     assert response.status_code == 200
     assert response.json()["quote"] == quote

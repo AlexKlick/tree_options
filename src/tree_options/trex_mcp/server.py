@@ -13,10 +13,10 @@ import math
 import os
 import re
 import time
-from datetime import date, datetime, timedelta, timezone
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -25,7 +25,14 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from .analysis import InvalidScenario, compare_bearish_scenarios, evaluate_bearish_scenario, symbol_value
+from tree_options.time.sessions import shift_instant
+
+from .analysis import (
+    InvalidScenario,
+    compare_bearish_scenarios,
+    evaluate_bearish_scenario,
+    symbol_value,
+)
 
 MCP_VERSION = "2026-07-28"
 SUPPORTED_VERSIONS = {MCP_VERSION, "2025-11-25", "2025-06-18"}
@@ -40,7 +47,7 @@ MAX_OPTION_ROWS = 80
 MAX_WARNINGS = 8
 MAX_INFLIGHT_CALLS = 16
 ADMISSION_TIMEOUT_SECONDS = 0.1
-MAX_SOURCE_CLOCK_SKEW = timedelta(seconds=60)
+MAX_SOURCE_CLOCK_SKEW_SECONDS = 60  # shifts go through tree_options.time (no naive arithmetic)
 REPORTED_AGE_TOLERANCE_SECONDS = 60
 
 
@@ -116,22 +123,42 @@ class Config:
         public_url = os.environ["TREX_MCP_PUBLIC_URL"].rstrip("/")
         auth_server = os.environ["TREX_MCP_AUTHORIZATION_SERVER"].rstrip("/")
         introspection = os.environ["TREX_MCP_INTROSPECTION_URL"]
-        for label, url in (("public MCP", public_url), ("authorization server", auth_server),
-                           ("token introspection", introspection)):
+        for label, url in (
+            ("public MCP", public_url),
+            ("authorization server", auth_server),
+            ("token introspection", introspection),
+        ):
             parsed = urlsplit(url)
-            if (parsed.scheme != "https" or not parsed.hostname or parsed.username
-                or parsed.password or parsed.query or parsed.fragment):
-                raise ValueError(f"{label} URL must be absolute HTTPS without credentials, query or fragment")
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    f"{label} URL must be absolute HTTPS without credentials, query or fragment"
+                )
         if not public_url.endswith("/mcp"):
             raise ValueError("TREX_MCP_PUBLIC_URL must be the public HTTPS .../mcp endpoint")
         origins = frozenset(
-            o.strip() for o in os.environ.get("TREX_MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()
+            o.strip()
+            for o in os.environ.get("TREX_MCP_ALLOWED_ORIGINS", "").split(",")
+            if o.strip()
         )
         for origin in origins:
             parsed = urlsplit(origin)
-            if (parsed.scheme not in ("https", "http") or not parsed.hostname
-                or parsed.username or parsed.password or parsed.path not in ("", "/")
-                or parsed.query or parsed.fragment or parsed.netloc == "*"):
+            if (
+                parsed.scheme not in ("https", "http")
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.path not in ("", "/")
+                or parsed.query
+                or parsed.fragment
+                or parsed.netloc == "*"
+            ):
                 raise ValueError("TREX_MCP_ALLOWED_ORIGINS must contain exact URL origins")
             if parsed.scheme == "http" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
                 raise ValueError("plaintext origins are permitted only for localhost testing")
@@ -199,7 +226,10 @@ async def _introspect(
             return await _introspect(token, config, owned)
     try:
         claims = await _limited_json(
-            client, "POST", config.introspection_url, MAX_OAUTH_REPLY_BYTES,
+            client,
+            "POST",
+            config.introspection_url,
+            MAX_OAUTH_REPLY_BYTES,
             data={"token": token, "token_type_hint": "access_token"},
             auth=(config.client_id, config.client_secret),
         )
@@ -225,13 +255,17 @@ async def _introspect(
     audiences = (
         {audience}
         if isinstance(audience, str)
-        else {v for v in audience if isinstance(v, str)} if isinstance(audience, list) else set()
+        else {v for v in audience if isinstance(v, str)}
+        if isinstance(audience, list)
+        else set()
     )
     scopes = claims.get("scope")
     scope_set = (
         set(scopes.split())
         if isinstance(scopes, str)
-        else {v for v in scopes if isinstance(v, str)} if isinstance(scopes, list) else set()
+        else {v for v in scopes if isinstance(v, str)}
+        if isinstance(scopes, list)
+        else set()
     )
     tenant = claims.get("trex_tenant_id")
     if (
@@ -247,7 +281,10 @@ async def _introspect(
 
 
 async def _read_trex(
-    config: Config, tenant: str, path: str, params: dict[str, Any],
+    config: Config,
+    tenant: str,
+    path: str,
+    params: dict[str, Any],
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Only allowlisted local GETs; responses and transport cost are capped."""
@@ -324,7 +361,7 @@ def _validate_provider_clock(now: object, gateway_at: datetime) -> datetime | No
     if now is None:
         return None
     provider_at = _aware_time(now, description="TREX provider clock")
-    if provider_at > gateway_at + MAX_SOURCE_CLOCK_SKEW:
+    if provider_at > shift_instant(gateway_at, MAX_SOURCE_CLOCK_SKEW_SECONDS):
         raise UpstreamUnavailable("TREX provider clock is in the future")
     return provider_at
 
@@ -336,9 +373,11 @@ def _verify_observed_time(
     if source is None:
         return None
     observed_at = _aware_time(source, description="market observation timestamp")
-    if observed_at > gateway_at + MAX_SOURCE_CLOCK_SKEW:
+    if observed_at > shift_instant(gateway_at, MAX_SOURCE_CLOCK_SKEW_SECONDS):
         raise UpstreamUnavailable("market observation is in the future of gateway time")
-    if provider_at is not None and observed_at > provider_at + MAX_SOURCE_CLOCK_SKEW:
+    if provider_at is not None and observed_at > shift_instant(
+        provider_at, MAX_SOURCE_CLOCK_SKEW_SECONDS
+    ):
         raise UpstreamUnavailable("market observation is in the future of TREX clock")
     return observed_at
 
@@ -366,10 +405,10 @@ def _verify_recorded_session(
 
 def _gateway_timestamp(gateway_at: datetime | None) -> datetime:
     """Pin one independent observation clock for all projections in a reply."""
-    value = gateway_at if gateway_at is not None else datetime.now(timezone.utc)
+    value = gateway_at if gateway_at is not None else datetime.now(UTC)
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("gateway_at must be timezone-aware")
-    return value.astimezone(timezone.utc)
+    return value.astimezone(UTC)
 
 
 TOOLS = [
@@ -379,7 +418,19 @@ TOOLS = [
             "Read a tenant's TREX recorded/delayed quote with original age and source timestamp. "
             "Never asserts a live executable price; no portfolio or order data."
         ),
-        "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$", "description": "Ticker, e.g. TSLA or BRK.B"}}, "required": ["symbol"], "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "maxLength": 6,
+                    "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$",
+                    "description": "Ticker, e.g. TSLA or BRK.B",
+                }
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
     },
     {
@@ -392,8 +443,15 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"},
-                "expiration": {"type": "string", "description": "Optional YYYY-MM-DD expiry filter"},
+                "symbol": {
+                    "type": "string",
+                    "maxLength": 6,
+                    "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$",
+                },
+                "expiration": {
+                    "type": "string",
+                    "description": "Optional YYYY-MM-DD expiry filter",
+                },
                 "right": {"type": "string", "enum": ["put", "call", "both"]},
             },
             "required": ["symbol"],
@@ -410,23 +468,46 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"},
+                "symbol": {
+                    "type": "string",
+                    "maxLength": 6,
+                    "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$",
+                },
                 "spot": {"type": "number", "exclusiveMinimum": 0},
-                "target_prices": {"type": "array", "minItems": 1, "maxItems": 12,
-                                  "items": {"type": "number", "minimum": 0}},
+                "target_prices": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 12,
+                    "items": {"type": "number", "minimum": 0},
+                },
                 "max_risk_budget": {"type": "number", "exclusiveMinimum": 0},
-                "candidates": {"type": "array", "minItems": 2, "maxItems": 6,
-                    "items": {"type": "object", "properties": {
-                        "id": {"type": "string", "minLength": 1, "maxLength": 32,
-                               "pattern": "^[A-Za-z0-9_-]+$"},
-                        "expiration": {"type": "string"},
-                        "strategy": {"type": "string", "enum": ["long_put", "put_debit_spread"]},
-                        "long_strike": {"type": "number", "exclusiveMinimum": 0},
-                        "short_strike": {"type": "number", "exclusiveMinimum": 0},
-                        "net_debit": {"type": "number", "exclusiveMinimum": 0},
-                        "contracts": {"type": "integer", "minimum": 1, "maximum": 100},
-                    }, "required": ["id", "expiration", "strategy", "long_strike", "net_debit"],
-                    "additionalProperties": False}},
+                "candidates": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 6,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 32,
+                                "pattern": "^[A-Za-z0-9_-]+$",
+                            },
+                            "expiration": {"type": "string"},
+                            "strategy": {
+                                "type": "string",
+                                "enum": ["long_put", "put_debit_spread"],
+                            },
+                            "long_strike": {"type": "number", "exclusiveMinimum": 0},
+                            "short_strike": {"type": "number", "exclusiveMinimum": 0},
+                            "net_debit": {"type": "number", "exclusiveMinimum": 0},
+                            "contracts": {"type": "integer", "minimum": 1, "maximum": 100},
+                        },
+                        "required": ["id", "expiration", "strategy", "long_strike", "net_debit"],
+                        "additionalProperties": False,
+                    },
+                },
             },
             "required": ["symbol", "spot", "target_prices", "candidates"],
             "additionalProperties": False,
@@ -442,18 +523,39 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "symbol": {"type": "string", "maxLength": 6, "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$"},
+                "symbol": {
+                    "type": "string",
+                    "maxLength": 6,
+                    "pattern": r"^[A-Za-z]+(?:\.[A-Za-z]+)?$",
+                },
                 "expiration": {"type": "string", "description": "YYYY-MM-DD"},
                 "strategy": {"type": "string", "enum": ["long_put", "put_debit_spread"]},
                 "spot": {"type": "number", "exclusiveMinimum": 0},
                 "long_strike": {"type": "number", "exclusiveMinimum": 0},
                 "short_strike": {"type": "number", "exclusiveMinimum": 0},
-                "net_debit": {"type": "number", "exclusiveMinimum": 0, "description": "Per-share premium paid, NOT total dollars"},
+                "net_debit": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Per-share premium paid, NOT total dollars",
+                },
                 "contracts": {"type": "integer", "minimum": 1, "maximum": 100},
-                "target_prices": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 1, "maxItems": 12},
+                "target_prices": {
+                    "type": "array",
+                    "items": {"type": "number", "minimum": 0},
+                    "minItems": 1,
+                    "maxItems": 12,
+                },
                 "max_risk_budget": {"type": "number", "exclusiveMinimum": 0},
             },
-            "required": ["symbol", "expiration", "strategy", "spot", "long_strike", "net_debit", "target_prices"],
+            "required": [
+                "symbol",
+                "expiration",
+                "strategy",
+                "spot",
+                "long_strike",
+                "net_debit",
+                "target_prices",
+            ],
             "additionalProperties": False,
         },
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
@@ -538,8 +640,12 @@ def _safe_market_view(
 
 
 def _safe_options_view(
-    doc: dict[str, Any], symbol: str, exp: str | None, right: str,
-    *, gateway_at: datetime | None = None,
+    doc: dict[str, Any],
+    symbol: str,
+    exp: str | None,
+    right: str,
+    *,
+    gateway_at: datetime | None = None,
 ) -> dict[str, Any]:
     read_at = _gateway_timestamp(gateway_at)
     _verify_symbol(doc, symbol)
@@ -547,7 +653,8 @@ def _safe_options_view(
     raw_warnings = doc.get("warnings")
     warnings = (
         [w for w in raw_warnings if isinstance(w, str)][:MAX_WARNINGS]
-        if isinstance(raw_warnings, list) else []
+        if isinstance(raw_warnings, list)
+        else []
     )
     warnings = [w[:200] for w in warnings]
     result: dict[str, Any] = {
@@ -563,7 +670,15 @@ def _safe_options_view(
         "nearest_expiry_slice_is_not_a_complete_option_chain": True,
     }
     numeric_fields = {
-        "strike", "bid", "ask", "mid", "iv", "delta", "gamma", "theta", "vega",
+        "strike",
+        "bid",
+        "ask",
+        "mid",
+        "iv",
+        "delta",
+        "gamma",
+        "theta",
+        "vega",
     }
     counts = {"oi", "volume", "dte"}
     cards_num = {"iv", "iv_rank", "skew25", "term_slope", "yz22_ann", "liquidity_score"}
@@ -594,16 +709,19 @@ def _safe_options_view(
             if not expiry or (exp is not None and expiry != exp):
                 continue
             direction = _safe_text(row.get("right"), limit=4)
-            if not direction or (right != "both" and direction.upper() not in (
-                ("P", "PUT") if right == "put" else ("C", "CALL")
-            )):
+            if not direction or (
+                right != "both"
+                and direction.upper() not in (("P", "PUT") if right == "put" else ("C", "CALL"))
+            ):
                 continue
             filtered_count += 1
             if len(out) >= MAX_OPTION_ROWS:
                 continue
             safe_row: dict[str, Any] = {"exp": expiry, "right": direction}
             for key in numeric_fields:
-                safe_row[key] = _safe_number(row.get(key), nonnegative=key not in ("delta", "gamma", "theta", "vega"))
+                safe_row[key] = _safe_number(
+                    row.get(key), nonnegative=key not in ("delta", "gamma", "theta", "vega")
+                )
             for key in counts:
                 val = _safe_number(row.get(key), nonnegative=True)
                 safe_row[key] = val if isinstance(val, int) else None
@@ -630,7 +748,9 @@ def _safe_options_view(
         age = _safe_number(raw.get("age_seconds"), nonnegative=True)
         ttl = _safe_number(raw.get("ttl_seconds"), nonnegative=True)
         verified_age = (
-            max(0, int((read_at - observed_at).total_seconds())) if observed_at is not None else None
+            max(0, int((read_at - observed_at).total_seconds()))
+            if observed_at is not None
+            else None
         )
         result[kind] = {
             "session": _safe_text(raw.get("session")),
@@ -639,7 +759,9 @@ def _safe_options_view(
             "gateway_age_seconds": verified_age,
             "cache_age_verified": verified_age is not None,
             "ttl_seconds": ttl,
-            "cache_expired": verified_age > ttl if verified_age is not None and ttl is not None else None,
+            "cache_expired": verified_age > ttl
+            if verified_age is not None and ttl is not None
+            else None,
             "spot": _safe_number(raw.get("spot"), nonnegative=True),
             "cards": cards,
             "expiries_in_retrieved_slice": sorted(expiries),
@@ -652,21 +774,28 @@ def _safe_options_view(
 
 
 def _tool_success(data: dict[str, Any]) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": json.dumps(data, sort_keys=True, allow_nan=False)}], "structuredContent": data, "isError": False}
+    return {
+        "content": [{"type": "text", "text": json.dumps(data, sort_keys=True, allow_nan=False)}],
+        "structuredContent": data,
+        "isError": False,
+    }
 
 
 def _tool_error(message: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
-def _rpc_result(request_id: object, result: dict[str, Any], *, modern: bool = False) -> JSONResponse:
+def _rpc_result(
+    request_id: object, result: dict[str, Any], *, modern: bool = False
+) -> JSONResponse:
     if modern:
         result = {
             **result,
             "resultType": "complete",
             "_meta": {
                 "io.modelcontextprotocol/serverInfo": {
-                    "name": "trex-research-mcp", "version": "0.2.0",
+                    "name": "trex-research-mcp",
+                    "version": "0.2.0",
                 },
             },
         }
@@ -674,7 +803,9 @@ def _rpc_result(request_id: object, result: dict[str, Any], *, modern: bool = Fa
 
 
 def _rpc_error(request_id: object, code: int, message: str) -> JSONResponse:
-    return JSONResponse({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}})
+    return JSONResponse(
+        {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+    )
 
 
 def create_app(
@@ -694,12 +825,18 @@ def create_app(
     Authentication is mandatory for *all* MCP traffic, including handshake.
     """
     if config is None:
-        config = Config.from_env() if authenticate is None or fetcher is None else Config(
-            public_url="https://mcp.test.example/mcp",
-            authorization_server="https://auth.test.example",
-            introspection_url="https://auth.test.example/introspect",
-            client_id="test-only", client_secret="test-only",
-            tenants={"test": "http://127.0.0.1:8090"}, allowed_origins=frozenset(),
+        config = (
+            Config.from_env()
+            if authenticate is None or fetcher is None
+            else Config(
+                public_url="https://mcp.test.example/mcp",
+                authorization_server="https://auth.test.example",
+                introspection_url="https://auth.test.example/introspect",
+                client_id="test-only",
+                client_secret="test-only",
+                tenants={"test": "http://127.0.0.1:8090"},
+                allowed_origins=frozenset(),
+            )
         )
     current_config = config
     if max_inflight < 1 or max_inflight > 256:
@@ -707,8 +844,11 @@ def create_app(
     inflight = asyncio.Semaphore(max_inflight)
     from .quota import QuotaLimiter
 
-    quotas = QuotaLimiter(subject_limit=quota_per_subject, tenant_limit=quota_per_tenant,
-                          max_subject_keys=quota_max_identities)
+    quotas = QuotaLimiter(
+        subject_limit=quota_per_subject,
+        tenant_limit=quota_per_tenant,
+        max_subject_keys=quota_max_identities,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -719,8 +859,11 @@ def create_app(
             yield
 
     app = FastAPI(
-        title="TREX read-only MCP gateway", docs_url=None, redoc_url=None,
-        openapi_url=None, lifespan=lifespan,
+        title="TREX read-only MCP gateway",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
     )
 
     def pooled_client() -> httpx.AsyncClient:
@@ -751,7 +894,9 @@ def create_app(
         try:
             await asyncio.wait_for(inflight.acquire(), timeout=ADMISSION_TIMEOUT_SECONDS)
         except TimeoutError:
-            return Response(status_code=429, headers={"Retry-After": "1", "Cache-Control": "no-store"})
+            return Response(
+                status_code=429, headers={"Retry-After": "1", "Cache-Control": "no-store"}
+            )
         try:
             return await call_next(request)
         finally:
@@ -801,7 +946,11 @@ def create_app(
             doc = await _fetch(
                 principal.tenant_id,
                 f"/api/market/{sym}/options",
-                {"window": 15, "max_expiries": 12, **({"expiration": expiry} if expiry is not None else {})},
+                {
+                    "window": 15,
+                    "max_expiries": 12,
+                    **({"expiration": expiry} if expiry is not None else {}),
+                },
             )
             return _safe_options_view(doc, sym, expiry, right)
         raise InvalidScenario("unknown MCP tool")
@@ -809,22 +958,37 @@ def create_app(
     @app.post("/mcp")
     async def mcp(request: Request) -> Response:
         auth = request.headers.get("authorization", "")
-        if (not auth.startswith("Bearer ") or not auth[7:].strip()
-            or len(auth[7:]) > MAX_TOKEN_BYTES):
-            return Response(status_code=401, headers={"WWW-Authenticate": (
-                f'Bearer resource_metadata="{current_config.public_url.rsplit("/mcp", 1)[0]}/.well-known/oauth-protected-resource"'
-            )})
+        if (
+            not auth.startswith("Bearer ")
+            or not auth[7:].strip()
+            or len(auth[7:]) > MAX_TOKEN_BYTES
+        ):
+            return Response(
+                status_code=401,
+                headers={
+                    "WWW-Authenticate": (
+                        f'Bearer resource_metadata="{current_config.public_url.rsplit("/mcp", 1)[0]}/.well-known/oauth-protected-resource"'
+                    )
+                },
+            )
         try:
             principal = await _authenticate(auth[7:].strip())
         except AccessDenied:
-            return Response(status_code=401, headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""})
+            return Response(
+                status_code=401, headers={"WWW-Authenticate": 'Bearer error="invalid_token"'}
+            )
         except UpstreamUnavailable:
             return Response(status_code=503)
         if principal.tenant_id not in current_config.tenants:
             return Response(status_code=403)
         if not await quotas.admit(principal):
-            return Response(status_code=429, headers={"Retry-After": "60", "Cache-Control": "no-store"})
-        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            return Response(
+                status_code=429, headers={"Retry-After": "60", "Cache-Control": "no-store"}
+            )
+        if (
+            request.headers.get("content-type", "").split(";")[0].strip().lower()
+            != "application/json"
+        ):
             return Response(status_code=415)
         length_header = request.headers.get("content-length")
         if length_header:
@@ -851,9 +1015,11 @@ def create_app(
             return _rpc_error(None, -32600, "Invalid JSON-RPC request")
         method = payload.get("method")
         request_id = payload.get("id")
-        if "id" in payload and (isinstance(request_id, bool) or not isinstance(request_id, (str, int, float)) or (
-            isinstance(request_id, float) and not math.isfinite(request_id)
-        )):
+        if "id" in payload and (
+            isinstance(request_id, bool)
+            or not isinstance(request_id, (str, int, float))
+            or (isinstance(request_id, float) and not math.isfinite(request_id))
+        ):
             return _rpc_error(None, -32600, "Invalid JSON-RPC id")
         if not isinstance(method, str):
             return _rpc_error(request_id, -32600, "Invalid method")
@@ -868,30 +1034,50 @@ def create_app(
                 not isinstance(meta, dict)
                 or meta.get("io.modelcontextprotocol/protocolVersion") != MCP_VERSION
                 or request.headers.get("mcp-method") != method
-                or (method == "tools/call" and (
-                    not isinstance(params, dict)
-                    or request.headers.get("mcp-name") != params.get("name")
-                ))
+                or (
+                    method == "tools/call"
+                    and (
+                        not isinstance(params, dict)
+                        or request.headers.get("mcp-name") != params.get("name")
+                    )
+                )
             ):
                 return JSONResponse(
-                    {"jsonrpc": "2.0", "id": request_id, "error": {
-                        "code": -32020, "message": "HeaderMismatch",
-                    }},
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32020,
+                            "message": "HeaderMismatch",
+                        },
+                    },
                     status_code=400,
                 )
             capabilities = meta.get("io.modelcontextprotocol/clientCapabilities")
             if not isinstance(capabilities, dict):
                 return JSONResponse(
-                    {"jsonrpc": "2.0", "id": request_id, "error": {
-                        "code": -32602, "message": "Missing clientCapabilities in request _meta",
-                    }}, status_code=400,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "Missing clientCapabilities in request _meta",
+                        },
+                    },
+                    status_code=400,
                 )
         elif version is not None and version not in SUPPORTED_VERSIONS:
             return JSONResponse(
-                {"jsonrpc": "2.0", "id": request_id, "error": {
-                    "code": -32022, "message": "Unsupported protocol version",
-                    "data": {"supported": sorted(SUPPORTED_VERSIONS), "requested": version},
-                }}, status_code=400,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32022,
+                        "message": "Unsupported protocol version",
+                        "data": {"supported": sorted(SUPPORTED_VERSIONS), "requested": version},
+                    },
+                },
+                status_code=400,
             )
         modern = version == MCP_VERSION
         if method == "notifications/initialized" and not modern:
@@ -899,25 +1085,32 @@ def create_app(
         if "id" not in payload:
             return Response(status_code=202)
         if method == "server/discover" and modern:
-            return _rpc_result(request_id, {
-                "supportedVersions": sorted(SUPPORTED_VERSIONS),
-                "capabilities": {"tools": {}},
-                "instructions": "Read-only TREX market research and hypothetical expiration payoffs.",
-                "ttlMs": 60000,
-                "cacheScope": "private",
-            }, modern=True)
+            return _rpc_result(
+                request_id,
+                {
+                    "supportedVersions": sorted(SUPPORTED_VERSIONS),
+                    "capabilities": {"tools": {}},
+                    "instructions": "Read-only TREX market research and hypothetical expiration payoffs.",
+                    "ttlMs": 60000,
+                    "cacheScope": "private",
+                },
+                modern=True,
+            )
         if method == "initialize" and not modern:
             params = payload.get("params") or {}
             if not isinstance(params, dict):
                 return _rpc_error(request_id, -32602, "Invalid parameters")
             offered = params.get("protocolVersion")
             agreed = offered if offered in SUPPORTED_VERSIONS else MCP_VERSION
-            return _rpc_result(request_id, {
-                "protocolVersion": agreed,
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "trex-research-mcp", "version": "0.2.0"},
-                "instructions": "Read-only TREX data and hypothetical expiration math. No trade, approval, account, or broker operations. Always disclose quote age and source.",
-            })
+            return _rpc_result(
+                request_id,
+                {
+                    "protocolVersion": agreed,
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "trex-research-mcp", "version": "0.2.0"},
+                    "instructions": "Read-only TREX data and hypothetical expiration math. No trade, approval, account, or broker operations. Always disclose quote age and source.",
+                },
+            )
         if method == "ping" and not modern:
             return _rpc_result(request_id, {})
         if method == "tools/list":
@@ -936,15 +1129,24 @@ def create_app(
                 return _rpc_result(request_id, _tool_error(str(exc)), modern=modern)
             except UpstreamUnavailable:
                 return _rpc_result(
-                    request_id, _tool_error("TREX read unavailable; no quote inferred"),
+                    request_id,
+                    _tool_error("TREX read unavailable; no quote inferred"),
                     modern=modern,
                 )
             except AccessDenied:
                 return _rpc_result(request_id, _tool_error("Tenant access denied"), modern=modern)
         if version == MCP_VERSION:
-            return JSONResponse({"jsonrpc": "2.0", "id": request_id, "error": {
-                "code": -32601, "message": "Method not found",
-            }}, status_code=404)
+            return JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
+                        "code": -32601,
+                        "message": "Method not found",
+                    },
+                },
+                status_code=404,
+            )
         return _rpc_error(request_id, -32601, "Method not found")
 
     return app
