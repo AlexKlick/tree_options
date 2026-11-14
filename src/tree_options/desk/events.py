@@ -64,7 +64,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +78,7 @@ from tree_options.desk.sessions import (
 )
 from tree_options.desk.store import atomic_write_bytes
 from tree_options.desk.universe import PANEL_ETFS, PANEL_NAMES
+from tree_options.time import calendar_days
 from tree_options.time.expiries import minus_calendar_days
 from tree_options.time.monthlies import is_monthly_expiry
 from tree_options.trex.clock import ET
@@ -1156,7 +1157,7 @@ def update_events(
         days,
         set(tracked),
         notes,
-        published_through=today + timedelta(days=NASDAQ_PUBLISHED_HORIZON_DAYS),
+        published_through=today + calendar_days(NASDAQ_PUBLISHED_HORIZON_DAYS),
     )
     if sec_ua:
         edgar, confirmed = _edgar(get, sleep, tracked, sec_ua, cal, notes)

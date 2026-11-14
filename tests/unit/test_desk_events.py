@@ -162,7 +162,9 @@ def _edge_routes(cal, *, horizon: int = 65) -> dict[str, bytes | int | Exception
     for k, d in enumerate(days):
         day = d.isoformat()
         if day < "2027-01-07":
-            routes[f"date={day}"] = _nasdaq([("AAPL", "time-pre-market")]) if k == 0 else _nasdaq([])
+            routes[f"date={day}"] = (
+                _nasdaq([("AAPL", "time-pre-market")]) if k == 0 else _nasdaq([])
+            )
         elif day == "2027-01-07":
             routes[f"date={day}"] = NOT_YET_PUBLISHED_NO_DATA
         elif day == "2027-01-08":
@@ -863,7 +865,9 @@ class TestUpdateEvents:
         failure (exit 3, retried next week), never an expected empty day."""
         _paper(tmp_path)
         _seal(tmp_path, trex_calendar)
-        res = _update(tmp_path, Web(_routes(**{"date=2026-09-30": NOT_YET_PUBLISHED})), trex_calendar)
+        res = _update(
+            tmp_path, Web(_routes(**{"date=2026-09-30": NOT_YET_PUBLISHED})), trex_calendar
+        )
         assert res.exit_code == 3 and res.nasdaq_ok == 2
         assert "nasdaq 2026-09-30: nasdaq: no data.rows in a successful answer" in res.notes
         assert not any("not_yet_published" in n for n in res.notes)
