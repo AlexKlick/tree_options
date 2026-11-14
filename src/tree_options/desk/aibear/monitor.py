@@ -38,7 +38,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -67,7 +66,7 @@ from tree_options.desk.indices import read_store
 from tree_options.desk.longrun import sign_flip_p
 from tree_options.desk.panel import read_panel_with_sha256
 from tree_options.desk.paths import paper_dir, state_root, store_root
-from tree_options.desk.store import atomic_write_bytes
+from tree_options.desk.store import atomic_write_bytes, standard_occ
 
 DOC_SCHEMA = "aibear-monitor/1"
 BOOK_SCHEMA = "aibear-book/1"
@@ -136,12 +135,6 @@ def chain_sessions(store: Path) -> list[date]:
         except ValueError:
             continue  # clock=... snapshot folders
     return sorted(out)
-
-
-def standard_occ(underlying: str) -> re.Pattern[str]:
-    """The OCC symbol of a standard contract on ``underlying``: the root, YYMMDD,
-    the right and the strike x 1000 in 8 digits (``NVDA261224P00170000``)."""
-    return re.compile(re.escape(underlying) + r"\d{6}[CP]\d{8}")
 
 
 class Chain:

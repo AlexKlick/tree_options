@@ -40,6 +40,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import shutil
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -118,6 +119,22 @@ STATUSES = ("ok", "exists", "conflict", "stale", "incomplete", "missing", "inval
 
 Clock = Callable[[], datetime]
 Sleep = Callable[[float], None]
+
+
+# ------------------------------------------------------------------ symbols
+
+
+def standard_occ(underlying: str) -> re.Pattern[str]:
+    """The OCC symbol of a standard contract on ``underlying``: the root, YYMMDD,
+    the right and the strike x 1000 in 8 digits (``NVDA261224P00170000``).
+
+    The one rule every chain consumer shares: only rows whose ``occ``
+    fullmatches this pattern are standard contracts. Since 2026-11-05 the
+    NVDA and TSLA chains also list ``B1VDA…``/``B1SLA…`` nonstandard roots at
+    the standard expiries and strikes, ahead of the standard rows; they carry
+    no open interest and a price unrelated to the stock (AI-BEAR-002
+    AMENDMENT 2)."""
+    return re.compile(re.escape(underlying) + r"\d{6}[CP]\d{8}")
 
 
 # ------------------------------------------------------------------ file I/O
