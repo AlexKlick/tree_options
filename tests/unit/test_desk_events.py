@@ -134,6 +134,44 @@ def _nasdaq(rows: list[tuple[str, str]] | None) -> bytes:
     return json.dumps({"data": data, "message": None, "status": {"rCode": 200}}).encode()
 
 
+# the not-yet-published shapes Nasdaq serves past its publishing edge: an
+# rCode-200 answer with a null `data`, or with no `data` at all (observed
+# for every session 2027-01-07..2027-02-19 on 2026-11-14)
+NOT_YET_PUBLISHED = b'{"data": null, "message": null, "status": {"rCode": 200}}'
+NOT_YET_PUBLISHED_NO_DATA = b'{"message": null, "status": {"rCode": 200}}'
+
+NOV_14 = datetime(2026, 11, 14, 8, 0, tzinfo=ET)
+
+
+def _cut_2027_panel() -> bytes:
+    """The Fed page with the 2027 panel cut right after its first complete
+    row: no footer, the shape served on 2026-11-14."""
+    html = FOMC_HTML.decode()
+    i = html.index("2027 FOMC Meetings")
+    end_row = "</div>\n        </div>"
+    return html[: html.index(end_row, i) + len(end_row)].encode()
+
+
+def _edge_routes(cal, *, horizon: int = 65) -> dict[str, bytes | int | Exception]:
+    """The 2026-11-14 web, replayed: every date through 2027-01-06 answers
+    (AAPL rows on the first session, empty days after), every date from
+    2027-01-07 answers a not-yet-published shape — except 2027-01-08, which
+    still answers rows (published data past the edge must be ingested)."""
+    days = [d for d in cal.sessions() if d.isoformat() > "2026-11-14"][:horizon]
+    routes: dict[str, bytes | int | Exception] = {"fomccalendars": _cut_2027_panel()}
+    for k, d in enumerate(days):
+        day = d.isoformat()
+        if day < "2027-01-07":
+            routes[f"date={day}"] = _nasdaq([("AAPL", "time-pre-market")]) if k == 0 else _nasdaq([])
+        elif day == "2027-01-07":
+            routes[f"date={day}"] = NOT_YET_PUBLISHED_NO_DATA
+        elif day == "2027-01-08":
+            routes[f"date={day}"] = _nasdaq([("XOM", "time-after-hours")])
+        else:
+            routes[f"date={day}"] = NOT_YET_PUBLISHED
+    return routes
+
+
 FOOTER = (
     '<div class="panel-footer">* Meeting associated with a Summary of Economic Projections.</div>'
 )
@@ -206,13 +244,26 @@ class TestFomc:
         """P1 (Codex, 51ed532): the page cut right after 2027's complete
         January row used to parse (1 row == 1 month cell) and seal. Every
         panel on the live page ends in its footer (7/7, 2026-09-23)."""
-        html = FOMC_HTML.decode()
-        i = html.index("2027 FOMC Meetings")
-        end_row = "</div>\n        </div>"
-        cut = html[: html.index(end_row, i) + len(end_row)]
+        cut = _cut_2027_panel().decode()
         assert cut.count("fomc-meeting__date") > 1  # earlier panels are whole
         with pytest.raises(events.FomcParseError, match="2027"):
             events.parse_fomc(cut)
+
+    def test_published_parse_skips_only_a_future_truncated_year(self) -> None:
+        """The weekly check reads the same cut page as "2027 not yet
+        published" (observed 2026-11-14): the year is left out and reported,
+        every published year still parses whole — and once 2027 becomes the
+        current year the same page is a hard failure again."""
+        cut = _cut_2027_panel().decode()
+        ms, unpublished = events.parse_fomc_published(cut, date(2026, 11, 14))
+        assert unpublished == (2027,)
+        assert all(m.end.year != 2027 for m in ms)
+        assert events.parse_fomc_published(FOMC_HTML.decode(), date(2026, 11, 14)) == (
+            events.parse_fomc(FOMC_HTML.decode()),
+            (),
+        )
+        with pytest.raises(events.FomcPanelTruncated, match="2027"):
+            events.parse_fomc_published(cut, date(2027, 1, 5))
 
 
 # -------------------------------------------------------- OpEx / VIX expiry
@@ -422,6 +473,16 @@ class TestVendorParsers:
     def test_nasdaq_errors_and_drift_raise(self, body: bytes) -> None:
         with pytest.raises(events.VendorParseError):
             events.parse_nasdaq(body)
+
+    def test_not_yet_published_shape_raises_its_own_type(self) -> None:
+        """The parser itself stays strict about the third shape (rCode 200,
+        no data.rows — every session 2027-01-07..2027-02-19 on 2026-11-14):
+        only the update loop may read it as an expected empty day, and only
+        past NASDAQ_PUBLISHED_HORIZON_DAYS."""
+        assert issubclass(events.NasdaqNotPublished, events.VendorParseError)
+        for body in (NOT_YET_PUBLISHED, NOT_YET_PUBLISHED_NO_DATA):
+            with pytest.raises(events.NasdaqNotPublished, match=r"no data\.rows"):
+                events.parse_nasdaq(body)
 
     @pytest.mark.parametrize(
         ("raw", "want"),
@@ -763,6 +824,74 @@ class TestUpdateEvents:
         res = _update(tmp_path, Web(_routes(fomccalendars=503)), trex_calendar)
         assert res.macro == "unverified" and res.exit_code == 3
 
+    def test_2026_11_14_past_the_publishing_edge_exits_0(
+        self, tmp_path: Path, trex_calendar
+    ) -> None:
+        """The failed weekly run replayed: HORIZON=65 reaches 2027-02-19,
+        past Nasdaq's publishing edge (rCode-200 null data from 2027-01-07)
+        and past the Fed's 2027 panel. Beyond NASDAQ_PUBLISHED_HORIZON_DAYS
+        both are not_yet_published — expected empty days + per-date notes,
+        exit 0; published rows past the edge are still ingested."""
+        _paper(tmp_path)
+        _seal(tmp_path, trex_calendar)
+        res = _update(
+            tmp_path, Web(_edge_routes(trex_calendar)), trex_calendar, horizon=65, now=NOV_14
+        )
+        assert res.nasdaq_days == 65 and res.nasdaq_ok == 65  # nyp days answer empty
+        days = [d for d in trex_calendar.sessions() if d.isoformat() > "2026-11-14"][:65]
+        want = [
+            f"nasdaq {d}: not_yet_published"
+            for d in days
+            if d.isoformat() >= "2027-01-07" and d.isoformat() != "2027-01-08"
+        ]
+        assert want and [n for n in res.notes if n.startswith("nasdaq 2027-")] == want
+        assert res.macro == "ok" and res.exit_code == 0
+        line = res.line()
+        assert "no data.rows" not in line
+        assert "nasdaq 2027-01-07: not_yet_published" in line  # the no-data variant
+        assert "macro: fomc 2027: not_yet_published" in line
+        doc = json.loads((tmp_path / "paper" / "earnings-timing.json").read_text())
+        assert doc["AAPL"]["2026-11-16"]["status"] == "estimated"  # inside the edge
+        assert doc["XOM"]["2027-01-08"]["timing"] == "amc"  # published past the edge
+        assert not any(d.startswith("2027-01-07") for v in doc.values() for d in v)
+
+    def test_not_published_shape_inside_the_edge_still_fails(
+        self, tmp_path: Path, trex_calendar
+    ) -> None:
+        """The boundary is conservative on purpose: the same null-data shape
+        nearer than NASDAQ_PUBLISHED_HORIZON_DAYS stays a per-day vendor
+        failure (exit 3, retried next week), never an expected empty day."""
+        _paper(tmp_path)
+        _seal(tmp_path, trex_calendar)
+        res = _update(tmp_path, Web(_routes(**{"date=2026-09-30": NOT_YET_PUBLISHED})), trex_calendar)
+        assert res.exit_code == 3 and res.nasdaq_ok == 2
+        assert "nasdaq 2026-09-30: nasdaq: no data.rows in a successful answer" in res.notes
+        assert not any("not_yet_published" in n for n in res.notes)
+
+    def test_future_year_fed_panel_noted_not_failed(self, tmp_path: Path, trex_calendar) -> None:
+        # SATURDAY 2026-09-26: 2027 is still a future year, the normal
+        # September routes answer, only the Fed page serves the cut panel
+        _paper(tmp_path)
+        _seal(tmp_path, trex_calendar)
+        res = _update(tmp_path, Web(_routes(fomccalendars=_cut_2027_panel())), trex_calendar)
+        assert res.macro == "ok" and res.exit_code == 0
+        assert (
+            "macro: fomc 2027: not_yet_published (truncated panel; "
+            "sealed 2027 meetings unchecked)" in res.notes
+        )
+        assert not (tmp_path / "state" / "events" / "macro-drift.json").exists()
+
+    def test_current_year_fed_panel_truncation_still_fails(
+        self, tmp_path: Path, trex_calendar
+    ) -> None:
+        html = FOMC_HTML.decode()
+        cut = html[: html.index('<div class="panel-footer">')].encode()  # mid-2026 panel
+        _paper(tmp_path)
+        _seal(tmp_path, trex_calendar)
+        res = _update(tmp_path, Web(_routes(fomccalendars=cut)), trex_calendar)
+        assert res.macro == "unreadable" and res.exit_code == 1
+        assert "macro: fed page: 2026: panel has no footer (a truncated page)" in res.notes
+
 
 # ------------------------------------------------------------ readers
 
@@ -970,6 +1099,27 @@ class TestEventsCli:
         assert rc == 0
         assert "update-events nasdaq=3/3 estimated=2 edgar=skipped" in out
         assert "sec_ua_missing" in out and "macro=ok" in out
+
+    def test_update_events_cli_line_past_the_publishing_edge(
+        self, tmp_path: Path, trex_calendar, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The 2026-11-14 run end to end: the summary line carries the
+        per-date not_yet_published notes and still exits 0."""
+        _paper(tmp_path)
+        _seal(tmp_path, trex_calendar)
+        rc = run_cli(
+            ["update-events", "--horizon", "65"],
+            get=Web(_edge_routes(trex_calendar)),
+            sleep=lambda _s: None,
+            now=NOV_14,
+            cal=trex_calendar,
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "update-events nasdaq=65/65 estimated=2 edgar=skipped" in out
+        assert "macro=ok exit=0" in out
+        assert "nasdaq 2027-01-07: not_yet_published" in out
+        assert "macro: fomc 2027: not_yet_published" in out
 
     def test_seal_macro_cli_from_a_saved_page(
         self, tmp_path: Path, trex_calendar, capsys: pytest.CaptureFixture[str]

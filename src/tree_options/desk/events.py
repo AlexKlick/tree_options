@@ -17,6 +17,10 @@ the hand-entered items, rewrites the sidecar and appends a MACRO-SEALS.md
 row; :func:`load_macro` refuses a file whose sha256 does not match.
 The weekly ``update-events`` job only CHECKS the seal and the Fed page
 (``<state>/events/macro-drift.json`` when they differ); it never reseals.
+A future year's panel the Fed has not published whole (truncated, no
+footer — 2027 on 2026-11-14) is ``not_yet_published``: its sealed meetings
+are left out of that run's comparison and noted, not a failure; a current-
+or past-year truncation still is one.
 
 Earnings timing (``<paper>/earnings-timing.json``, gitignored artifacts)::
 
@@ -26,7 +30,11 @@ Earnings timing (``<paper>/earnings-timing.json``, gitignored artifacts)::
 * estimated: Nasdaq's earnings calendar for the next HORIZON sessions
   (``time-pre-market`` / ``time-after-hours`` / ``time-not-supplied``).
   An estimate the vendor stops listing on a day it answered with rows is
-  dropped; an empty answer is no evidence and drops nothing;
+  dropped; an empty answer is no evidence and drops nothing; a date past
+  the vendor's publishing edge (NASDAQ_PUBLISHED_HORIZON_DAYS, ~6 weeks)
+  answering rCode-200 with a null ``data`` is ``not_yet_published`` — an
+  expected empty day, noted per date (observed 2026-11-14: every session
+  2027-01-07..2027-02-19), while the same shape nearer in still fails;
 * confirmed: SEC EDGAR 8-K item 2.02 filings since 2021, one per ET date
   (the earliest), timed by ``acceptanceDateTime`` against 09:30 ET and the
   session's actual close (16:00; 13:00 on early closes).
@@ -56,7 +64,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +108,16 @@ TIMINGS = frozenset({"bmo", "amc", "unknown"})
 TIMING_STATUSES = frozenset({"confirmed", "estimated"})
 
 HORIZON = 65  # sessions of Nasdaq estimates (~3 months: covers 45-90 DTE entries)
+# Nasdaq publishes its earnings calendar only so far out. Past that edge a
+# date answers rCode-200 with a null ``data`` / no ``rows`` at all — not the
+# ``rows: null`` empty-day shape: every session date 2027-01-07..2027-02-19
+# did on 2026-11-14, while every date through 2027-01-06 still answered
+# rows. HORIZON (~3 months) deliberately reaches past the edge, so a date
+# beyond this boundary answering that shape is "not yet published" — an
+# expected empty day, noted per date — while inside the boundary the strict
+# raise stands (a genuine upstream regression still fails loudly). ~6
+# calendar weeks is conservative: the observed edge was ~7 weeks out.
+NASDAQ_PUBLISHED_HORIZON_DAYS = 42  # calendar days beyond the run's today
 NASDAQ_PACE_S = 1.0
 SEC_PACE_S = 0.25  # SEC allows 10 requests/s; stay well under
 SEC_MAX_PAGES = 10  # older submissions pages per company
@@ -149,12 +167,22 @@ class FomcParseError(EventsError):
     """The Fed calendar page did not parse whole."""
 
 
+class FomcPanelTruncated(FomcParseError):
+    """A year panel does not end in its footer: a page cut mid-panel, or a
+    future year the Fed has not published whole yet (2027, 2026-11-14)."""
+
+
 class MacroSealError(EventsError):
     """The macro file does not match its sha256 sidecar."""
 
 
 class VendorParseError(EventsError):
     """A vendor payload is not the documented shape."""
+
+
+class NasdaqNotPublished(VendorParseError):
+    """An rCode-200 Nasdaq answer with no ``data.rows``: the vendor's
+    not-yet-published shape for dates past its publishing edge."""
 
 
 # ------------------------------------------------------------------ FOMC
@@ -236,28 +264,57 @@ def _meeting(year: int, month_cell: str, date_cell: str) -> FomcMeeting:
     raise FomcParseError(f"{where}: unreadable date cell")
 
 
+def _panels(html: str) -> list[tuple[int, str]]:
+    heads = list(_PANEL.finditer(html))
+    if not heads:
+        raise FomcParseError("no FOMC year panels on the page")
+    return [
+        (
+            int(head.group(1)),
+            html[head.end() : heads[k + 1].start() if k + 1 < len(heads) else len(html)],
+        )
+        for k, head in enumerate(heads)
+    ]
+
+
+def _parse_panel(year: int, seg: str) -> list[FomcMeeting]:
+    footer = _FOOTER.search(seg)
+    if footer is None:
+        raise FomcPanelTruncated(f"{year}: panel has no footer (a truncated page)")
+    body = seg[: footer.start()]
+    rows = _ROW.findall(body)
+    if not rows or len(rows) != body.count("fomc-meeting__month"):
+        raise FomcParseError(f"{year}: {len(rows)} readable meeting rows")
+    return [_meeting(year, _text(m), _text(d)) for m, d in rows]
+
+
 def parse_fomc(html: str) -> list[FomcMeeting]:
     """Every meeting on the Fed's calendar page, all year panels. Raises
     rather than return a partial or empty list: each year panel must be
     whole, i.e. end in its footer (every panel on the live page does, 7/7
     on 2026-09-23) with every month cell paired to a readable date cell. A
     page cut mid-panel therefore never parses."""
-    heads = list(_PANEL.finditer(html))
-    if not heads:
-        raise FomcParseError("no FOMC year panels on the page")
-    out: list[FomcMeeting] = []
-    for k, head in enumerate(heads):
-        year = int(head.group(1))
-        seg = html[head.end() : heads[k + 1].start() if k + 1 < len(heads) else len(html)]
-        footer = _FOOTER.search(seg)
-        if footer is None:
-            raise FomcParseError(f"{year}: panel has no footer (a truncated page)")
-        body = seg[: footer.start()]
-        rows = _ROW.findall(body)
-        if not rows or len(rows) != body.count("fomc-meeting__month"):
-            raise FomcParseError(f"{year}: {len(rows)} readable meeting rows")
-        out.extend(_meeting(year, _text(m), _text(d)) for m, d in rows)
+    out = [m for year, seg in _panels(html) for m in _parse_panel(year, seg)]
     return sorted(out, key=lambda m: (m.end, m.kind))
+
+
+def parse_fomc_published(html: str, today: date) -> tuple[list[FomcMeeting], tuple[int, ...]]:
+    """:func:`parse_fomc` for the weekly seal check: a year panel for a year
+    after ``today``'s that ends without its footer is the Fed's
+    not-yet-published year page (the 2027 panel arrived truncated,
+    2026-11-14) — left out of the meetings and reported in
+    ``unpublished_years`` instead of failing the whole page. A current- or
+    past-year truncation, and every other malformed panel, still raises."""
+    out: list[FomcMeeting] = []
+    unpublished: list[int] = []
+    for year, seg in _panels(html):
+        try:
+            out.extend(_parse_panel(year, seg))
+        except FomcPanelTruncated:
+            if year <= today.year:
+                raise
+            unpublished.append(year)
+    return sorted(out, key=lambda m: (m.end, m.kind)), tuple(unpublished)
 
 
 # ------------------------------------------------------- OpEx / VIX expiry
@@ -524,7 +581,10 @@ def parse_nasdaq(raw: bytes) -> dict[str, tuple[str, str]]:
     explicitly successful answer counts: ``status.rCode`` 200 and a ``data``
     object carrying ``rows``. ``rows: null`` (the real empty-day shape, e.g.
     Saturday 2026-09-26) or ``[]`` is an empty answer, never a default; an
-    application error, a null ``data`` or a missing ``rows`` raises."""
+    application error, a null ``data`` or a missing ``rows`` raises
+    (:class:`NasdaqNotPublished`, a :class:`VendorParseError`: the weekly
+    loop may read it as an expected empty day ONLY past the publishing
+    edge, never the parser itself)."""
     try:
         doc = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -537,7 +597,7 @@ def parse_nasdaq(raw: bytes) -> dict[str, tuple[str, str]]:
         raise VendorParseError(f"nasdaq: application status rCode={rcode!r}")
     data = doc.get("data")
     if not isinstance(data, dict) or "rows" not in data:
-        raise VendorParseError("nasdaq: no data.rows in a successful answer")
+        raise NasdaqNotPublished("nasdaq: no data.rows in a successful answer")
     rows = data["rows"]
     if rows is None:
         return {}
@@ -899,7 +959,12 @@ def _fetch(get: Get, url: str, headers: Mapping[str, str]) -> tuple[bytes | None
 
 
 def _nasdaq(
-    get: Get, sleep: Sleep, days: Sequence[date], names: set[str], notes: list[str]
+    get: Get,
+    sleep: Sleep,
+    days: Sequence[date],
+    names: set[str],
+    notes: list[str],
+    published_through: date,
 ) -> tuple[dict[str, dict[str, tuple[str, str]]], set[str]]:
     served: dict[str, dict[str, tuple[str, str]]] = {}
     evidence: set[str] = set()
@@ -909,6 +974,14 @@ def _nasdaq(
         body, why = _fetch(get, NASDAQ_URL.format(day=d.isoformat()), BROWSER_HEADERS)
         try:
             rows = parse_nasdaq(body) if body is not None else None
+        except NasdaqNotPublished as exc:
+            if d > published_through:
+                # past the publishing edge: an expected empty answer, but
+                # noted per date so the run summary stays auditable
+                served[d.isoformat()] = {}
+                notes.append(f"nasdaq {d}: not_yet_published")
+                continue
+            rows, why = None, str(exc)  # inside the edge: an application error
         except VendorParseError as exc:
             rows, why = None, str(exc)
         if rows is None:
@@ -992,7 +1065,13 @@ def _edgar(
 
 
 def _macro_check(
-    get: Get, events_dir: Path, state: Path, now: datetime, macro_file: str, dry_run: bool
+    get: Get,
+    events_dir: Path,
+    state: Path,
+    now: datetime,
+    macro_file: str,
+    dry_run: bool,
+    today: date,
 ) -> tuple[str, str]:
     path = events_dir / macro_file
     if not path.exists():
@@ -1005,7 +1084,7 @@ def _macro_check(
     if body is None:
         return "unverified", f"fed page: {why}"
     try:
-        meetings = parse_fomc(body.decode("utf-8", "replace"))
+        meetings, unpublished = parse_fomc_published(body.decode("utf-8", "replace"), today)
     except FomcParseError as exc:
         return "unreadable", f"fed page: {exc}"
     lo, hi = doc["range"]["from"], doc["range"]["to"]
@@ -1018,9 +1097,16 @@ def _macro_check(
         for m in meetings
         if lo <= m.end.isoformat() <= hi
     }
-    sealed = {key(f) for f in doc["fomc"]}
+    # a year the Fed has not published whole cannot be checked this run:
+    # its sealed meetings stay in the file, out of the comparison, noted
+    skip = {str(y) for y in unpublished}
+    sealed = {key(f) for f in doc["fomc"] if f["date"][:4] not in skip}
     if live == sealed:
-        return "ok", ""
+        note = "; ".join(
+            f"fomc {y}: not_yet_published (truncated panel; sealed {y} meetings unchecked)"
+            for y in unpublished
+        )
+        return "ok", note
     if not dry_run:
 
         def rows(keys: set[tuple[str, str, bool, str]]) -> list[dict[str, Any]]:
@@ -1058,12 +1144,20 @@ def update_events(
     """The weekly refresh: Nasdaq estimates, EDGAR confirmations (only
     with ``sec_ua``), the timing-file merge, and the macro seal check."""
     now: datetime = clock()
+    today = now.astimezone(ET).date()
     tracked = tuple(names or EARNINGS_NAMES)
     notes: list[str] = []
     sessions = cal.sessions()
-    i = bisect.bisect_right(sessions, now.astimezone(ET).date())
+    i = bisect.bisect_right(sessions, today)
     days = list(sessions[i : i + horizon])
-    served, evidence = _nasdaq(get, sleep, days, set(tracked), notes)
+    served, evidence = _nasdaq(
+        get,
+        sleep,
+        days,
+        set(tracked),
+        notes,
+        published_through=today + timedelta(days=NASDAQ_PUBLISHED_HORIZON_DAYS),
+    )
     if sec_ua:
         edgar, confirmed = _edgar(get, sleep, tracked, sec_ua, cal, notes)
     else:
@@ -1086,7 +1180,7 @@ def update_events(
     except (EventsError, OSError) as exc:
         timing_error = f"{TIMING_FILE}: {exc}"
         notes.append(timing_error)
-    macro, why = _macro_check(get, events_dir, state, now, macro_file, dry_run)
+    macro, why = _macro_check(get, events_dir, state, now, macro_file, dry_run, today)
     if why:
         notes.append(f"macro: {why}")
     return EventsResult(
