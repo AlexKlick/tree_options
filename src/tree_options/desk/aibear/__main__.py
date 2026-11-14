@@ -53,6 +53,7 @@ def _monitor(args: argparse.Namespace) -> int:
     doc = run_monitor(
         session=date.fromisoformat(args.session) if args.session else None,
         use_llm=args.llm,
+        allow_backdated_llm=args.allow_backdated_llm,
         dry_run=args.dry_run,
     )
     print(json.dumps(doc["summary"], sort_keys=True))
@@ -70,6 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     mo = sub.add_parser("monitor", help="daily read-only regime + shadow cards + LLM read")
     mo.add_argument("--session", help="ISO date (default: latest panel session)")
     mo.add_argument("--llm", action="store_true", help="add the advisory LLM bubble-stress read")
+    mo.add_argument(
+        "--allow-backdated-llm",
+        action="store_true",
+        help="OWNER-ONLY: take the --llm read even for a session older than the newest "
+        "panel session. Headlines fetched now would carry later news into that "
+        "session's forward-only Brier record; the override is stamped in the day "
+        "doc and in the llm.jsonl line",
+    )
     mo.add_argument("--dry-run", action="store_true", help="print, write nothing")
     args = ap.parse_args(argv)
     handler = {"history-fetch": _history, "backtest": _backtest, "monitor": _monitor}[args.command]

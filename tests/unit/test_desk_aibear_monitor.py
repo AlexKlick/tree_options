@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import json
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -413,23 +415,9 @@ def test_core2_stops_only_on_a_trend_reversal() -> None:
 
 
 def test_a_second_run_for_the_same_session_changes_nothing_and_reads_once(tmp_path) -> None:
-    import json as _json
-
-    days = []
-    d = date(2025, 9, 1)
-    while len(days) < 320:
-        if d.weekday() < 5:
-            days.append(d)
-        d += timedelta(days=1)
+    days = _weekdays(date(2025, 9, 1), 320)
     assert days[-1] > date(2026, 11, 10)  # past the first signal session
-    panel = {s: {x.isoformat(): {"close": "100"} for x in days} for s in ("QQQ", "SMH")}
-    panel_path = tmp_path / "ohlc-panel.json"
-    panel_path.write_text(_json.dumps(panel))
-    store = tmp_path / "store"
-    (store / "indices").mkdir(parents=True)
-    (store / "indices" / "VIX.csv").write_text(
-        "date,open,high,low,close\n" + "".join(f"{x.isoformat()},,,,20\n" for x in days)
-    )
+    panel_path, store = _write_env(tmp_path, days)
     calls: list[int] = []
 
     def ask(*a: Any, **k: Any):
@@ -444,6 +432,7 @@ def test_a_second_run_for_the_same_session_changes_nothing_and_reads_once(tmp_pa
         require_sealed=False,
         fetch_news=lambda s: [],
         ask=ask,
+        clock=lambda: _at(days[-1]),
     )
     first = mon.run_monitor(**kw)
     book1 = (tmp_path / "state" / "aibear" / "book.json").read_bytes()
@@ -453,3 +442,189 @@ def test_a_second_run_for_the_same_session_changes_nothing_and_reads_once(tmp_pa
     assert (tmp_path / "state" / "aibear" / "book.json").read_bytes() == book1
     log = (tmp_path / "state" / "aibear" / "llm.jsonl").read_text().splitlines()
     assert len(log) == 1
+    assert json.loads(log[0])["session"] == days[-1].isoformat()
+
+
+def _weekdays(start: date, n: int) -> list[date]:
+    days: list[date] = []
+    d = start
+    while len(days) < n:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    return days
+
+
+def _write_env(tmp_path: Path, days: list[date]) -> tuple[Path, Path]:
+    """A panel + VIX store over ``days`` (all closes 100, VIX 20)."""
+    panel = {s: {d.isoformat(): {"close": "100"} for d in days} for s in ("QQQ", "SMH")}
+    panel_path = tmp_path / "ohlc-panel.json"
+    panel_path.write_text(json.dumps(panel))
+    store = tmp_path / "store"
+    (store / "indices").mkdir(parents=True, exist_ok=True)
+    (store / "indices" / "VIX.csv").write_text(
+        "date,open,high,low,close\n" + "".join(f"{d.isoformat()},,,,20\n" for d in days)
+    )
+    return panel_path, store
+
+
+def _at(d: date) -> datetime:
+    """A run clock pinned to noon UTC of session ``d``."""
+    return datetime(d.year, d.month, d.day, 12, 0, tzinfo=UTC)
+
+
+def _reads(calls: list[int]):
+    def ask(*a: Any, **k: Any):
+        calls.append(1)
+        return {"reads": [{"symbol": "QQQ", "stress_score": 5, "p_down10_20d": 0.1}]}, "m", {}
+
+    return ask
+
+
+def test_a_backdated_llm_session_is_refused_fail_closed(tmp_path) -> None:
+    """The contamination path: a catch-up run never wrote the intermediate
+    day docs, so ``--session <missed-day> --llm`` falls through the no-op
+    guard. The fresh read (news fetched NOW) must be refused, not recorded
+    under the old session and scored as a forward forecast."""
+    days = _weekdays(date(2025, 9, 1), 320)
+    natural, missed = days[-1], days[-2]
+    panel_path, store = _write_env(tmp_path, days)
+    calls: list[int] = []
+    kw = dict(
+        store=store,
+        state=tmp_path / "state",
+        panel_path=panel_path,
+        require_sealed=False,
+        fetch_news=lambda s: [],
+        ask=_reads(calls),
+    )
+    mon.run_monitor(use_llm=True, clock=lambda: _at(natural), **kw)  # the current session reads
+    log_before = (tmp_path / "state" / "aibear" / "llm.jsonl").read_text()
+    out = mon.run_monitor(session=missed, use_llm=True, clock=lambda: _at(natural), **kw)
+    assert out["llm"]["status"] == "refused_backdated"
+    assert out["llm"]["natural_session"] == natural.isoformat()
+    assert len(calls) == 1  # no second model call, no headlines fetched for the old day
+    assert (tmp_path / "state" / "aibear" / "llm.jsonl").read_text() == log_before
+    doc = json.loads(
+        (tmp_path / "state" / "aibear" / f"{missed.isoformat()}.json").read_text()
+    )
+    assert doc["llm"]["status"] == "refused_backdated"
+    assert any("refused" in e for e in doc["events"])
+
+
+def test_the_owner_override_takes_the_backdated_read_and_reruns_are_already_read(tmp_path) -> None:
+    days = _weekdays(date(2025, 9, 1), 320)
+    natural, missed = days[-1], days[-2]
+    panel_path, store = _write_env(tmp_path, days)
+    calls: list[int] = []
+    kw = dict(
+        store=store,
+        state=tmp_path / "state",
+        panel_path=panel_path,
+        require_sealed=False,
+        fetch_news=lambda s: [],
+        ask=_reads(calls),
+    )
+    mon.run_monitor(use_llm=True, clock=lambda: _at(natural), **kw)
+    out = mon.run_monitor(
+        session=missed, use_llm=True, allow_backdated_llm=True, clock=lambda: _at(natural), **kw
+    )
+    assert out["llm"]["status"] == "ok" and out["llm"]["backdated_override"] is True
+    assert len(calls) == 2
+    log = (tmp_path / "state" / "aibear" / "llm.jsonl").read_text().splitlines()
+    assert len(log) == 2
+    assert json.loads(log[1])["backdated_override"] is True
+    assert json.loads(log[1])["session"] == missed.isoformat()
+    # a later rerun of that session (its day doc again missing, a read already
+    # recorded) is already_read — the same-session guard wins over the refusal
+    (tmp_path / "state" / "aibear" / f"{missed.isoformat()}.json").unlink()
+    again = mon.run_monitor(session=missed, use_llm=True, clock=lambda: _at(natural), **kw)
+    assert again["llm"]["status"] == "already_read"
+    assert len(calls) == 2  # no third read
+    assert len((tmp_path / "state" / "aibear" / "llm.jsonl").read_text().splitlines()) == 2
+
+
+def test_a_torn_final_llm_line_is_skipped_and_the_next_run_survives(tmp_path) -> None:
+    """llm.jsonl is appended (not written atomically): a kill mid-append
+    leaves a torn line. The next daily run must parse around it, note it,
+    and still take its own read — not brick."""
+    days = _weekdays(date(2025, 9, 1), 320)
+    panel_path, store = _write_env(tmp_path, days)
+    calls: list[int] = []
+    kw = dict(
+        use_llm=True,
+        store=store,
+        state=tmp_path / "state",
+        panel_path=panel_path,
+        require_sealed=False,
+        fetch_news=lambda s: [],
+        ask=_reads(calls),
+        clock=lambda: _at(days[-1]),
+    )
+    mon.run_monitor(**kw)
+    with (tmp_path / "state" / "aibear" / "llm.jsonl").open("a") as fh:
+        fh.write('{"session": "2026-11-')  # the crashed append
+    nxt = days[-1] + timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += timedelta(days=1)
+    panel_path, store = _write_env(tmp_path, [*days, nxt])
+    out = mon.run_monitor(**{**kw, "panel_path": panel_path, "store": store,
+                             "clock": lambda: _at(nxt)})
+    assert out["llm"]["status"] == "ok"
+    assert out["llm_log_skipped_lines"] == 1
+    assert any("unparseable" in e for e in out["events"])
+    log = (tmp_path / "state" / "aibear" / "llm.jsonl").read_text().splitlines()
+    assert len(log) == 3  # good line, torn line (kept), the new line
+    assert json.loads(log[-1])["session"] == nxt.isoformat()
+
+
+def test_a_corrupt_chain_gz_degrades_to_no_chain_instead_of_bricking(tmp_path) -> None:
+    """One damaged chains/<D>/<SYM>.json.gz must not fail every later daily
+    run: the session degrades to "no chain" (fills wait, nothing fabricated),
+    a loud note lands in the day doc, and the book still advances."""
+    days = _weekdays(date(2025, 9, 1), 320)
+    d_wait1, natural = days[-2], days[-1]
+    panel_path, store = _write_env(tmp_path, days)
+    book = {
+        "schema": mon.BOOK_SCHEMA,
+        "params_sha256": mon.file_sha256(forward_params_path()),
+        "last_session": days[-3].isoformat(),
+        "cards": [
+            {
+                "id": f"rule:falls:QQQ:{days[-3].isoformat()}",
+                "kind": "rule",
+                "sleeve": "falls",
+                "symbol": "QQQ",
+                "right": "P",
+                "signal_session": days[-3].isoformat(),
+                "status": "pending",
+                "stop_low": None,
+            }
+        ],
+    }
+    state = tmp_path / "state" / "aibear"
+    state.mkdir(parents=True)
+    (state / "book.json").write_text(json.dumps(book))
+    gz = store / "chains" / d_wait1.isoformat()
+    gz.mkdir(parents=True)
+    (gz / "QQQ.json.gz").write_bytes(b"this is not a gzip stream")
+
+    kw = dict(
+        store=store,
+        state=tmp_path / "state",
+        panel_path=panel_path,
+        require_sealed=False,
+        clock=lambda: _at(natural),
+    )
+    out = mon.run_monitor(**kw)
+    assert any(
+        f"QQQ: chain for {d_wait1.isoformat()} unreadable (BadGzipFile)" in e
+        and "treated as no chain" in e
+        for e in out["events"]
+    )
+    book2 = json.loads((state / "book.json").read_text())
+    assert book2["last_session"] == natural.isoformat()  # the run completed
+    assert book2["cards"][0]["status"] == "pending"  # the fill waited, no data fabricated
+    assert book2["cards"][0]["fill_wait"] == 2  # once for the corrupt gz, once for no file
+    # and the next day's run is a normal no-op rerun
+    assert mon.run_monitor(**kw)["session"] == out["session"]

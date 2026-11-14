@@ -26,7 +26,11 @@ never twice. One session s runs:
 
 States at s read panel closes on or before s only. The LLM read is
 advisory: it is recorded with its prompt digest, and nothing reads it to
-open or close a card.
+open or close a card. A fresh read is taken only for the run's natural
+current session (the newest panel session at run time): a read taken now
+for an older session would carry today's headlines into that session's
+forward-only score, so it is refused and recorded as refused unless the
+owner passes the explicit ``--allow-backdated-llm`` override.
 """
 
 from __future__ import annotations
@@ -621,10 +625,38 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _read_llm_log(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """``llm.jsonl`` parsed per line: (lines, skipped).
+
+    The log is the one file not written atomically (it is appended after the
+    atomic book/day-doc writes), so a kill or a full disk mid-append can leave
+    a torn final line. An unparseable line can only be a crashed append: skip
+    it and report the count instead of failing every later run.
+    """
+    if not path.exists():
+        return [], 0
+    out: list[dict[str, Any]] = []
+    skipped = 0
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            skipped += 1
+            continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
+        else:
+            skipped += 1
+    return out, skipped
+
+
 def run_monitor(
     *,
     session: date | None = None,
     use_llm: bool = False,
+    allow_backdated_llm: bool = False,
     dry_run: bool = False,
     store: Path | None = None,
     state: Path | None = None,
@@ -672,13 +704,30 @@ def run_monitor(
     for s in todo:
         ser_s = build_series(panel, syms, vix, doc, s)
         cache: dict[str, Chain | None] = {}
+        unreadable: list[str] = []
 
-        def chains(sym: str, _s: date = s, _cache: dict[str, Chain | None] = cache) -> Chain | None:
+        def chains(
+            sym: str,
+            _s: date = s,
+            _cache: dict[str, Chain | None] = cache,
+            _unreadable: list[str] = unreadable,
+        ) -> Chain | None:
             if sym not in _cache:
-                _cache[sym] = Chain.load(store, _s, sym)
+                try:
+                    _cache[sym] = Chain.load(store, _s, sym)
+                except Exception as exc:
+                    # a corrupt chain gz degrades to "no chain" (fills and
+                    # exits wait, nothing is fabricated) instead of bricking
+                    # every later daily run; the note lands in the day doc
+                    _cache[sym] = None
+                    _unreadable.append(
+                        f"{sym}: chain for {_s.isoformat()} unreadable "
+                        f"({type(exc).__name__}); treated as no chain"
+                    )
             return _cache[sym]
 
         events += process_session(book, s, series=ser_s, chains=chains, rules=rules, fwd=fwd)
+        events += unreadable
 
     series = build_series(panel, syms, vix, doc, session)
     names: dict[str, Any] = {}
@@ -702,15 +751,30 @@ def run_monitor(
 
     now = clock()
     llm_log = out_dir / "llm.jsonl"
-    past = (
-        [json.loads(x) for x in llm_log.read_text().splitlines() if x.strip()]
-        if llm_log.exists()
-        else []
-    )
+    past, llm_skipped = _read_llm_log(llm_log)
+    if llm_skipped:
+        events.append(f"llm.jsonl: skipped {llm_skipped} unparseable line(s) (a torn append)")
     llm_line: dict[str, Any] = {"status": "skipped"}
     already_read = any(x.get("session") == session.isoformat() for x in past)
+    # A fresh read is taken only for the run's natural current session (the
+    # newest panel session at run time): headlines fetched now for an older
+    # session would leak later news into that session's forward-only score.
+    natural = max((s for s in sessions if s <= now.date()), default=None)
+    natural_iso = None if natural is None else natural.isoformat()
+    backdated = session != natural
+    refused = use_llm and not already_read and backdated and not allow_backdated_llm
     if use_llm and already_read:
         llm_line = {"status": "already_read", "session": session.isoformat()}
+    elif refused:
+        llm_line = {
+            "status": "refused_backdated",
+            "session": session.isoformat(),
+            "natural_session": natural_iso,
+        }
+        events.append(
+            f"llm read refused: {session.isoformat()} is backdated "
+            f"(natural session {natural_iso}); owner override: --allow-backdated-llm"
+        )
     elif use_llm:
         from tree_options.trex.discovery import llm as llm_mod
         from tree_options.trex.discovery import market
@@ -723,6 +787,8 @@ def run_monitor(
             ask=ask or llm_mod.ask_json,
             now=now,
         )
+        if backdated:  # the owner override was passed: stamp the line, it is a record
+            llm_line["backdated_override"] = True
     verdicts = forward_verdicts(book, fwd)
     result = {
         "schema": DOC_SCHEMA,
@@ -748,13 +814,18 @@ def run_monitor(
             "llm": llm_line.get("status"),
         },
     }
+    if llm_skipped:
+        result["llm_log_skipped_lines"] = llm_skipped
     if not dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(
             out_dir / "book.json", (json.dumps(book, indent=1, sort_keys=True) + "\n").encode()
         )
         atomic_write_bytes(day_doc, (json.dumps(result, indent=1, sort_keys=True) + "\n").encode())
-        if use_llm and not already_read:
+        if use_llm and not already_read and not refused:
+            torn_tail = llm_log.exists() and llm_log.read_bytes()[-1:] not in (b"", b"\n")
             with llm_log.open("a", encoding="utf-8") as fh:
+                if torn_tail:
+                    fh.write("\n")  # a torn earlier append: start the new line clean
                 fh.write(json.dumps(llm_line, sort_keys=True) + "\n")
     return result
