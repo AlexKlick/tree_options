@@ -18,6 +18,7 @@ from tree_options.desk.store import ChainStore, encode_document
 from tree_options.trex.discovery.market import MarketCache
 from tree_options.trex_web.app import create_app
 from tree_options.trex_web.options_view import (
+    _slice_rows,
     clamp_params,
     options_payload,
     session_clocks,
@@ -117,8 +118,35 @@ def _write_chain(
     clock: str | None = None,
     one_sided: tuple[str, str, float] | None = None,
     null_iv: tuple[str, str, float] | None = None,
+    b1_duplicate: bool = False,
 ) -> None:
     cols: dict[str, list[Any]] = {f: [] for f in CHAIN_FIELDS}
+    if b1_duplicate:
+        # the 2026-11-05+ vendor shape on NVDA/TSLA (B1VDA…/B1SLA…): a
+        # nonstandard root listed AHEAD of the standard rows at the same
+        # (exp, right, strike), no open interest, prices unrelated to the
+        # stock (0.05/0.15)
+        for exp in expiries:
+            yymmdd = exp.replace("-", "")[2:]
+            for right in ("C", "P"):
+                for strike in strikes:
+                    cols["occ"].append(f"B1{sym[2:]}{yymmdd}{right}{int(strike * 1000):08d}")
+                    cols["exp"].append(exp)
+                    cols["right"].append(right)
+                    cols["strike"].append(strike)
+                    cols["bid"].append(0.05)
+                    cols["ask"].append(0.15)
+                    cols["iv"].append(None)
+                    cols["delta"].append(None)
+                    cols["gamma"].append(None)
+                    cols["theta"].append(None)
+                    cols["vega"].append(None)
+                    cols["rho"].append(None)
+                    cols["theo"].append(None)
+                    cols["oi"].append(0)
+                    cols["volume"].append(0)
+                    cols["last"].append(0.1)
+                    cols["last_time"].append(f"{session}T15:58:00-04:00")
     for exp in expiries:
         for right in ("C", "P"):
             for strike in strikes:
@@ -813,3 +841,90 @@ def test_exact_expiration_bad_request_fails_422(client: TestClient, invalid: str
     assert (
         client.get(f"/api/market/{SYM}/options", params={"expiration": invalid}).status_code == 422
     )
+
+
+# ------------------------------------- nonstandard B1 roots (2026-11-05+)
+
+
+def test_b1_nonstandard_roots_never_enter_the_slice(tmp_path: Path) -> None:
+    """The 2026-11-05+ NVDA/TSLA vendor shape: nonstandard ``B1…`` roots at
+    the standard (exp, right, strike), listed AHEAD of the standard rows, no
+    open interest, prices unrelated to the stock. Only standard rows are
+    served — bounded and exact-expiration lanes alike, and an unobserved
+    expiration still answers an empty slice."""
+    store = tmp_path / "store"
+    _write_features(store, SESSION, {"TEST": _feature_name(101.0)})
+    _write_chain(store, SESSION, SYM, EXPIRIES, STRIKES, b1_duplicate=True)
+    client = _client(store)
+    bounded = _get(client, f"/api/market/{SYM}/options?window=1&max_expiries=1")["recorded"][
+        "slice"
+    ]
+    # 95/100/105 x C/P once each with the STANDARD quote — not 12 rows with
+    # the B1 twin (bid 0.05/ask 0.15, oi 0) sorted first
+    assert [(r["right"], r["strike"], r["bid"], r["ask"], r["oi"]) for r in bounded] == [
+        (right, strike, 5.0 + strike / 100.0, 5.5 + strike / 100.0, 100)
+        for right in ("C", "P")
+        for strike in (95.0, 100.0, 105.0)
+    ]
+    exact = _get(
+        client, f"/api/market/{SYM}/options?window=0&max_expiries=1&expiration=2026-12-18"
+    )["recorded"]["slice"]
+    assert [(r["right"], r["strike"], r["bid"], r["ask"]) for r in exact] == [
+        ("C", 100.0, 6.0, 6.5),
+        ("P", 100.0, 6.0, 6.5),
+    ]
+    absent = _get(client, f"/api/market/{SYM}/options?expiration=2028-12-15")
+    assert absent["recorded"]["slice"] == []
+
+
+def test_b1_rows_never_displace_standard_strikes_at_a_row_cap(tmp_path: Path) -> None:
+    """The MCP gateway caps its options tables at MAX_OPTION_ROWS=80; the
+    exact-expiration lane at window=15 keeps 31 strikes x 2 rights = 62
+    standard rows. With the B1 twins served the slice was ~124 rows and the
+    cap silently dropped the deepest strikes of the second right while every
+    surviving strike showed the B1 quote first — filtered at the source, the
+    whole standard ladder fits inside the cap."""
+    store = tmp_path / "store"
+    _write_features(store, SESSION, {"TEST": _feature_name(101.0)})
+    _write_chain(
+        store, SESSION, SYM, ["2026-12-18"], [float(s) for s in range(70, 132)], b1_duplicate=True
+    )
+    rows = _get(
+        _client(store),
+        f"/api/market/{SYM}/options?window=99&max_expiries=1&expiration=2026-12-18",
+    )["recorded"]["slice"]
+    # window clamps to 15: 31 rungs around ATM 101 -> 86..116, both rights
+    assert len(rows) == 62  # 31 x 2 standard rows, NOT 124 with B1 twins
+    assert {(r["right"], r["strike"]) for r in rows} == {
+        (right, float(s)) for right in ("C", "P") for s in range(86, 117)
+    }
+    assert all(r["bid"] == 5.0 + r["strike"] / 100.0 for r in rows)  # standard prices only
+    # the MCP cap window keeps every standard strike, deepest P rung included
+    assert len(rows[:80]) == 62
+
+
+def test_slice_rows_without_occ_column_still_serves() -> None:
+    """Defensive shape: a chain document with no ``occ`` column (or no header
+    underlying) has nothing to filter on — every row serves, as before."""
+    base_cols: dict[str, list[Any]] = {
+        "exp": ["2026-06-19", "2026-06-19"],
+        "right": ["C", "P"],
+        "strike": [100.0, 100.0],
+        "bid": [1.0, 1.2],
+        "ask": [1.5, 1.7],
+    }
+    for header in ({"session": SESSION}, {"session": SESSION, "underlying": SYM}):
+        rows = _slice_rows(
+            {
+                "header": {**header, "underlying_quote": {"close": 100.0}},
+                "columns": dict(base_cols),
+            },
+            SESSION,
+            100.0,
+            0,
+            1,
+        )
+        assert [(r["right"], r["bid"], r["mid"]) for r in rows] == [
+            ("C", 1.0, 1.25),
+            ("P", 1.2, 1.45),
+        ]

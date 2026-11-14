@@ -30,7 +30,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from tree_options.desk.store import EOD, ChainStore, read_chain
+from tree_options.desk.store import EOD, ChainStore, read_chain, standard_occ
 from tree_options.trex.discovery.market import MarketCache, nearest_rung
 from tree_options.trex.series import decimate_pairs, level_extent
 from tree_options.trex_web.discovery_view import _age
@@ -218,22 +218,50 @@ def _slice_rows(
 ) -> list[dict[str, Any]]:
     """Nearest ``max_expiries`` expiries, +/- ``window`` ladder rungs around
     that expiry's ATM strike (nearest to spot), both rights, sorted by
-    (exp, right, strike)."""
+    (exp, right, strike).
+
+    Nonstandard roots never enter: since 2026-11-05 the NVDA and TSLA chains
+    list ``B1VDA…``/``B1SLA…`` rows at the standard (exp, right, strike),
+    AHEAD of the standard rows, with no open interest and prices unrelated
+    to the stock. Serving both would duplicate every strike with a junk
+    quote first (stable sort keeps the lower source index) and displace the
+    deepest strikes of bounded slices (the MCP row cap). Only rows whose
+    ``occ`` fullmatches the standard root survive — the same rule
+    ``desk.aibear`` fills and marks its cards by (AMENDMENT 2)."""
     _cols = chain.get("columns")
     cols = _cols if isinstance(_cols, dict) else {}
     _exps = cols.get("exp")
     exps: list[Any] = _exps if isinstance(_exps, list) else []
     _strikes = cols.get("strike")
     strikes: list[Any] = _strikes if isinstance(_strikes, list) else []
+    _occs = cols.get("occ")
+    occs: list[Any] = _occs if isinstance(_occs, list) else []
+    _header = chain.get("header")
+    underlying = _header.get("underlying") if isinstance(_header, dict) else None
+    standard = (
+        standard_occ(underlying) if isinstance(underlying, str) and underlying and occs else None
+    )
+
+    def standard_row(i: int) -> bool:
+        # Filtered at the index level, before any ladder/keep logic: a
+        # nonstandard row never enters ``indices`` and never occupies a slot
+        # a bounded slice would keep. No occ column / no string occ (ragged
+        # columns, occ-less documents): nothing to test, serve as before.
+        if standard is None:
+            return True
+        occ = occs[i] if i < len(occs) else None
+        return not isinstance(occ, str) or standard.fullmatch(occ) is not None
+
     by_exp: dict[str, list[int]] = {}
     if expiration is None:
         for i, e in enumerate(exps):
-            by_exp.setdefault(e, []).append(i)
+            if standard_row(i):
+                by_exp.setdefault(e, []).append(i)
     else:
         # The exact-expiration lane scans the column once but retains only
         # matching indexes; never allocate an index list for every other
         # expiration in a multi-year recorded chain.
-        indices = [i for i, e in enumerate(exps) if e == expiration]
+        indices = [i for i, e in enumerate(exps) if e == expiration and standard_row(i)]
         if indices:
             by_exp[expiration] = indices
     rows: list[dict[str, Any]] = []
