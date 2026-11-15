@@ -385,3 +385,21 @@ round docs `docs/campaign-2026-09/*-round1.md` + `REPORT.md` on branch
 2. SWARM-ITER004 wave (SWARM-ITER004.md, post-429-reset): expanded-universe
    XSMOM (the survivorship de-risk), XSMOM exit grid, sector rotation.
 3. Re-check mom60-h60 conditional at the next era boundary.
+
+## DESK-BT-001 (2026-11-15): modeled options expressions — NOT SUPPORTED (MODELED), both signals
+
+The pre-registered (2026-10-05, Amendment 1; executed with the narrowing
+clarifications sealed 2026-11-14, `docs/desk/DESK-BT-001-clarifications.md`
+sha bdc1c1a6…) modeled option expressions of the two live direction rules
+BOTH return NOT SUPPORTED (MODELED): xsmom_top3 and pead_beat do not clear
+their sealed bars once expressed as options at measured crossing costs.
+252 evaluable attempts (attrition: 63 no_eligible_expiry, 38
+rank_window_missing, 25 missing_leg_bar, 12 no_bars, 9 moneyness_out, 9
+no_options_expression, 3 no_entry_bars, 3 no_spot); placebos on the
+identical path; verdict of record at
+`artifacts/desk-store/evaluations/DESK-BT-001.{json,md}` (one-shot;
+reproduced byte-identically from the same code commit 63eb6f0). Scope: this
+speaks against the short-dated option EXPRESSIONS at these costs, not
+against the equity signals (their forward card chains continue
+unaffected). Registered and run under the 2026-11-14 strategy fan-out
+campaign (owner approval CP2/CP3); runner + seals on main.
