@@ -740,11 +740,11 @@ def _safe_options_view(
                 safe_row["quote_quality"] = "two_sided_recorded_not_executable"
             out.append(safe_row)
         raw_cards = raw.get("cards")
-        cards = None
+        cards: dict[str, Any] | None = None
         if kind == "recorded" and isinstance(raw_cards, dict):
-            cards = {k: _safe_number(raw_cards.get(k)) for k in cards_num}
-            earnings = raw_cards.get("earnings")
-            cards["earnings"] = _safe_text(earnings)
+            built: dict[str, Any] = {k: _safe_number(raw_cards.get(k)) for k in cards_num}
+            built["earnings"] = _safe_text(raw_cards.get("earnings"))
+            cards = built
         age = _safe_number(raw.get("age_seconds"), nonnegative=True)
         ttl = _safe_number(raw.get("ttl_seconds"), nonnegative=True)
         verified_age = (
