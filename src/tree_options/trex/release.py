@@ -11,10 +11,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+_PLACEHOLDER = re.compile(r"@[A-Z_0-9]+@")
 
 SCHEMA = "trex-research-release/3"
 COMMANDS = [
@@ -355,7 +358,8 @@ def render_units(manifest: dict[str, Any], destination: Path) -> None:
         for key, value in values.items():
             content = content.replace("@" + key.upper() + "@", str(value))
         if "@" in content:
-            raise ValueError("unresolved_unit_template")
+            unresolved = sorted({m for m in _PLACEHOLDER.findall(content)})
+            raise ValueError(f"unresolved_unit_template:{template.name}:{unresolved}")
         for command in _unit_commands(content):
             if command not in supported:
                 raise ValueError(f"release_template_command_unbound:{template.name}:{command}")

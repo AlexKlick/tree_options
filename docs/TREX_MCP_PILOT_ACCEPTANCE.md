@@ -54,7 +54,7 @@ No CI is installed or implied (the repo's official release gate is local).
       attached to GitHub coordination issue. At least one end-to-end customer
       pilot signoff before general release.
 
-The proposed `deploy/product/trex-mcp-pilot.service.in` is intentionally
+The proposed `deploy/candidate/trex-mcp-pilot.service.in` is intentionally
 non-runnable until `@RELEASE_DIR@`, `@SECRET_ENV_FILE@` and `@PYTHON@` have
 been substituted and reviewed by the authorized operator. Run only behind an
 approved HTTPS proxy, with `TREX_MCP_BIND=127.0.0.1` and a dedicated port.
