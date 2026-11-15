@@ -34,8 +34,8 @@ from tree_options.desk.store import EOD, ChainStore, read_chain
 from tree_options.trex.discovery.market import MarketCache, nearest_rung
 from tree_options.trex.series import decimate_pairs, level_extent
 from tree_options.trex_web.discovery_view import _age
-from tree_options.trex_web.symbol_history import _ts_ms, history_age_seconds
 from tree_options.trex_web.expiry_filter import select_expiries
+from tree_options.trex_web.symbol_history import _ts_ms, history_age_seconds
 
 DEFAULT_WINDOW = 5
 MIN_WINDOW, MAX_WINDOW = 0, 15

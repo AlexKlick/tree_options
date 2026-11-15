@@ -157,7 +157,7 @@ MAX_COMPARE_CANDIDATES = 6
 
 
 def compare_bearish_scenarios(data: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate 2–6 **alternative** structures using one shared price grid.
+    """Evaluate 2-6 **alternative** structures using one shared price grid.
 
     Each candidate retains its own expiration; a shared target is *hypothetically*
     reached on each contract's expiry, not a single portfolio snapshot. Never

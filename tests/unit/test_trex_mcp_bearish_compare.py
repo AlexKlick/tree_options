@@ -8,8 +8,7 @@ import httpx
 import pytest
 
 from tree_options.trex_mcp.analysis import InvalidScenario, compare_bearish_scenarios
-from tree_options.trex_mcp.server import Config, Principal, TOOLS, create_app
-
+from tree_options.trex_mcp.server import TOOLS, Config, Principal, create_app
 
 BASE = {
     "symbol": "TSLA",

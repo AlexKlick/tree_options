@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+
 from tree_options.trex_mcp.server import Config, Principal, create_app
 
 

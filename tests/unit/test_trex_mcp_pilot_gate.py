@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/trex_mcp_pilot_gate.py"
 spec = importlib.util.spec_from_file_location("trex_mcp_pilot_gate", SCRIPT)
 assert spec and spec.loader

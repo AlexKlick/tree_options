@@ -6,8 +6,8 @@ Ambiguous IDs and filename precedence retain the existing legacy resolver.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 
 def requires_legacy_resolution(

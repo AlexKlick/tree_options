@@ -7,8 +7,8 @@ import asyncio
 import httpx
 
 from tree_options.trex_mcp import server
-from tree_options.trex_mcp.server import Config, Principal
 from tree_options.trex_mcp.quota import QuotaLimiter
+from tree_options.trex_mcp.server import Config, Principal
 
 
 def test_subject_and_tenant_quota_are_independent_and_replenish() -> None:

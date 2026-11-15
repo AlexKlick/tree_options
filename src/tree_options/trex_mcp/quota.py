@@ -54,9 +54,7 @@ class QuotaLimiter:
     def _key(self, tenant: str, subject: str) -> str:
         # No stored raw sub, JWT or bearer. Include tenant in the digest so
         # the same principal in two tenants is independently budgeted.
-        digest = hashlib.blake2b(
-            f"{tenant}\x00{subject}".encode("utf-8"), key=self._salt, digest_size=16
-        )
+        digest = hashlib.blake2b(f"{tenant}\x00{subject}".encode(), key=self._salt, digest_size=16)
         return digest.hexdigest()
 
     def _prune(self, samples: deque[float], now: float) -> None:

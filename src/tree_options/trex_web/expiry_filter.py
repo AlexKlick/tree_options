@@ -6,8 +6,9 @@ prove exchange listing, market entitlement, liquidity, or strike existence.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
-from typing import Any, Mapping
+from typing import Any
 
 
 def select_expiries(

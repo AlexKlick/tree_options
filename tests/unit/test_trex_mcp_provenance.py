@@ -7,19 +7,19 @@ None of these cases may cause an AI assistant to claim a verified fresh quote.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from tree_options.trex_mcp import server
 from tree_options.trex_mcp.server import UpstreamUnavailable
 
-GATEWAY = datetime(2026, 11, 10, 15, 30, tzinfo=timezone.utc)
+GATEWAY = datetime(2026, 11, 10, 15, 30, tzinfo=UTC)
 
 
 def test_future_trex_clock_rejected_even_without_quote_timestamp() -> None:
     doc = {"symbol": "TSLA", "now": "2030-01-01T10:00:00-05:00", "quote": {"last": 450}}
-    with pytest.raises(UpstreamUnavailable, match="future|clock"):
+    with pytest.raises(UpstreamUnavailable, match=r"future|clock"):
         server._safe_market_view(doc, "TSLA", gateway_at=GATEWAY)
 
 
@@ -153,7 +153,7 @@ def test_acceptable_clock_skew_does_not_reject() -> None:
 
 
 def test_exchange_date_is_not_utc_calendar_date_at_midnight() -> None:
-    near_midnight_utc = datetime(2026, 11, 11, 1, 0, tzinfo=timezone.utc)
+    near_midnight_utc = datetime(2026, 11, 11, 1, 0, tzinfo=UTC)
     with pytest.raises(UpstreamUnavailable, match="future"):
         server._safe_options_view(
             {"symbol": "TSLA", "recorded": {"session": "2026-11-11", "slice": []}},
