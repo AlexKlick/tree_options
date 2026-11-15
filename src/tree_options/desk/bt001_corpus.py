@@ -190,7 +190,13 @@ def synthetic_world(root: Path) -> SyntheticWorld:
 
     fom = [s for s in sessions if win_first <= s <= win_last and is_first_session_of_month(s, cal)]
     beat_sessions = sorted(s for ss in jumps.values() for s in ss)
-    e0s = sorted({first_session_after(s, cal) for s in [*fom, *beat_sessions]})
+    e0s = sorted(
+        {
+            e
+            for e in (first_session_after(s, cal) for s in [*fom, *beat_sessions])
+            if e is not None
+        }
+    )
 
     options: dict[str, dict[date, list[ivhist.OptionBar]]] = {n: {} for n in bar_names}
     spot: dict[str, dict[date, float]] = {n: {} for n in bar_names}

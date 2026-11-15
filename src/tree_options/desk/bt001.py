@@ -767,7 +767,7 @@ def clustered_paired_test(diffs: Sequence[float], clusters: Sequence[str]) -> Pa
         return PairedClusters(k=k, t=None, p=p, cluster_means=tuple(means), degenerate=True)
     t = mean / (sd / math.sqrt(k))
     return PairedClusters(
-        k=k, t=t, p=student_t_sf_one_sided(t, k - 1), cluster_means=means, degenerate=False
+        k=k, t=t, p=student_t_sf_one_sided(t, k - 1), cluster_means=tuple(means), degenerate=False
     )
 
 
@@ -1201,9 +1201,9 @@ def _equity_card(
     base: Mapping[str, Any],
 ) -> dict[str, Any]:
     eq = [
-        equity[(r["signal"], r["name"], r["decision"], r["structure"])]
+        v
         for r in variant_rows
-        if equity.get((r["signal"], r["name"], r["decision"], r["structure"])) is not None
+        if (v := equity.get((r["signal"], r["name"], r["decision"], r["structure"]))) is not None
     ]
     eq_stats = sharpe_and_moments(eq) if len(eq) >= 2 else {"SR": None, "mean": None}
     rs = [
