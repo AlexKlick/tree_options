@@ -836,6 +836,17 @@ class Inputs:
     window: tuple[date, date] = (WINDOW_FIRST, WINDOW_LAST)
 
 
+def _panel_number(value: Any) -> float | None:
+    """The panel stores money as strings; parse to float, None on garbage."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed == parsed else None  # NaN guard
+
+
 def _equity_return(
     panel: Mapping[str, Mapping[str, Any]],
     name: str,
@@ -852,8 +863,8 @@ def _equity_return(
                 f"the equity card would read a panel row dated {d.isoformat()}, past"
                 f" the amendment's consumption cutoff {cutoff}"
             )
-    o = rows.get(e0.isoformat(), {}).get("open")
-    c = rows.get(exit_day.isoformat(), {}).get("close")
+    o = _panel_number(rows.get(e0.isoformat(), {}).get("open"))
+    c = _panel_number(rows.get(exit_day.isoformat(), {}).get("close"))
     if o is None or c is None or not o > 0:
         return None
     return float(c) / float(o) - 1.0 - EQUITY_COST
