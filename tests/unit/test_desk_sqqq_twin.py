@@ -587,6 +587,21 @@ class TestResolve:
         )
         m = re.search(r"hedge 5bp RT on h_notional: −\$([\d,]+\.\d{2})", text)  # noqa: RUF001
         assert m and math.isclose(float(m.group(1)), h * 0.0005, abs_tol=0.005)
+        # the cost is SUBTRACTED in the twin total (SQ-M3's invariant): pin the
+        # whole arithmetic — unhedged net + SQQQ leg − hedge RT == twin total
+        cost = float(m.group(1))
+        unhedged = float(
+            re.search(r"; net ([+-][\d,]+\.\d{2})", text).group(1).replace(",", "")
+        )
+        leg = float(
+            re.search(r"SQQQ leg P&L: ([+-][\d,]+\.\d{2})", text).group(1).replace(",", "")
+        )
+        total = float(
+            re.search(r"twin total = [^=]+= ([+-][\d,]+\.\d{2}) USD", text)
+            .group(1)
+            .replace(",", "")
+        )
+        assert math.isclose(total, round(unhedged + leg - cost, 2), abs_tol=0.005)
 
     def test_resolve_uses_the_sealed_h_not_the_recomputed_beta(self, tmp_path, monkeypatch) -> None:
         panel = build_panel(loading=2.0, seed=5)
