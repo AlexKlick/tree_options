@@ -9462,6 +9462,79 @@ MUTANTS.extend(
         ),
     ]
 )
+# VRP-COND-FORWARD-001 lane L3: the report-only forward gate-state emitter
+# (desk/vrp_forward.py). The four surfaces the lane brief names — percentile
+# pool boundary, the 2/3 threshold, refuse-and-mark, write-once — plus the
+# load-bearing sealed-anchor enforcement of the frozen base.
+MUTANTS.extend(
+    [
+        dict(
+            id="VCF-M1-pct-min-n-off-by-one",
+            owner="test_primary_pool_min_n_boundary_and_window_inclusive",
+            file="src/tree_options/desk/vrp_forward.py",
+            anchor=(
+                "    if n < PCT_MIN_N:\n"
+                '        return _pool_read(None, n, f"n/a (n={n} < {PCT_MIN_N})")'
+            ),
+            replacement=(
+                "    if n <= PCT_MIN_N:\n"
+                '        return _pool_read(None, n, f"n/a (n={n} < {PCT_MIN_N})")'
+            ),
+            selectors=["tests/unit/test_desk_vrp_forward.py"],
+            invariant="the primary pool is the registered statistic: n >= 126 evaluable, window-inclusive",
+        ),
+        dict(
+            id="VCF-M2-threshold-strictly-greater",
+            owner="test_threshold_is_two_thirds_inclusive",
+            file="src/tree_options/desk/vrp_forward.py",
+            anchor="    on = (p >= TER_HI) if p is not None else None",
+            replacement="    on = (p > TER_HI) if p is not None else None",
+            selectors=["tests/unit/test_desk_vrp_forward.py"],
+            invariant="gate ON iff p >= 2/3 (TER_HI): inclusive, as registered",
+        ),
+        dict(
+            id="VCF-M3-refusal-not-marked",
+            owner="test_session_without_usable_surface_is_refused_and_marked",
+            file="src/tree_options/desk/vrp_forward.py",
+            anchor='        doc["status"] = "refused"',
+            replacement='        doc["status"] = "ok"',
+            selectors=["tests/unit/test_desk_vrp_forward.py"],
+            invariant="a session without a usable surface is REFUSED and marked, never silent",
+        ),
+        dict(
+            id="VCF-M4-write-once-unchecked",
+            owner="test_different_builder_sha_refuses_to_rewrite_history",
+            file="src/tree_options/desk/vrp_forward.py",
+            anchor=(
+                "    if path.exists():\n"
+                "        try:\n"
+                '            existing = json.loads(path.read_text(encoding="utf-8"))'
+            ),
+            replacement=(
+                "    if False:\n"
+                "        try:\n"
+                '            existing = json.loads(path.read_text(encoding="utf-8"))'
+            ),
+            selectors=["tests/unit/test_desk_vrp_forward.py"],
+            invariant="a different builder sha refuses to rewrite emitted history (sha applies forward-only)",
+        ),
+        dict(
+            id="VCF-M5-sealed-anchors-unenforced",
+            owner="test_a_base_that_misses_the_sealed_anchors_refuses_everything",
+            file="src/tree_options/desk/vrp_forward.py",
+            anchor=(
+                "    if not report[\"pass\"]:\n"
+                "        raise EmitterRefusal("
+            ),
+            replacement=(
+                "    if False:\n"
+                "        raise EmitterRefusal("
+            ),
+            selectors=["tests/unit/test_desk_vrp_forward.py"],
+            invariant="a frozen base that misses the sealed anchors refuses everything (never tune to fit)",
+        ),
+    ]
+)
 
 
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:

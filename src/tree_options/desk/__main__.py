@@ -157,6 +157,25 @@
         no network, no store writes; it takes no state lock. Exit 0 written,
         2 bad arguments or an unreadable bundle.
 
+    vrp-cond-forward [--session D | --catch-up D]
+        VRP-COND-FORWARD-001 (sealed prereg docs/desk/VRP-COND-FORWARD-001.md
+        §8): the REPORT-ONLY forward gate-state emitter. Per recorded EOD IWM
+        chain session from 2026-09-22 it computes r_IWM = iv30/harvol20
+        (chain-mid ATM 30d under the standard_occ filter; pooled log-HAR h20,
+        strictly PIT), ranks it under the primary spliced trailing-252 pool
+        and both sensitivity pools, and writes ONE JSON per session to
+        <TREX_DESK_STATE>/vrp-cond-forward/gates/<D>.json (write-once per
+        builder sha) plus the frozen spliced base to base-r.json and XSMOM
+        card-event annotations to card-events.jsonl. A session whose chain
+        exists but has no usable surface is REFUSED and marked -- never
+        stale carry, never silent. Gates nothing, sizes nothing, deploys no
+        timer; deploy of any timer/unit is an owner action the prereg does
+        not authorize. --session emits one recorded session (exit 3 when its
+        chain is not recorded yet); --catch-up emits every recorded session
+        on or after D (bounded below by the declared break 2026-09-22).
+        Exit 0 written/no-op, 1 binding refusal or history-rewrite conflict,
+        2 bad arguments, 3 nothing recorded to emit yet.
+
     longrun run --config FILE.json [--run-dir DIR] [--limit N] [--score-only]
     longrun status [--dir DIR]
         The desk lab long run (desk.longrun): every policy on every board,
@@ -477,6 +496,21 @@ def _parser() -> argparse.ArgumentParser:
     sup.add_argument("--database", type=Path)
     sup.add_argument("--account", default="DUT143714")
     sup.add_argument("--dry-run", action="store_true")
+    vf = sub.add_parser(
+        "vrp-cond-forward",
+        help="VRP-COND-FORWARD-001 report-only forward gate-state emitter (no timer)",
+    )
+    vf_target = vf.add_mutually_exclusive_group()
+    vf_target.add_argument(
+        "--session",
+        type=date.fromisoformat,
+        help="emit one recorded EOD chain session's gate JSON",
+    )
+    vf_target.add_argument(
+        "--catch-up",
+        type=date.fromisoformat,
+        help="emit every recorded EOD chain session on or after D (bounded below by 2026-09-22)",
+    )
     from tree_options.desk import longrun  # `longrun run|status` (desk.longrun owns it)
 
     longrun.register_cli(sub)
@@ -1005,6 +1039,72 @@ def _eod_equity(
     return res.exit_code
 
 
+def _vrp_cond_forward(args: argparse.Namespace, *, clock: store.Clock, cal: Calendar) -> int:
+    from tree_options.desk import vrp_forward
+
+    if args.session is None and args.catch_up is None:
+        print("vrp-cond-forward: give exactly one of --session D or --catch-up D", file=sys.stderr)
+        return 2
+    if args.session is not None and args.catch_up is not None:
+        print("vrp-cond-forward: --session and --catch-up are mutually exclusive", file=sys.stderr)
+        return 2
+    store_root = paths.store_root()
+    if args.session is not None:
+        if not cal.is_session(args.session):
+            print(f"vrp-cond-forward: {args.session} is not an NYSE session", file=sys.stderr)
+            return 2
+        chain = store_root / "chains" / args.session.isoformat() / f"{vrp_forward.NAME}.json.gz"
+        if not chain.is_file():
+            print(
+                f"vrp-cond-forward: no recorded {vrp_forward.NAME} chain for {args.session}"
+                " (the chain recorder has not closed this session); nothing written",
+                file=sys.stderr,
+            )
+            return 3
+        sessions = [args.session]
+    else:
+        floor = max(args.catch_up, vrp_forward.FORWARD_FIRST)
+        sessions = [d for d in vrp_forward.recorded_chain_sessions(store_root) if d >= floor]
+        if not sessions:
+            print(
+                f"vrp-cond-forward: no recorded {vrp_forward.NAME} chain session on or after"
+                f" {floor}; nothing to emit",
+                file=sys.stderr,
+            )
+            return 3
+    try:
+        outcomes = vrp_forward.run_emit(
+            sessions=sessions, cal=cal, state_root=paths.state_root(), now=clock()
+        )
+    except vrp_forward.EmitterRefusal as exc:
+        print(f"vrp-cond-forward: REFUSED: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:  # unreadable panel/calendar/chains: fail loud, rc 1
+        print(f"vrp-cond-forward: input failure ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return 1
+    rc = 0
+    for oc in outcomes:
+        if oc.action == "conflict":
+            rc = 1
+            print(f"  {oc.session} CONFLICT: {oc.detail}", file=sys.stderr)
+            continue
+        if oc.doc is not None and oc.doc.get("status") == "ok":
+            pools = oc.doc["pools"]
+            print(
+                f"  {oc.session} {oc.action} r={oc.doc['r']:.4f}"
+                f" p_primary={pools['primary']['p']:.4f} (n={pools['primary']['n']},"
+                f" on={pools['primary']['on']})"
+                f" warmup_met={oc.doc['warmup']['met']}"
+            )
+        else:
+            print(f"  {oc.session} {oc.action} status={oc.status} {oc.detail}".rstrip())
+    print(
+        f"vrp-cond-forward: {len(outcomes)} session(s) -> "
+        f"{vrp_forward.gates_dir(paths.state_root())} (report-only)"
+    )
+    return rc
+
+
 def run_cli(
     argv: list[str] | None = None,
     *,
@@ -1270,6 +1370,8 @@ def run_cli(
                 return 2
             print(json.dumps(doc, indent=2, default=str))
             return 3 if doc["status"] == "queue_not_ready" else 0
+        if args.command == "vrp-cond-forward":
+            return _vrp_cond_forward(args, clock=clock, cal=cal)
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 
