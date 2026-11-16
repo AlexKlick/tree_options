@@ -9522,14 +9522,8 @@ MUTANTS.extend(
             id="VCF-M5-sealed-anchors-unenforced",
             owner="test_a_base_that_misses_the_sealed_anchors_refuses_everything",
             file="src/tree_options/desk/vrp_forward.py",
-            anchor=(
-                "    if not report[\"pass\"]:\n"
-                "        raise EmitterRefusal("
-            ),
-            replacement=(
-                "    if False:\n"
-                "        raise EmitterRefusal("
-            ),
+            anchor=('    if not report["pass"]:\n        raise EmitterRefusal('),
+            replacement=("    if False:\n        raise EmitterRefusal("),
             selectors=["tests/unit/test_desk_vrp_forward.py"],
             invariant="a frozen base that misses the sealed anchors refuses everything (never tune to fit)",
         ),

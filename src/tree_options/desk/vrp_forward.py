@@ -392,9 +392,7 @@ def _pool_read(p: float | None, n: int, status: str) -> dict[str, Any]:
     return {"p": p, "n": n, "status": status, "on": on, "within_band": within}
 
 
-def pool_primary(
-    spliced: Mapping[date, float], at: date, cal: Calendar
-) -> dict[str, Any]:
+def pool_primary(spliced: Mapping[date, float], at: date, cal: Calendar) -> dict[str, Any]:
     """§3.4 PRIMARY (the verdict binds to this): the registered statistic on
     the SPLICED series — the fraction of strictly-lower evaluable r over the
     trailing 252 sessions ending AT ``at`` (window-inclusive), n >= 126."""
@@ -428,9 +426,7 @@ def pool_mixed_fullbase(
     return _pool_read(sum(1 for v in pool if v < cur) / n, n, "evaluable")
 
 
-def pool_forward_only(
-    forward: Mapping[date, float], at: date, cal: Calendar
-) -> dict[str, Any]:
+def pool_forward_only(forward: Mapping[date, float], at: date, cal: Calendar) -> dict[str, Any]:
     """§3.4 sensitivity (b): the registered trailing-252 window over
     FORWARD-vintage observations only; ``n/a`` until n >= 126 forward r-obs
     exist (~2027-07+). Never verdict-binding."""
@@ -480,9 +476,7 @@ class EmitOutcome:
     doc: dict[str, Any] | None = None
 
 
-def _publish_write_once(
-    path: Path, doc: Mapping[str, Any], builder: str
-) -> tuple[str, str]:
+def _publish_write_once(path: Path, doc: Mapping[str, Any], builder: str) -> tuple[str, str]:
     """§8.5 write-once: same builder sha re-run = no-op; a different builder
     sha refuses to rewrite history (the new sha applies forward-only)."""
     if path.exists():
@@ -559,7 +553,9 @@ def emit_session(
     if doc["r"] is None:
         doc["status"] = "refused"
         doc["reason"] = "; ".join(r for r in reasons if r) or "no usable surface"
-        doc["pools"] = {name: _pool_read(None, 0, "no evaluable r at session") for name in _POOL_NAMES}
+        doc["pools"] = {
+            name: _pool_read(None, 0, "no evaluable r at session") for name in _POOL_NAMES
+        }
     else:
         doc["status"] = "ok"
         doc["reason"] = ""
@@ -725,7 +721,9 @@ def annotate_card_events(
             if xp_p.get("p") is not None:
                 xp_status = "ok"
             elif prev_gate is None:
-                xp_status = f"no gate for t-1 ({prev.isoformat() if prev else 'no previous session'})"
+                xp_status = (
+                    f"no gate for t-1 ({prev.isoformat() if prev else 'no previous session'})"
+                )
             else:
                 xp_status = str(xp_p.get("status") or "not evaluable")
             size = None

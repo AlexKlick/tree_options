@@ -218,9 +218,7 @@ def test_emit_writes_gate_once_and_same_builder_rerun_is_noop(
     assert gate_path(state, at).read_bytes() == first  # history is never rewritten
 
 
-def test_different_builder_sha_refuses_to_rewrite_history(
-    static_calendar, tmp_path: Path
-) -> None:
+def test_different_builder_sha_refuses_to_rewrite_history(static_calendar, tmp_path: Path) -> None:
     state = tmp_path / "state"
     inputs = _fake_inputs(static_calendar)
     at = FORWARD_FIRST
@@ -291,9 +289,7 @@ def test_a_base_that_misses_the_sealed_anchors_refuses_everything(
 ) -> None:
     state = tmp_path / "state"
     inputs = _fake_inputs(static_calendar)
-    monkeypatch.setattr(
-        vrp_forward, "frozen_base_series", lambda inputs: {date(2026, 1, 1): 1.0}
-    )
+    monkeypatch.setattr(vrp_forward, "frozen_base_series", lambda inputs: {date(2026, 1, 1): 1.0})
     with pytest.raises(EmitterRefusal, match="sealed anchors"):
         load_base(inputs, state)
     assert not vrp_forward.base_r_path(state).exists()  # never written, never tuned
@@ -316,9 +312,7 @@ def test_a_pinned_base_is_reused_and_never_rewritten(
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(pinned, indent=1, sort_keys=True) + "\n")
-    monkeypatch.setattr(
-        vrp_forward, "frozen_base_series", lambda inputs: {date(2026, 1, 1): 1.0}
-    )
+    monkeypatch.setattr(vrp_forward, "frozen_base_series", lambda inputs: {date(2026, 1, 1): 1.0})
     base = load_base(inputs, state)
     assert base.series == {date(2026, 1, 5): 0.97}
     assert json.loads(path.read_text())["builder_sha256"] == "9" * 64
@@ -351,9 +345,7 @@ def _write_gate(state: Path, session: date, *, r: float, p: float, n_forward: in
     )
 
 
-def test_card_events_annotate_xe_at_t_and_xp_at_t_minus_1(
-    static_calendar, tmp_path: Path
-) -> None:
+def test_card_events_annotate_xe_at_t_and_xp_at_t_minus_1(static_calendar, tmp_path: Path) -> None:
     state = tmp_path / "state"
     t = date(2026, 11, 2)
     prev = static_calendar.sessions()[static_calendar.ordinal(t) - 1]  # 2026-10-30
@@ -381,8 +373,7 @@ def test_card_events_annotate_xe_at_t_and_xp_at_t_minus_1(
         p.write_text(json.dumps({"schema": "desk-signals/1", "xsmom": doc["xsmom"]}))
     annotate_card_events(state, static_calendar)
     lines = [
-        json.loads(line)
-        for line in vrp_forward.card_events_path(state).read_text().splitlines()
+        json.loads(line) for line in vrp_forward.card_events_path(state).read_text().splitlines()
     ]
     assert [line["name"] for line in lines] == picks
     for line in lines:
@@ -412,8 +403,7 @@ def test_card_events_annotate_xe_at_t_and_xp_at_t_minus_1(
     p.write_text(json.dumps({"xsmom": {"fires": True, "top3": ["KO"]}}))
     annotate_card_events(state, static_calendar)
     lines = [
-        json.loads(line)
-        for line in vrp_forward.card_events_path(state).read_text().splitlines()
+        json.loads(line) for line in vrp_forward.card_events_path(state).read_text().splitlines()
     ]
     last = lines[-1]
     assert last["accrual"] == "in-accrual"
@@ -475,7 +465,11 @@ def test_the_emitter_imports_nothing_that_mutates_desk_state() -> None:
         "tree_options.time.calendar",
     }
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("tree_options"):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.startswith("tree_options")
+        ):
             assert node.module in allowed, f"unexpected import {node.module}"
         elif isinstance(node, ast.Import):
             for a in node.names:
@@ -608,9 +602,7 @@ def test_frozen_base_reproduces_the_sealed_anchors_and_the_forward_tail(
     ):
         assert abs(obs[key] - sealed) <= 5.001e-4, (key, obs[key], sealed)
 
-    gates = {
-        oc.session: json.loads(gate_path(state, oc.session).read_text()) for oc in outcomes
-    }
+    gates = {oc.session: json.loads(gate_path(state, oc.session).read_text()) for oc in outcomes}
     assert all(doc["status"] == "ok" for doc in gates.values())
     rs = [gates[d]["r"] for d in sessions]
     # RT-5's pre-seal tail: the 32 sessions its features-side iv30 carried
