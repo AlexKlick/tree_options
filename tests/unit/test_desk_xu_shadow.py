@@ -40,7 +40,7 @@ def _xu_panel(
     panel: dict[str, dict[str, dict[str, Any]]] = {}
     for idx, name in enumerate(xu_shadow.XU_ROSTER):
         if name in xu_shadow.XU_DEAD_SERIES:
-            days = window[: 40]  # a dead series: ends deep inside the window
+            days = window[:40]  # a dead series: ends deep inside the window
         else:
             days = window
         series = {d.isoformat(): {"close": _close(idx, k)} for k, d in enumerate(days)}
@@ -52,9 +52,7 @@ def _xu_panel(
 
 def _live_top3() -> tuple[str, ...]:
     """The expected picks, BEST FIRST (roster index == growth rate)."""
-    return tuple(
-        n for n in reversed(xu_shadow.XU_ROSTER) if n not in xu_shadow.XU_DEAD_SERIES
-    )[:3]
+    return tuple(n for n in reversed(xu_shadow.XU_ROSTER) if n not in xu_shadow.XU_DEAD_SERIES)[:3]
 
 
 def _draft(panel, cal, session: date = REBALANCE):
@@ -106,13 +104,13 @@ def test_ranking_oracle_is_recomputed_not_trusted(static_calendar) -> None:
     )
     assert tuple(n for n, _ in scored[:3]) == _live_top3()
     text = _draft(panel, static_calendar)
-    assert text is not None and all(f"| {n} | rank {k}" in text for k, n in enumerate(_live_top3(), 1))
+    assert text is not None and all(
+        f"| {n} | rank {k}" in text for k, n in enumerate(_live_top3(), 1)
+    )
 
 
 def test_below_30_rankable_names_is_an_explicit_no_trade(static_calendar, tmp_path) -> None:
-    hole = {n for n in xu_shadow.XU_ROSTER if n not in xu_shadow.XU_DEAD_SERIES} - set(
-        _live_top3()
-    )
+    hole = {n for n in xu_shadow.XU_ROSTER if n not in xu_shadow.XU_DEAD_SERIES} - set(_live_top3())
     hole = set(sorted(hole)[:32])  # 60 live - 32 gapped = 28 < 30 rankable
     panel = _xu_panel(static_calendar, hole=hole)
     text = _draft(panel, static_calendar)

@@ -78,8 +78,7 @@ def _card_text(
         "|---|---|---|---|---|",
     ]
     lines += [
-        f"| {n} | rank 1/36, 273-session return +1.00% | 100.00 | $2,500 LONG |"
-        f" {exit_} close |"
+        f"| {n} | rank 1/36, 273-session return +1.00% | 100.00 | $2,500 LONG | {exit_} close |"
         for n in legs
     ]
     lines += ["", "## Exit policy (sealed with entry - variant xsmom-monthly)", ""]
@@ -97,9 +96,7 @@ def _card_text(
     return "\n".join(lines) + "\n"
 
 
-def _xu_card_text(
-    *, entry: str, exit_: str, legs: tuple[str, ...], panel: dict[str, Any]
-) -> str:
+def _xu_card_text(*, entry: str, exit_: str, legs: tuple[str, ...], panel: dict[str, Any]) -> str:
     """A shadow card whose entry/exit closes ARE the panel's closes."""
     lines = [
         f"# XU-SHADOW Card <N> - XSMOM-TOP3-XU monthly: {' + '.join(legs)} "
@@ -172,7 +169,9 @@ def _write_incumbent(
             )
         )
         stems.append(exit_.isoformat())
-    (paper / "appendix.md").write_text(_appendix([stems[void_after]] if void_after is not None else []))
+    (paper / "appendix.md").write_text(
+        _appendix([stems[void_after]] if void_after is not None else [])
+    )
     return stems
 
 
@@ -233,7 +232,9 @@ def _cum(rets: list[str]) -> Decimal:
 # -------------------------------------------------------------------- READ-1
 
 
-def test_positive_cumulative_closes_the_question_one_shot(paper, tmp_path, synthetic_calendar) -> None:
+def test_positive_cumulative_closes_the_question_one_shot(
+    paper, tmp_path, synthetic_calendar
+) -> None:
     state = tmp_path / "state"
     rets = [UP] * 9 + [DOWN] * 9  # +128.25 > 0
     _write_incumbent(paper, synthetic_calendar, rets)
@@ -247,9 +248,10 @@ def test_positive_cumulative_closes_the_question_one_shot(paper, tmp_path, synth
     marker = _marker(state)
     assert marker["read1_disappointment"] is False
     assert marker["successor_passes"] is None
-    assert marker["report_sha256"] == hashlib.sha256(
-        (state / "xu-successor" / xr.REPORT_NAME).read_bytes()
-    ).hexdigest()
+    assert (
+        marker["report_sha256"]
+        == hashlib.sha256((state / "xu-successor" / xr.REPORT_NAME).read_bytes()).hexdigest()
+    )
     # exactly the two artifacts, and a second run refuses with nothing new
     before = sorted(p.name for p in (state / "xu-successor").iterdir())
     assert before == sorted([xr.MARKER_NAME, xr.REPORT_NAME])
@@ -308,12 +310,12 @@ def test_fewer_than_18_valid_cards_is_premature_not_consumed(
     assert "NO DISAPPOINTMENT" in _report(state)
 
 
-def test_voided_card_is_excluded_and_logged_never_silent(paper, tmp_path, synthetic_calendar) -> None:
+def test_voided_card_is_excluded_and_logged_never_silent(
+    paper, tmp_path, synthetic_calendar
+) -> None:
     state = tmp_path / "state"
     # 19 sealed, the 10th (a DOWN) voided: the 18 valid are 9 UP + 9 DOWN = +71.25
-    stems = _write_incumbent(
-        paper, synthetic_calendar, [UP] * 9 + [DOWN] * 10, void_after=9
-    )
+    stems = _write_incumbent(paper, synthetic_calendar, [UP] * 9 + [DOWN] * 10, void_after=9)
 
     assert _run(paper, state, synthetic_calendar) == 0
 
@@ -358,8 +360,12 @@ def test_placebo_and_bars_are_seed_deterministic(paper, tmp_path, synthetic_cale
     cards, voids = xr.load_incumbent_series(paper, paper / "appendix.md")
     r1 = xr.read1(cards, voids)
 
-    first = xr.evaluate_shadow(paper, panel, synthetic_calendar, r1["cards"], random.Random(xr.SEED))
-    second = xr.evaluate_shadow(paper, panel, synthetic_calendar, r1["cards"], random.Random(xr.SEED))
+    first = xr.evaluate_shadow(
+        paper, panel, synthetic_calendar, r1["cards"], random.Random(xr.SEED)
+    )
+    second = xr.evaluate_shadow(
+        paper, panel, synthetic_calendar, r1["cards"], random.Random(xr.SEED)
+    )
 
     assert first == second  # byte-for-byte identical evaluation state
 
@@ -375,7 +381,10 @@ def test_aa_twin_failure_fails_the_successor_verdict(paper, tmp_path, synthetic_
     # friends are not on the XU roster; ABBV/ABT/ACN are, and never rank top-3)
     bad.write_text(
         _xu_card_text(
-            entry=entry.isoformat(), exit_=exit_.isoformat(), legs=("ABBV", "ABT", "ACN"), panel=panel
+            entry=entry.isoformat(),
+            exit_=exit_.isoformat(),
+            legs=("ABBV", "ABT", "ACN"),
+            panel=panel,
         )
     )
 
@@ -404,7 +413,9 @@ def test_shadow_void_refusal_and_open_rows_are_logged(paper, tmp_path, synthetic
                 )
             )
             detail = "ENGINE-DEFECT: fixture" if status == "void" else "NO-TRADE: fixture"
-            fh.write(f"| {exit_.isoformat()} | {exit_.isoformat()}-xsmom-top3-xu.md | {'b' * 64} | {status} | {detail} |\n")
+            fh.write(
+                f"| {exit_.isoformat()} | {exit_.isoformat()}-xsmom-top3-xu.md | {'b' * 64} | {status} | {detail} |\n"
+            )
 
     assert _run(paper, state, synthetic_calendar) == 0
 

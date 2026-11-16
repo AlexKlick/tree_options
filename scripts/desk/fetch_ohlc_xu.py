@@ -63,17 +63,70 @@ from typing import Any
 # Derived 2026-11-16 from ohlc-panel-xu.json at sha256 3753dcb8…036c0a5a
 # (XU-SUCCESSOR-001 §4.1 pins those exact bytes). Never re-derived at runtime.
 XU_ROSTER: tuple[str, ...] = (
-    "ABBV", "ABT", "ACN", "ADI", "AMGN", "APO", "AXP", "BA", "BK", "BLK",
-    "BMY", "BRK.B", "C", "CAT", "CME", "COF", "COP", "CVX", "DD", "DE",
-    "DHR", "DOW", "EMR", "F", "FCX", "GE", "GILD", "GM", "HON", "ICE",
-    "ISRG", "JNJ", "KHC", "KKR", "LIN", "LMT", "MCD", "MDLZ", "MMM", "MO",
-    "MRK", "MU", "NKE", "NUE", "PFE", "PLD", "PNC", "RTX", "SBUX", "SCHW",
-    "SPG", "SYK", "T", "TGT", "TMO", "TXN", "UNP", "USB", "VZ", "WBA",
-    "WFC", "WMT",
+    "ABBV",
+    "ABT",
+    "ACN",
+    "ADI",
+    "AMGN",
+    "APO",
+    "AXP",
+    "BA",
+    "BK",
+    "BLK",
+    "BMY",
+    "BRK.B",
+    "C",
+    "CAT",
+    "CME",
+    "COF",
+    "COP",
+    "CVX",
+    "DD",
+    "DE",
+    "DHR",
+    "DOW",
+    "EMR",
+    "F",
+    "FCX",
+    "GE",
+    "GILD",
+    "GM",
+    "HON",
+    "ICE",
+    "ISRG",
+    "JNJ",
+    "KHC",
+    "KKR",
+    "LIN",
+    "LMT",
+    "MCD",
+    "MDLZ",
+    "MMM",
+    "MO",
+    "MRK",
+    "MU",
+    "NKE",
+    "NUE",
+    "PFE",
+    "PLD",
+    "PNC",
+    "RTX",
+    "SBUX",
+    "SCHW",
+    "SPG",
+    "SYK",
+    "T",
+    "TGT",
+    "TMO",
+    "TXN",
+    "UNP",
+    "USB",
+    "VZ",
+    "WBA",
+    "WFC",
+    "WMT",
 )
-XU_PANEL_SHA256_FROZEN = (
-    "3753dcb862eafd67cb9635116b5cb66ed056891dd8251cb4c73ad25a036c0a5a"
-)
+XU_PANEL_SHA256_FROZEN = "3753dcb862eafd67cb9635116b5cb66ed056891dd8251cb4c73ad25a036c0a5a"
 
 # Vendor symbol remap (panel name -> vendor ticker). EMPTY: the 2026-11-16
 # probe found no remap for the truncated names (see module docstring). An
@@ -133,9 +186,7 @@ def _row_to_bar(row: dict, where: str) -> tuple[str, dict[str, Any]]:
     missing = [k for k in ("o", "h", "l", "c", "v") if row.get(k) is None]
     if missing:
         raise ValueError(f"{where}: row missing {','.join(missing)}: {row!r}")
-    session = (
-        dt.datetime.fromtimestamp(row["t"] / 1000, tz=dt.UTC).date().isoformat()
-    )
+    session = dt.datetime.fromtimestamp(row["t"] / 1000, tz=dt.UTC).date().isoformat()
     volume = row["v"]
     if isinstance(volume, Decimal):
         if volume < 0:
@@ -259,7 +310,12 @@ def extend(
         for name in XU_ROSTER:
             series = stored.get(name, {})
             overlap = sorted(d for d in series if d < target)[-REBASE_OVERLAP:]
-            bars = fetch_range(client, SYMBOL_MAP.get(name, name), overlap[0] if overlap else BACKFILL_START, target)
+            bars = fetch_range(
+                client,
+                SYMBOL_MAP.get(name, name),
+                overlap[0] if overlap else BACKFILL_START,
+                target,
+            )
             req += 1
             if adjustment_moved(series, bars, overlap) or name in SYMBOL_MAP:
                 # a moved adjustment (or a pinned remap) re-fetches the whole

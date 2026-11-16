@@ -99,7 +99,9 @@ _LEDGER_ROW = re.compile(
     r"^\| (?P<exit>\d{4}-\d{2}-\d{2}) \| (?P<card>[^|]+) \| (?P<sha>[0-9a-f]{6,64}) "
     r"\| (?P<status>\w+) \|(?P<detail>[^|]*)\|"
 )
-_APPENDIX_ROW = re.compile(r"^\| (?P<when>[^|]+) \| (?P<card>[^|]+) \| (?P<event>[^|]+) \|(?P<cls>[^|]*)\|")
+_APPENDIX_ROW = re.compile(
+    r"^\| (?P<when>[^|]+) \| (?P<card>[^|]+) \| (?P<event>[^|]+) \|(?P<cls>[^|]*)\|"
+)
 
 
 class ReadContractError(RuntimeError):
@@ -178,7 +180,9 @@ def parse_card(path: Path, *, require_resolution: bool = True) -> Card:
             if rm and rm.group("name") in legs:
                 fills[rm.group("name")] = Decimal(rm.group("fill"))
     if set(entries) != set(legs):
-        raise ReadContractError(f"{path.name}: missing entry rows for {sorted(set(legs) - set(entries))}")
+        raise ReadContractError(
+            f"{path.name}: missing entry rows for {sorted(set(legs) - set(entries))}"
+        )
     for name, entry in entries.items():
         if entry <= 0 or (fills.get(name, Decimal(1)) <= 0):
             raise ReadContractError(f"{path.name}: non-positive price for {name}")
@@ -187,8 +191,11 @@ def parse_card(path: Path, *, require_resolution: bool = True) -> Card:
             raise ReadContractError(f"{path.name}: no resolved fills for every leg")
         fills = {}
     return Card(
-        path=path, entry=m.group("entry"), exit=m.group("exit"),
-        legs=tuple((n, entries[n]) for n in legs), exit_closes=fills,
+        path=path,
+        entry=m.group("entry"),
+        exit=m.group("exit"),
+        legs=tuple((n, entries[n]) for n in legs),
+        exit_closes=fills,
         resolved=bool(fills),
     )
 
@@ -247,7 +254,7 @@ def read1(cards: list[Card], voids: list[dict[str, str]]) -> dict[str, Any] | No
             continue
         if not card.resolved:
             open_cards.append(card.exit)  # sealed but still open: not yet a
-            continue                      # resolved card of record; it waits
+            continue  # resolved card of record; it waits
         valid.append(card)
         if len(valid) == READ1_N_CARDS:
             break
@@ -308,7 +315,9 @@ def _rankable(card: Card) -> tuple[str, ...]:
         excluded = set(re.findall(r"([A-Z.]+) \([a-z_/]+\)", m.group("names")))
     unknown = excluded - set(xu_shadow.XU_ROSTER)
     if unknown:
-        raise ReadContractError(f"{card.path.name}: excluded names not on the roster: {sorted(unknown)}")
+        raise ReadContractError(
+            f"{card.path.name}: excluded names not on the roster: {sorted(unknown)}"
+        )
     return tuple(n for n in xu_shadow.XU_ROSTER if n not in excluded)
 
 
@@ -440,7 +449,10 @@ def evaluate_shadow(
     bars["no_dropped_month_flips"] = dropped_ok
     detail["dropped_month_worst"] = (
         min(
-            (sum(v for k, v in enumerate(nets) if k != i) / (len(nets) - 1) for i in range(len(nets))),
+            (
+                sum(v for k, v in enumerate(nets) if k != i) / (len(nets) - 1)
+                for i in range(len(nets))
+            ),
             default=0.0,
         )
         if len(nets) > 1
@@ -480,7 +492,9 @@ def _fmt(x: Decimal | float) -> str:
 
 
 def build_report(
-    inputs: dict[str, str], r1: dict[str, Any] | None, evaluation: dict[str, Any] | None,
+    inputs: dict[str, str],
+    r1: dict[str, Any] | None,
+    evaluation: dict[str, Any] | None,
     generated_at: datetime,
 ) -> str:
     lines = [
@@ -592,7 +606,9 @@ def main(
 ) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--paper", default=None, help="paper-trades dir (default: DESK_PAPER_DIR)")
-    ap.add_argument("--appendix", default=None, help="XU-SUCCESSOR-001.md (voids live in Appendix A)")
+    ap.add_argument(
+        "--appendix", default=None, help="XU-SUCCESSOR-001.md (voids live in Appendix A)"
+    )
     ap.add_argument("--state", default=None, help="state root (default: TREX_DESK_STATE)")
     args = ap.parse_args(argv)
 

@@ -42,18 +42,71 @@ from tree_options.desk.store import atomic_write_bytes
 # sha256 3753dcb8…036c0a5a. The roster is DATA (§5), not a rule: no new
 # direction signal enters signals.py because of it.
 XU_ROSTER: tuple[str, ...] = (
-    "ABBV", "ABT", "ACN", "ADI", "AMGN", "APO", "AXP", "BA", "BK", "BLK",
-    "BMY", "BRK.B", "C", "CAT", "CME", "COF", "COP", "CVX", "DD", "DE",
-    "DHR", "DOW", "EMR", "F", "FCX", "GE", "GILD", "GM", "HON", "ICE",
-    "ISRG", "JNJ", "KHC", "KKR", "LIN", "LMT", "MCD", "MDLZ", "MMM", "MO",
-    "MRK", "MU", "NKE", "NUE", "PFE", "PLD", "PNC", "RTX", "SBUX", "SCHW",
-    "SPG", "SYK", "T", "TGT", "TMO", "TXN", "UNP", "USB", "VZ", "WBA",
-    "WFC", "WMT",
+    "ABBV",
+    "ABT",
+    "ACN",
+    "ADI",
+    "AMGN",
+    "APO",
+    "AXP",
+    "BA",
+    "BK",
+    "BLK",
+    "BMY",
+    "BRK.B",
+    "C",
+    "CAT",
+    "CME",
+    "COF",
+    "COP",
+    "CVX",
+    "DD",
+    "DE",
+    "DHR",
+    "DOW",
+    "EMR",
+    "F",
+    "FCX",
+    "GE",
+    "GILD",
+    "GM",
+    "HON",
+    "ICE",
+    "ISRG",
+    "JNJ",
+    "KHC",
+    "KKR",
+    "LIN",
+    "LMT",
+    "MCD",
+    "MDLZ",
+    "MMM",
+    "MO",
+    "MRK",
+    "MU",
+    "NKE",
+    "NUE",
+    "PFE",
+    "PLD",
+    "PNC",
+    "RTX",
+    "SBUX",
+    "SCHW",
+    "SPG",
+    "SYK",
+    "T",
+    "TGT",
+    "TMO",
+    "TXN",
+    "UNP",
+    "USB",
+    "VZ",
+    "WBA",
+    "WFC",
+    "WMT",
 )
 XU_ROSTER_N = len(XU_ROSTER)
-XU_PANEL_SHA256_FROZEN = (
-    "3753dcb862eafd67cb9635116b5cb66ed056891dd8251cb4c73ad25a036c0a5a"
-)
+XU_PANEL_SHA256_FROZEN = "3753dcb862eafd67cb9635116b5cb66ed056891dd8251cb4c73ad25a036c0a5a"
 XU_PANEL_NAME = "ohlc-panel-xu.json"
 
 # Dead series: delisted inside the window and KEPT on the roster (the
@@ -100,9 +153,7 @@ def _pct(x: Decimal) -> str:
 
 def _exit_label(exit_session: date | None) -> str:
     if exit_session is None:
-        return (
-            f"session+{signals.HOLD_SESSIONS} (beyond the calendar horizon: fix before sealing)"
-        )
+        return f"session+{signals.HOLD_SESSIONS} (beyond the calendar horizon: fix before sealing)"
     return exit_session.isoformat()
 
 

@@ -22,17 +22,70 @@ from scripts.desk import fetch_ohlc_xu as fx
 # The frozen 62-name roster, INDEPENDENTLY written out (derived from
 # ohlc-panel-xu.json at sha256 3753dcb8…036c0a5a — XU-SUCCESSOR-001 §4.1).
 EXPECTED_ROSTER = (
-    "ABBV", "ABT", "ACN", "ADI", "AMGN", "APO", "AXP", "BA", "BK", "BLK",
-    "BMY", "BRK.B", "C", "CAT", "CME", "COF", "COP", "CVX", "DD", "DE",
-    "DHR", "DOW", "EMR", "F", "FCX", "GE", "GILD", "GM", "HON", "ICE",
-    "ISRG", "JNJ", "KHC", "KKR", "LIN", "LMT", "MCD", "MDLZ", "MMM", "MO",
-    "MRK", "MU", "NKE", "NUE", "PFE", "PLD", "PNC", "RTX", "SBUX", "SCHW",
-    "SPG", "SYK", "T", "TGT", "TMO", "TXN", "UNP", "USB", "VZ", "WBA",
-    "WFC", "WMT",
+    "ABBV",
+    "ABT",
+    "ACN",
+    "ADI",
+    "AMGN",
+    "APO",
+    "AXP",
+    "BA",
+    "BK",
+    "BLK",
+    "BMY",
+    "BRK.B",
+    "C",
+    "CAT",
+    "CME",
+    "COF",
+    "COP",
+    "CVX",
+    "DD",
+    "DE",
+    "DHR",
+    "DOW",
+    "EMR",
+    "F",
+    "FCX",
+    "GE",
+    "GILD",
+    "GM",
+    "HON",
+    "ICE",
+    "ISRG",
+    "JNJ",
+    "KHC",
+    "KKR",
+    "LIN",
+    "LMT",
+    "MCD",
+    "MDLZ",
+    "MMM",
+    "MO",
+    "MRK",
+    "MU",
+    "NKE",
+    "NUE",
+    "PFE",
+    "PLD",
+    "PNC",
+    "RTX",
+    "SBUX",
+    "SCHW",
+    "SPG",
+    "SYK",
+    "T",
+    "TGT",
+    "TMO",
+    "TXN",
+    "UNP",
+    "USB",
+    "VZ",
+    "WBA",
+    "WFC",
+    "WMT",
 )
-EXPECTED_PANEL_SHA256 = (
-    "3753dcb862eafd67cb9635116b5cb66ed056891dd8251cb4c73ad25a036c0a5a"
-)
+EXPECTED_PANEL_SHA256 = "3753dcb862eafd67cb9635116b5cb66ed056891dd8251cb4c73ad25a036c0a5a"
 
 D = "2026-11-13"  # the extend target session
 PREV = "2026-11-12"
@@ -227,7 +280,9 @@ def test_500_cap_head_chase_merges_the_head_range(paper: Path) -> None:
             return _body(_bar("2024-06-16", "98.00"), _bar("2024-12-30", "98.00"))
         # exactly 500 capped rows, oldest (2025-01-01) far newer than the
         # requested start (2024-06-16): the vendor dropped the head
-        days = [f"{y}-{m:02d}-{d:02d}" for y in (2025, 2026) for m in range(1, 13) for d in range(1, 29)]
+        days = [
+            f"{y}-{m:02d}-{d:02d}" for y in (2025, 2026) for m in range(1, 13) for d in range(1, 29)
+        ]
         return _body(*(_bar(d) for d in days[:500]), _bar(D))
 
     # ABBV's stored series is stale (ends 2024-06): its overlap range spans
