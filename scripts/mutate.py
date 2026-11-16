@@ -9372,6 +9372,66 @@ MUTANTS.extend(
     ]
 )
 
+# SQQQ-HEDGE-001 deterministic twin generator (lane L2, 2026-11-16). The
+# owning selectors are tests/unit/test_desk_sqqq_twin.py; each anchor is the
+# exact sealed-rule line it guards (docs/desk/SQQQ-HEDGE-001.md L46-57).
+MUTANTS.extend(
+    [
+        dict(
+            id="SQ-M1-beta-cap-boundary",
+            owner="test_panel_beta_above_three_clamps_exactly",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="h = min(max(b, 0.0), BETA_CAP) / BETA_CAP * BOOK_NOTIONAL",
+            replacement=(
+                "h = min(max(b, 0.0), BETA_CAP + 0.1) / BETA_CAP * BOOK_NOTIONAL"
+            ),
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "h_notional = min(max(beta_hat,0),3)/3 x $7,500 — the cap binds "
+                "at exactly beta 3.0, never 3.1 (prereg L52)"
+            ),
+        ),
+        dict(
+            id="SQ-M2-beta-window-off-by-one",
+            owner="test_window_is_the_sixty_sessions_before_entry",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="window = [s for s in cal if s < entry_date][-window_sessions:]",
+            replacement=(
+                "window = [s for s in cal if s < entry_date][-(window_sessions - 1):]"
+            ),
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "beta_hat uses exactly the 60 sessions ending the session BEFORE "
+                "entry (59 in-window close pairs, no anchor) — prereg L47-51"
+            ),
+        ),
+        dict(
+            id="SQ-M3-round-trip-cost-side",
+            owner="test_round_trip_cost_is_five_bp_on_h_notional",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="twin_total = round(unhedged_net + sqqq_leg - hedge_cost, 2)",
+            replacement="twin_total = round(unhedged_net + sqqq_leg + hedge_cost, 2)",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "twin = unhedged net + SQQQ leg MINUS 5bp RT on h_notional — a "
+                "cost is subtracted, never credited (prereg L55-57)"
+            ),
+        ),
+        dict(
+            id="SQ-M4-ledger-overwrite",
+            owner="test_ledger_append_never_overwrites",
+            file="scripts/desk/sqqq_twin.py",
+            anchor='ledger_path.open("a", encoding="utf-8")',
+            replacement='ledger_path.open("w", encoding="utf-8")',
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "the twin ledger is append-only: a new twin row never truncates "
+                "prior rows, the header, or the regime marker"
+            ),
+        ),
+    ]
+)
+
 
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
