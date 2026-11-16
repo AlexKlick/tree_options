@@ -9526,6 +9526,70 @@ MUTANTS.extend(
             replacement=("    if False:\n        raise EmitterRefusal("),
             selectors=["tests/unit/test_desk_vrp_forward.py"],
             invariant="a frozen base that misses the sealed anchors refuses everything (never tune to fit)",
+        )
+    ]
+)
+# TSMOM-SHIELD-001 report-only overlay (docs/desk/TSMOM-SHIELD-001.md, sealed
+# 2026-11-14): the DEF rule's stricter hole guard, the sign rule, the size
+# mapping and the digest cadence boundary.
+_TS = "src/tree_options/desk/"
+_TS_T = "tests/unit/test_desk_tsmom_overlay.py::"
+
+MUTANTS.extend(
+    [
+        dict(
+            id="TS-M1-hole-guard-dropped",
+            owner="test_hole_guard_missing_any_window_session_is_unknown",
+            file=_TS + "tsmom_overlay.py",
+            anchor="if missing:",
+            replacement="if False:",
+            selectors=[
+                _TS_T + "TestDefRule::test_hole_guard_missing_any_window_session_is_unknown"
+            ],
+            invariant=(
+                "TSMOM-SHIELD-001 stricter hole guard: a name missing ANY session of the "
+                "61-session window [t-60, t] is UNKNOWN and keeps size 1.0 (never punitive, "
+                "never silent)"
+            ),
+        ),
+        dict(
+            id="TS-M2-def-sign-inverted",
+            owner="test_sign_rule_and_size_mapping",
+            file=_TS + "tsmom_overlay.py",
+            anchor="sign = (ret > 0) - (ret < 0)",
+            replacement="sign = (ret < 0) - (ret > 0)",
+            selectors=[_TS_T + "TestDefRule::test_sign_rule_and_size_mapping"],
+            invariant=(
+                "TSMOM-SHIELD-001 DEF = sign(close_N(t)/close_N(t-60) - 1): defensive ON is "
+                "DEF < 0, the inverted twin is the preregistered placebo sign check"
+            ),
+        ),
+        dict(
+            id="TS-M3-size-mapping-swapped",
+            owner="test_sign_rule_and_size_mapping",
+            file=_TS + "tsmom_overlay.py",
+            anchor="return DEF_HALF if def_ == -1 else DEF_FULL",
+            replacement="return DEF_FULL if def_ == -1 else DEF_HALF",
+            selectors=[
+                _TS_T + "TestDefRule::test_sign_rule_and_size_mapping",
+                _TS_T + "TestWriter::test_falling_name_gets_half_size_entry",
+            ],
+            invariant=(
+                "TSMOM-SHIELD-001 would-be sizes in {1.0, 0.5} only, half ONLY on DEF < 0 "
+                "(monotone-reduce-only; DEF == 0 and UNKNOWN keep the bare size)"
+            ),
+        ),
+        dict(
+            id="TS-M4-digest-cadence-boundary",
+            owner="test_digest_at_every_tenth_entry_only",
+            file=_TS + "tsmom_overlay.py",
+            anchor="range(DIGEST_EVERY, total + 1, DIGEST_EVERY)",
+            replacement="range(DIGEST_EVERY, total, DIGEST_EVERY)",
+            selectors=[_TS_T + "TestDigest::test_digest_at_every_tenth_entry_only"],
+            invariant=(
+                "TSMOM-SHIELD-001 interim report-only digest at every 10th ENTRY inclusive "
+                "(the prereg pins the card unit as the ENTRY and rejects the sealed-DOC reading)"
+            ),
         ),
     ]
 )
