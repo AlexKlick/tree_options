@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import itertools
 import json
 import math
 import random
@@ -37,32 +38,106 @@ _spec.loader.exec_module(sqqq)
 # beta window is SESSIONS[10:70] (2026-08-07..2026-10-30 — the real panel's
 # own Card-8 window) and SESSIONS[9] is the pre-window anchor session.
 SESSIONS = [
-    "2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31",
-    "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07",
-    "2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14",
-    "2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21",
-    "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28",
-    "2026-08-31", "2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04",
-    "2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11",
-    "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18",
-    "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25",
-    "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02",
-    "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09",
-    "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16",
-    "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23",
-    "2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30",
-    "2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06",
-    "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13",
-    "2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20",
-    "2026-11-23", "2026-11-24", "2026-11-25", "2026-11-26", "2026-11-27",
-    "2026-11-30", "2026-12-01",
+    "2026-07-27",
+    "2026-07-28",
+    "2026-07-29",
+    "2026-07-30",
+    "2026-07-31",
+    "2026-08-03",
+    "2026-08-04",
+    "2026-08-05",
+    "2026-08-06",
+    "2026-08-07",
+    "2026-08-10",
+    "2026-08-11",
+    "2026-08-12",
+    "2026-08-13",
+    "2026-08-14",
+    "2026-08-17",
+    "2026-08-18",
+    "2026-08-19",
+    "2026-08-20",
+    "2026-08-21",
+    "2026-08-24",
+    "2026-08-25",
+    "2026-08-26",
+    "2026-08-27",
+    "2026-08-28",
+    "2026-08-31",
+    "2026-09-01",
+    "2026-09-02",
+    "2026-09-03",
+    "2026-09-04",
+    "2026-09-07",
+    "2026-09-08",
+    "2026-09-09",
+    "2026-09-10",
+    "2026-09-11",
+    "2026-09-14",
+    "2026-09-15",
+    "2026-09-16",
+    "2026-09-17",
+    "2026-09-18",
+    "2026-09-21",
+    "2026-09-22",
+    "2026-09-23",
+    "2026-09-24",
+    "2026-09-25",
+    "2026-09-28",
+    "2026-09-29",
+    "2026-09-30",
+    "2026-10-01",
+    "2026-10-02",
+    "2026-10-05",
+    "2026-10-06",
+    "2026-10-07",
+    "2026-10-08",
+    "2026-10-09",
+    "2026-10-12",
+    "2026-10-13",
+    "2026-10-14",
+    "2026-10-15",
+    "2026-10-16",
+    "2026-10-19",
+    "2026-10-20",
+    "2026-10-21",
+    "2026-10-22",
+    "2026-10-23",
+    "2026-10-26",
+    "2026-10-27",
+    "2026-10-28",
+    "2026-10-29",
+    "2026-10-30",
+    "2026-11-02",
+    "2026-11-03",
+    "2026-11-04",
+    "2026-11-05",
+    "2026-11-06",
+    "2026-11-09",
+    "2026-11-10",
+    "2026-11-11",
+    "2026-11-12",
+    "2026-11-13",
+    "2026-11-16",
+    "2026-11-17",
+    "2026-11-18",
+    "2026-11-19",
+    "2026-11-20",
+    "2026-11-23",
+    "2026-11-24",
+    "2026-11-25",
+    "2026-11-26",
+    "2026-11-27",
+    "2026-11-30",
+    "2026-12-01",
 ]
 ENTRY, EXIT = "2026-11-02", "2026-12-01"
 WINDOW = SESSIONS[10:70]
 ANCHOR = SESSIONS[9]
 CARD_FILE = "2026-12-01-xsmom-top3.md"
 SEALED_CARD_SHA = "c70acd6883b8b27f89436154f1f080a52143b4911d31b7dbe3408bc070eb1891"
-REGIME_TOKENS = ("−1.10%", "+0.78%", "+0.03%")
+# the sealed regime table's minus signs are U+2212 (the artifact bytes carry them)
+REGIME_TOKENS = ("−1.10%", "+0.78%", "+0.03%")  # noqa: RUF001 — sealed regime-table bytes (U+2212)
 
 CARD_TEXT = f"""# Card 8 - XSMOM-TOP3 monthly: AMD + LLY + INTC (entry {ENTRY} close -> exit {EXIT} close)
 
@@ -137,13 +212,10 @@ def oracle_slope(panel, names, window):
     """numpy slope of the EW basket's daily simple returns on QQQ's, over the
     consecutive in-window pairs (the test's own pairing, not the module's)."""
     xs, ys = [], []
-    for a, b in zip(window, window[1:]):
+    for a, b in itertools.pairwise(window):
         xs.append(float(panel["QQQ"][b]["close"]) / float(panel["QQQ"][a]["close"]) - 1)
         ys.append(
-            sum(
-                float(panel[n][b]["close"]) / float(panel[n][a]["close"]) - 1
-                for n in names
-            )
+            sum(float(panel[n][b]["close"]) / float(panel[n][a]["close"]) - 1 for n in names)
             / len(names)
         )
     return float(np.polyfit(np.array(xs), np.array(ys), 1)[0]), len(xs)
@@ -155,10 +227,7 @@ def make_paper_tree(tmp_path: Path, panel: dict, *, with_exit: bool = True) -> P
     paper = tmp_path / "paper-trades"
     paper.mkdir()
     if not with_exit:
-        panel = {
-            n: {s: bar for s, bar in rows.items() if s < EXIT}
-            for n, rows in panel.items()
-        }
+        panel = {n: {s: bar for s, bar in rows.items() if s < EXIT} for n, rows in panel.items()}
     (paper / "ohlc-panel.json").write_text(json.dumps(panel))
     (paper / "ohlc-panel.json.lock").write_text("")  # the panel reader's lock
     (paper / CARD_FILE).write_text(CARD_TEXT)
@@ -195,8 +264,10 @@ def run_generate(paper: Path, *, write: bool = True) -> int:
 
 def run_resolve(paper: Path, *, write: bool = True) -> int:
     argv = [
-        "--entry-card", str(paper / CARD_FILE),
-        "--paper-dir", str(paper),
+        "--entry-card",
+        str(paper / CARD_FILE),
+        "--paper-dir",
+        str(paper),
         "--resolve",
     ]
     if write:
@@ -230,9 +301,11 @@ class TestCardParsing:
         patch_card_pin(monkeypatch)
         spec = sqqq.parse_card(CARD_TEXT, "2026-12-01-xsmom-top3.md")
         assert spec.entry_date == ENTRY and spec.exit_date == EXIT
-        assert spec.legs == (("AMD", 466.84, 2500.0),
-                             ("LLY", 1410.99, 2500.0),
-                             ("INTC", 59.97, 2500.0))
+        assert spec.legs == (
+            ("AMD", 466.84, 2500.0),
+            ("LLY", 1410.99, 2500.0),
+            ("INTC", 59.97, 2500.0),
+        )
 
     def test_tampered_price_refused(self, monkeypatch) -> None:
         patch_card_pin(monkeypatch)
@@ -291,9 +364,7 @@ class TestBetaHat:
     def test_missing_pre_window_session_keeps_the_name(self) -> None:
         """The anchor session is OUTSIDE the window: a name without it still
         has a full window (an anchored implementation would drop it)."""
-        panel = build_panel(
-            loading=2.0, skip_sessions={"AMD": (ANCHOR,)}
-        )
+        panel = build_panel(loading=2.0, skip_sessions={"AMD": (ANCHOR,)})
         res = sqqq.beta_hat(panel, ("AMD", "LLY", "INTC"), ENTRY)
         assert res.full_names == ("AMD", "LLY", "INTC")
         assert res.partial_names == ()
@@ -305,8 +376,11 @@ class TestBetaHat:
         before = sqqq.beta_hat(panel, ("AMD", "LLY", "INTC"), ENTRY)
         poisoned = {
             n: {
-                s: ({"open": "9", "high": "9", "low": "9", "close": "9", "volume": "9"}
-                    if s >= ENTRY else bar)
+                s: (
+                    {"open": "9", "high": "9", "low": "9", "close": "9", "volume": "9"}
+                    if s >= ENTRY
+                    else bar
+                )
                 for s, bar in rows.items()
             }
             for n, rows in panel.items()
@@ -330,9 +404,7 @@ class TestBetaHat:
         assert sqqq.hedge_notional(0.0) == 0.0
 
     def test_two_of_three_full_windows(self) -> None:
-        panel = build_panel(
-            loading=2.0, skip_sessions={"AMD": (WINDOW[30],)}
-        )
+        panel = build_panel(loading=2.0, skip_sessions={"AMD": (WINDOW[30],)})
         res = sqqq.beta_hat(panel, ("AMD", "LLY", "INTC"), ENTRY)
         assert res.full_names == ("LLY", "INTC")
         assert res.partial_names == ("AMD",)
@@ -401,9 +473,7 @@ class TestGenerate:
         with pytest.raises(sqqq.Refusal, match="already exists"):
             run_generate(paper)
 
-    def test_card_sha_mismatch_refused_and_writes_nothing(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_card_sha_mismatch_refused_and_writes_nothing(self, tmp_path, monkeypatch) -> None:
         paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
         # NO pin patch: the module keeps the real sealed pin, the tmp card's
         # sha differs -> refuse before any write
@@ -434,8 +504,7 @@ class TestGenerate:
         twins = paper / "sqqq-twins"
         twins.mkdir()
         (twins / "LEDGER.md").write_text(
-            "# SQQQ-HEDGE-001 twin ledger — prior content marker\n\n"
-            "prior-content-marker 0f1d2e3c\n"
+            "# SQQQ-HEDGE-001 twin ledger — prior content marker\n\nprior-content-marker 0f1d2e3c\n"
         )
         patch_card_pin(monkeypatch)
         assert run_generate(paper) == 0
@@ -453,8 +522,11 @@ class TestGenerate:
         assert run_generate(paper) == 0
         twin = (paper / "sqqq-twins" / "2026-12-01-sqqq-twin.md").read_text()
         assert "$0.00" in twin and "NO HEDGE" in twin
-        row = [ln for ln in (paper / "sqqq-twins" / "LEDGER.md").read_text().splitlines()
-               if ln.startswith("| #1 |")]
+        row = [
+            ln
+            for ln in (paper / "sqqq-twins" / "LEDGER.md").read_text().splitlines()
+            if ln.startswith("| #1 |")
+        ]
         assert row and "$0.00" in row[0]
 
 
@@ -497,13 +569,14 @@ class TestResolve:
         twin_total = round(unhedged_net + sqqq_leg - hedge_cost, 2)
         assert f"{twin_total:+,.2f}" in text
         assert f"{hedge_cost:,.2f}" in text and f"{card_rt:,.2f}" in text
-        row = [ln for ln in (paper / "sqqq-twins" / "LEDGER.md").read_text().splitlines()
-               if ln.startswith("| #1 |")]
+        row = [
+            ln
+            for ln in (paper / "sqqq-twins" / "LEDGER.md").read_text().splitlines()
+            if ln.startswith("| #1 |")
+        ]
         assert row and "RESOLVED" in row[0] and f"{twin_total:+,.2f}" in row[0]
 
-    def test_round_trip_cost_is_five_bp_on_h_notional(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_round_trip_cost_is_five_bp_on_h_notional(self, tmp_path, monkeypatch) -> None:
         paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
         patch_card_pin(monkeypatch)
         assert run_generate(paper) == 0
@@ -512,12 +585,10 @@ class TestResolve:
         h = float(
             re.search(r"\| h_notional \| \$([\d,]+\.\d{2}) \|", text).group(1).replace(",", "")
         )
-        m = re.search(r"hedge 5bp RT on h_notional: −\$([\d,]+\.\d{2})", text)
+        m = re.search(r"hedge 5bp RT on h_notional: −\$([\d,]+\.\d{2})", text)  # noqa: RUF001
         assert m and math.isclose(float(m.group(1)), h * 0.0005, abs_tol=0.005)
 
-    def test_resolve_uses_the_sealed_h_not_the_recomputed_beta(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_resolve_uses_the_sealed_h_not_the_recomputed_beta(self, tmp_path, monkeypatch) -> None:
         panel = build_panel(loading=2.0, seed=5)
         paper = make_paper_tree(tmp_path, panel)
         patch_card_pin(monkeypatch)
@@ -550,7 +621,7 @@ class TestResolve:
     def test_resolve_refused_without_generation(self, tmp_path, monkeypatch) -> None:
         paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
         patch_card_pin(monkeypatch)
-        with pytest.raises(sqqq.Refusal, match="2026-12-01-sqqq-twin.md"):
+        with pytest.raises(sqqq.Refusal, match=r"2026-12-01-sqqq-twin\.md"):
             run_resolve(paper)
 
     def test_card_sha_reverified_at_resolve(self, tmp_path, monkeypatch) -> None:

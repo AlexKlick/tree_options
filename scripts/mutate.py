@@ -9382,9 +9382,7 @@ MUTANTS.extend(
             owner="test_panel_beta_above_three_clamps_exactly",
             file="scripts/desk/sqqq_twin.py",
             anchor="h = min(max(b, 0.0), BETA_CAP) / BETA_CAP * BOOK_NOTIONAL",
-            replacement=(
-                "h = min(max(b, 0.0), BETA_CAP + 0.1) / BETA_CAP * BOOK_NOTIONAL"
-            ),
+            replacement=("h = min(max(b, 0.0), BETA_CAP + 0.1) / BETA_CAP * BOOK_NOTIONAL"),
             selectors=[f"{U}/test_desk_sqqq_twin.py"],
             invariant=(
                 "h_notional = min(max(beta_hat,0),3)/3 x $7,500 — the cap binds "
@@ -9396,9 +9394,7 @@ MUTANTS.extend(
             owner="test_window_is_the_sixty_sessions_before_entry",
             file="scripts/desk/sqqq_twin.py",
             anchor="window = [s for s in cal if s < entry_date][-window_sessions:]",
-            replacement=(
-                "window = [s for s in cal if s < entry_date][-(window_sessions - 1):]"
-            ),
+            replacement=("window = [s for s in cal if s < entry_date][-(window_sessions - 1):]"),
             selectors=[f"{U}/test_desk_sqqq_twin.py"],
             invariant=(
                 "beta_hat uses exactly the 60 sessions ending the session BEFORE "

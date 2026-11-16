@@ -48,6 +48,9 @@ Sealed-rule conventions implemented here, each pinned by a unit test:
 
 from __future__ import annotations
 
+# ruff: noqa: RUF001
+# The sealed prereg's text blocks below are quoted VERBATIM into the twin
+# artifacts: β̂, U+2212 minus signs, em-dashes and ≈ are load-bearing bytes.
 import argparse
 import hashlib
 import math
@@ -253,13 +256,9 @@ def parse_card(text: str, filename: str, *, sha256: str = "") -> CardSpec:
     for m in _LEG.finditer(text):
         name, price, notional, side, leg_exit = m.groups()
         if side != "LONG":
-            raise Refusal(
-                f"{filename}: leg {name} is {side} — the XSMOM-TOP3 book is LONG-only"
-            )
+            raise Refusal(f"{filename}: leg {name} is {side} — the XSMOM-TOP3 book is LONG-only")
         if leg_exit != exit_date:
-            raise Refusal(
-                f"{filename}: leg {name} exits {leg_exit}, card clock says {exit_date}"
-            )
+            raise Refusal(f"{filename}: leg {name} exits {leg_exit}, card clock says {exit_date}")
         legs.append((name, float(price), float(notional.replace(",", ""))))
     if tuple(legs) != PINNED_LEGS:
         pinned = " / ".join(f"{n} {p}" for n, p, _ in PINNED_LEGS)
@@ -268,8 +267,11 @@ def parse_card(text: str, filename: str, *, sha256: str = "") -> CardSpec:
             f"({pinned}, 3 x $2,500, exit {exit_date})"
         )
     return CardSpec(
-        filename=filename, sha256=sha256, entry_date=entry_date,
-        exit_date=exit_date, legs=tuple(legs),
+        filename=filename,
+        sha256=sha256,
+        entry_date=entry_date,
+        exit_date=exit_date,
+        legs=tuple(legs),
     )
 
 
@@ -336,8 +338,7 @@ def beta_hat(
         for n in full:
             rows = panel[n]
             rets.append(
-                float(str(rows[window[i + 1]]["close"]))
-                / float(str(rows[window[i]]["close"]))
+                float(str(rows[window[i + 1]]["close"])) / float(str(rows[window[i]]["close"]))
                 - 1.0
             )
         xs.append(x)
@@ -345,8 +346,11 @@ def beta_hat(
     slope = ols_slope(xs, ys)
     reason = "hedged" if slope > 0.0 else f"beta_hat {slope:.6f} <= 0 -> no hedge"
     return BetaResult(
-        beta=slope, reason=reason, window=tuple(window),
-        full_names=tuple(full), partial_names=tuple(partial),
+        beta=slope,
+        reason=reason,
+        window=tuple(window),
+        full_names=tuple(full),
+        partial_names=tuple(partial),
         n_returns=len(xs),
     )
 
@@ -379,7 +383,6 @@ def twin_card_text(
     script_sha: str,
 ) -> str:
     legs = " + ".join(n for n, _, _ in spec.legs)
-    names_all = ", ".join(n for n, _, _ in spec.legs)
     beta_cell = f"{res.beta:.6f}" if res.beta is not None else "NO HEDGE"
     branch = res.reason  # self-describing: hedged / no-hedge branch + why
     return f"""# SQQQ-HEDGE-001 twin #{TWIN_NO} — beta-hygiene hedge twin of Card 8 (XSMOM-TOP3 {legs})
@@ -405,8 +408,8 @@ this file and sqqq-twins/LEDGER.md are the twin lane's only writes.
 |---|---|
 | window | {res.window[0]} .. {res.window[-1]} ({len(res.window)} sessions ending the session before entry) |
 | returns used | {res.n_returns} consecutive in-window close pairs (no anchor session) |
-| full-window names | {', '.join(res.full_names) or '—'} ({len(res.full_names)} of {len(spec.legs)}) |
-| dropped (partial windows) | {', '.join(res.partial_names) or '—'} |
+| full-window names | {", ".join(res.full_names) or "—"} ({len(res.full_names)} of {len(spec.legs)}) |
+| dropped (partial windows) | {", ".join(res.partial_names) or "—"} |
 | beta_hat | {beta_cell} |
 | branch | {branch} |
 | h_notional | {_usd(h)} |
@@ -495,10 +498,7 @@ resolution provenance: card sha256 {spec.sha256} (re-verified); panel sha256
 {panel_sha} (panel at generation: {entry_panel_sha}); generator sha256
 {script_sha}.
 """
-    row = (
-        f"| #{TWIN_NO} | RESOLVED {spec.exit_date} | {_pnl(twin_total)} | "
-        f"{_pnl(unhedged_net)} |"
-    )
+    row = f"| #{TWIN_NO} | RESOLVED {spec.exit_date} | {_pnl(twin_total)} | {_pnl(unhedged_net)} |"
     return text, row, twin_total, unhedged_net
 
 
@@ -537,9 +537,7 @@ def generate(spec: CardSpec, paper: Path, *, write: bool) -> int:
     res = beta_hat(panel, names, spec.entry_date)
     h = hedge_notional(res.beta)
     script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    card = twin_card_text(
-        spec, res, h, sq_entry, panel_sha=panel_sha, script_sha=script_sha
-    )
+    card = twin_card_text(spec, res, h, sq_entry, panel_sha=panel_sha, script_sha=script_sha)
     row = ledger_row(spec, res, h) + "\n" + REGIME_MARKER + "\n"
     if write:
         twins.mkdir(parents=True, exist_ok=True)
@@ -560,9 +558,7 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
     twin_path = twins / spec.twin_filename
     ledger_path = twins / "LEDGER.md"
     if not twin_path.exists():
-        raise Refusal(
-            f"{twin_path} does not exist — generate the twin before resolving it"
-        )
+        raise Refusal(f"{twin_path} does not exist — generate the twin before resolving it")
     text = twin_path.read_text()
     if "## RESOLUTION" in text:
         raise Refusal(f"{twin_path} already carries a RESOLUTION block — one per twin")
@@ -590,8 +586,11 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
         )
     entry_panel_sha = re.search(r"ohlc-panel\.json — sha256 ([0-9a-f]{64})", text)
     script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    block, row, twin_total, unhedged_net = resolution_block(
-        spec, panel, h, sq_entry,
+    block, row, _twin_total, _unhedged_net = resolution_block(
+        spec,
+        panel,
+        h,
+        sq_entry,
         panel_sha=panel_sha,
         entry_panel_sha=entry_panel_sha.group(1) if entry_panel_sha else "unknown",
         script_sha=script_sha,
@@ -600,9 +599,7 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
         with twin_path.open("a", encoding="utf-8") as fh:
             fh.write(block)
         ledger = ledger_path.read_text()
-        open_re = re.compile(
-            rf"(\| #{TWIN_NO} \| [^\n]*?)\| OPEN \| — \| — \|", re.MULTILINE
-        )
+        open_re = re.compile(rf"(\| #{TWIN_NO} \| [^\n]*?)\| OPEN \| — \| — \|", re.MULTILINE)
         if not open_re.search(ledger):
             raise Refusal(
                 f"no OPEN ledger row for twin #{TWIN_NO} — refusing to touch {ledger_path}"
@@ -617,14 +614,23 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--entry-card", required=True, type=Path,
-                    help="the sealed card file (sha256-pinned)")
-    ap.add_argument("--paper-dir", type=Path, default=None,
-                    help="the paper-trades tree (default: the desk paper dir)")
-    ap.add_argument("--resolve", action="store_true",
-                    help="resolve the twin at the card exit close")
-    ap.add_argument("--write", action="store_true",
-                    help="write the artifacts (default: print only, touch nothing)")
+    ap.add_argument(
+        "--entry-card", required=True, type=Path, help="the sealed card file (sha256-pinned)"
+    )
+    ap.add_argument(
+        "--paper-dir",
+        type=Path,
+        default=None,
+        help="the paper-trades tree (default: the desk paper dir)",
+    )
+    ap.add_argument(
+        "--resolve", action="store_true", help="resolve the twin at the card exit close"
+    )
+    ap.add_argument(
+        "--write",
+        action="store_true",
+        help="write the artifacts (default: print only, touch nothing)",
+    )
     args = ap.parse_args(argv)
     paper = args.paper_dir or paper_dir()
     spec = _verify_card(args.entry_card)
