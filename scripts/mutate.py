@@ -9429,6 +9429,41 @@ MUTANTS.extend(
 )
 
 
+# ---- XU-SUCCESSOR-001 §6 item 2 (xu shadow drafter, 2026-11-16): the
+# digest-only fence + the honesty rules of the shadow book's drafts. ------
+MUTANTS.extend(
+    [
+        dict(
+            id="XU-M1-draft-not-deterministic",
+            owner="test_aa_determinism_same_inputs_same_bytes",
+            file="src/tree_options/desk/xu_shadow.py",
+            anchor="generated_at.isoformat()",
+            replacement="datetime.now().isoformat()",
+            selectors=[f"{U}/test_desk_xu_shadow.py"],
+            invariant="A/A twin: identical inputs reproduce the draft byte-identically",
+        ),
+        dict(
+            id="XU-M2-no-trade-threshold-dropped",
+            owner="test_below_30_rankable_names_is_an_explicit_no_trade",
+            file="src/tree_options/desk/xu_shadow.py",
+            anchor="if res.n_ranked < signals.XSMOM_MIN_RANKED:",
+            replacement="if False:",
+            selectors=[f"{U}/test_desk_xu_shadow.py"],
+            invariant="n_ranked < 30 is an explicit honest NO-TRADE draft, never a silent pick",
+        ),
+        dict(
+            id="XU-M3-drafts-redirected-to-incumbent-namespace",
+            owner="test_a_drafted_session_writes_exactly_one_xu_namespaced_file",
+            file="src/tree_options/desk/xu_shadow.py",
+            anchor='DRAFTS_DIRNAME = "card-drafts-xu"',
+            replacement='DRAFTS_DIRNAME = "card-drafts"',
+            selectors=[f"{U}/test_desk_xu_fence.py"],
+            invariant="shadow drafts land ONLY in the card-drafts-xu namespace, never the incumbent queue",
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout
