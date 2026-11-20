@@ -81,7 +81,12 @@ from tree_options.desk.sessions import (
     latest_completed_session,
     previous_session,
 )
-from tree_options.desk.store import atomic_create_bytes, atomic_write_bytes, atomic_write_json
+from tree_options.desk.store import (
+    atomic_create_bytes,
+    atomic_write_bytes,
+    atomic_write_json,
+    standard_row_indexes,
+)
 from tree_options.trex.clock import ET
 from tree_options.trex.plan import ExitRules, Leg, LegStructure, Right, cents
 
@@ -210,10 +215,17 @@ def _sizes(doc: Mapping[str, Any]) -> dict[tuple[str, Decimal, str], tuple[int, 
     :func:`desk.surface.chain_quotes` carries oi but not the touch sizes; the
     SPEC 2 ``sized`` clause reads them here, straight off the recorded file.
     Anything not a plain int reads as -1 (below every floor: fail closed).
+
+    Only the standard-contract rows are read (:func:`desk.store.
+    standard_row_indexes`). The key names no OCC root, so a nonstandard row
+    that duplicated a standard row's (expiry, right, strike) would land on
+    the same key and — being written last — overwrite the standard row's
+    open interest with its own, pairing one contract's price with another
+    contract's size (AI-BEAR-002 AMENDMENT 2).
     """
     cols = doc["columns"]
     out: dict[tuple[str, Decimal, str], tuple[int, int, int]] = {}
-    for i in range(len(cols["occ"])):
+    for i in standard_row_indexes(doc):
         key = (cols["right"][i], Decimal(str(cols["strike"][i])), cols["exp"][i])
         parts = []
         for col in ("bid_size", "ask_size", "oi"):

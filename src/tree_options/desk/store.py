@@ -43,7 +43,7 @@ import os
 import re
 import shutil
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -135,6 +135,38 @@ def standard_occ(underlying: str) -> re.Pattern[str]:
     no open interest and a price unrelated to the stock (AI-BEAR-002
     AMENDMENT 2)."""
     return re.compile(re.escape(underlying) + r"\d{6}[CP]\d{8}")
+
+
+def standard_row_indexes(doc: Mapping[str, Any]) -> list[int]:
+    """The row indexes of a chain document's standard OCC contracts.
+
+    The index-level application of :func:`standard_occ`, and the one rule
+    every chain consumer shares. Since 2026-11-05 the NVDA, TSLA, SPY and
+    IWM chains also list ``B1VDA…``/``B1SLA…`` nonstandard roots at the
+    standard expiries and strikes, AHEAD of the standard rows. They carry
+    no open interest and a price unrelated to the stock, and each one
+    duplicates a standard row's (expiry, right, strike) — so a consumer
+    that keeps both can pair one row's price with another row's open
+    interest and invent a contract that does not exist (AI-BEAR-002
+    AMENDMENT 2).
+
+    A document that names no underlying, or carries no ``occ`` column,
+    cannot be tested: every row is served as before, exactly as the web
+    view does (``trex_web.options_view``). A row whose ``occ`` is not a
+    string (ragged columns) is likewise kept: nothing to test.
+    """
+    cols = doc.get("columns")
+    occs = cols.get("occ") if isinstance(cols, dict) else None
+    header = doc.get("header")
+    underlying = header.get("underlying") if isinstance(header, dict) else None
+    if not isinstance(occs, list) or not isinstance(underlying, str) or not underlying:
+        return list(range(len(occs))) if isinstance(occs, list) else []
+    standard = standard_occ(underlying)
+    return [
+        i
+        for i, occ in enumerate(occs)
+        if not isinstance(occ, str) or standard.fullmatch(occ) is not None
+    ]
 
 
 # ------------------------------------------------------------------ file I/O

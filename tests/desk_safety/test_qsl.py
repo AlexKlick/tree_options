@@ -123,7 +123,7 @@ class QslWorld:
                     if bid < 0.01:
                         bid = 0.0  # a real unbidgable wing
                     for col, val in (
-                        ("occ", f"X{int(k * 1000):08d}{'C' if right == 'C' else 'P'}"),
+                        ("occ", f"{name}{exp:%y%m%d}{right}{int(k * 1000):08d}"),
                         ("exp", exp.isoformat()),
                         ("strike", k),
                         ("right", right),

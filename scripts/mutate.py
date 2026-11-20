@@ -9595,6 +9595,80 @@ MUTANTS.extend(
 )
 
 
+# Wave 2026-11-20 (QSL OCC integrity): the nonstandard B1 roots that the
+# CBOE delayed chain lists beside the standard rows must never reach either
+# of the QSL lane's indexes, or one contract's price pairs with another's
+# open interest (AI-BEAR-002 AMENDMENT 2).
+MUTANTS.extend(
+    [
+        dict(
+            id="QSL-OCC-1-surface-index-unfiltered",
+            owner="test_the_nonstandard_row_is_absent_from_chain_quotes",
+            file="src/tree_options/desk/surface.py",
+            anchor="    for i in standard_row_indexes(doc):",
+            replacement='    for i in range(len(cols["occ"])):',
+            selectors=["tests/desk_safety/test_qsl_occ_integrity.py"],
+            invariant=(
+                "the surface index serves only standard OCC contracts — a"
+                " nonstandard root's price must never reach the picker"
+            ),
+        ),
+        dict(
+            id="QSL-OCC-2-sizes-index-unfiltered",
+            owner="test_the_nonstandard_row_is_absent_from_sizes",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    for i in standard_row_indexes(doc):",
+            replacement='    for i in range(len(cols["occ"])):',
+            selectors=["tests/desk_safety/test_qsl_occ_integrity.py"],
+            invariant=(
+                "the sizes index serves only standard OCC contracts — the"
+                " key names no root, so a nonstandard row would overwrite"
+                " the standard row's open interest"
+            ),
+        ),
+        dict(
+            id="QSL-OCC-3-filter-gutted",
+            owner="test_the_filter_is_applied_on_both_indexes",
+            file="src/tree_options/desk/store.py",
+            anchor=("        if not isinstance(occ, str) or standard.fullmatch(occ) is not None"),
+            replacement="        if True",
+            selectors=["tests/desk_safety/test_qsl_occ_integrity.py"],
+            invariant=(
+                "standard_row_indexes drops every row whose OCC root is"
+                " not the chain's own underlying"
+            ),
+        ),
+        dict(
+            id="QSL-OCC-4-nonstandard-row-kept",
+            owner="test_the_open_interest_floor_cannot_be_satisfied_by_a_nonstandard_row",
+            file="src/tree_options/desk/store.py",
+            anchor=("        if not isinstance(occ, str) or standard.fullmatch(occ) is not None"),
+            replacement=(
+                "        if not isinstance(occ, str) or standard.fullmatch(occ) is not None\n"
+                '        or occ.startswith("B1")'
+            ),
+            selectors=["tests/desk_safety/test_qsl_occ_integrity.py"],
+            invariant=(
+                "a nonstandard B1 root is never admitted on the strength of"
+                " its own open interest, however large that interest is"
+            ),
+        ),
+        dict(
+            id="QSL-OCC-5-competing-filter-any-root",
+            owner="test_the_filter_reuses_the_canonical_standard_occ",
+            file="src/tree_options/desk/store.py",
+            anchor='    return re.compile(re.escape(underlying) + r"\\d{6}[CP]\\d{8}")',
+            replacement='    return re.compile(r"\\w+\\d{6}[CP]\\d{8}")',
+            selectors=["tests/desk_safety/test_qsl_occ_integrity.py"],
+            invariant=(
+                "the filter is the canonical standard_occ — a competing"
+                " pattern that admits any root lets B1VDA/B1SLA through"
+            ),
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

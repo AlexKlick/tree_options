@@ -53,6 +53,7 @@ from tree_options.desk.ivhist import (
     total_variance_interp,
 )
 from tree_options.desk.sessions import Calendar, previous_session
+from tree_options.desk.store import standard_row_indexes
 from tree_options.synth_options.greeks import bs_abs_delta
 
 FEATURES_SCHEMA = "desk-features/1"
@@ -105,7 +106,7 @@ def chain_spot(doc: Mapping[str, Any]) -> float | None:
 def chain_quotes(doc: Mapping[str, Any], *, session: date, spot: float, rate: float) -> list[Quote]:
     cols = doc["columns"]
     out: list[Quote] = []
-    for i in range(len(cols["occ"])):
+    for i in standard_row_indexes(doc):
         expiry = date.fromisoformat(cols["exp"][i])
         dte = days_between(session, expiry)
         if dte < 1:
