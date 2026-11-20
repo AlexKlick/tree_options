@@ -588,7 +588,7 @@ class TestResolve:
         m = re.search(r"hedge 5bp RT on h_notional: −\$([\d,]+\.\d{2})", text)  # noqa: RUF001
         assert m and math.isclose(float(m.group(1)), h * 0.0005, abs_tol=0.005)
         # the cost is SUBTRACTED in the twin total (SQ-M3's invariant): pin the
-        # whole arithmetic — unhedged net + SQQQ leg − hedge RT == twin total
+        # whole arithmetic — unhedged net + SQQQ leg − hedge RT == twin total  # noqa: RUF003
         cost = float(m.group(1))
         unhedged = float(re.search(r"; net ([+-][\d,]+\.\d{2})", text).group(1).replace(",", ""))
         leg = float(re.search(r"SQQQ leg P&L: ([+-][\d,]+\.\d{2})", text).group(1).replace(",", ""))
