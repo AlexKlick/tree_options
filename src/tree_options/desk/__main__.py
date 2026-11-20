@@ -247,6 +247,7 @@ from tree_options.desk.sessions import (  # noqa: E402
     latest_completed_session,
 )
 from tree_options.desk.universe import CHAIN_UNIVERSE  # noqa: E402
+from tree_options.time.calendar import SessionCalendar  # noqa: E402
 from tree_options.trex.clock import ET, now_et, session_calendar  # noqa: E402
 from tree_options.trex.discovery.market import Transport  # noqa: E402
 
@@ -1039,7 +1040,7 @@ def _eod_equity(
     return res.exit_code
 
 
-def _vrp_cond_forward(args: argparse.Namespace, *, clock: store.Clock, cal: Calendar) -> int:
+def _vrp_cond_forward(args: argparse.Namespace, *, clock: store.Clock, cal: SessionCalendar) -> int:
     from tree_options.desk import vrp_forward
 
     if args.session is None and args.catch_up is None:
@@ -1111,7 +1112,7 @@ def run_cli(
     transport: Transport | None = None,
     sleep: store.Sleep | None = None,
     now: datetime | None = None,
-    cal: ClosingCalendar | None = None,
+    cal: SessionCalendar | None = None,
     fetch: eod_equity.FetchRunner | None = None,
     notify: eod_equity.Notify | None = None,
     get: http.Get | None = None,

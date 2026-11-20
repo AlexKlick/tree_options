@@ -50,10 +50,11 @@ from pathlib import Path
 from typing import Any
 
 from tree_options.desk import har, ivhist, paths, surface
+from tree_options.desk.ivhist import RateSource
 from tree_options.desk.panel import read_panel_with_sha256
 from tree_options.desk.sessions import Calendar
 from tree_options.desk.store import atomic_create_bytes, standard_occ
-from tree_options.time.calendar import calendar_content_sha256
+from tree_options.time.calendar import SessionCalendar, calendar_content_sha256
 
 # ---- the sealed registration, pinned (VRP-COND-FORWARD-001 §3.4/§3.5/§8) ----
 
@@ -146,19 +147,19 @@ def gate_path(state_root: Path, session: date) -> Path:
 class Inputs:
     """Every read-only input the emitter consumes, with its sha256."""
 
-    cal: Calendar
+    cal: SessionCalendar
     panel: Mapping[str, Mapping[str, Mapping[str, Any]]]
     panel_sha256: str
     earnings: Mapping[str, Sequence[str]]
     earnings_sha256: str
     ivhist: Mapping[str, Any]
     ivhist_sha256: str
-    rates: ivhist.RateSource
+    rates: RateSource
     rate_label: str
     calendar_sha256: str
 
 
-def load_inputs(cal: Calendar) -> Inputs:
+def load_inputs(cal: SessionCalendar) -> Inputs:
     """Read the panel (under its shared lock), the sealed earnings calendar,
     the sha-pinned IVHIST history and the DTB3 rate source. Any missing input
     refuses (the emitter never improvises a proxy)."""
@@ -230,7 +231,7 @@ def harvol20_by_session(inputs: Inputs) -> dict[date, tuple[float, dict[str, Any
 
 
 def chain_iv30(
-    chain_path: Path, session: date, rates: ivhist.RateSource
+    chain_path: Path, session: date, rates: RateSource
 ) -> tuple[float | None, dict[str, Any]]:
     """``iv30_IWM(D)`` from the recorded EOD chain snapshot: only standard
     OCC contracts (``store.standard_occ``), mid-inverted IVs, ATM per expiry
@@ -605,7 +606,7 @@ def recorded_chain_sessions(store_root: Path, sym: str = NAME) -> list[date]:
 def run_emit(
     *,
     sessions: Sequence[date],
-    cal: Calendar,
+    cal: SessionCalendar,
     state_root: Path | None = None,
     now: datetime | None = None,
 ) -> list[EmitOutcome]:
