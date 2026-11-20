@@ -9526,7 +9526,7 @@ MUTANTS.extend(
             replacement=("    if False:\n        raise EmitterRefusal("),
             selectors=["tests/unit/test_desk_vrp_forward.py"],
             invariant="a frozen base that misses the sealed anchors refuses everything (never tune to fit)",
-        )
+        ),
     ]
 )
 # TSMOM-SHIELD-001 report-only overlay (docs/desk/TSMOM-SHIELD-001.md, sealed
