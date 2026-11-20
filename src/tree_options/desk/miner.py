@@ -499,7 +499,7 @@ class _Ctx:
                     raise NotEvaluable(f"no DTB3 observation knowable at {self.session}")
                 doc = self.pit.chain(name)
                 self._surfaces[name] = pricing.EntrySurface(
-                    doc, session=self.session, rate=self.rate
+                    doc, session=self.session, rate=self.rate, underlying=name
                 )
                 self.chains[name] = str(doc["header"].get("raw_sha256"))
             except NotEvaluable as exc:

@@ -202,7 +202,10 @@ def _call_delta(spot: float, k: float, days: int, iv: float, r: float) -> float:
 
 
 def _surface(doc: dict[str, Any]) -> pricing.EntrySurface:
-    return pricing.EntrySurface(doc, session=SESSION, rate=RATE)
+    # the underlying the surface serves: the miner threads the name it asked
+    # for; the fixture chain carries it in its header
+    name = str(doc["header"]["underlying"])
+    return pricing.EntrySurface(doc, session=SESSION, rate=RATE, underlying=name)
 
 
 def test_r1_grid_is_every_long_short_pair_in_the_delta_ranges_per_expiry(pb) -> None:

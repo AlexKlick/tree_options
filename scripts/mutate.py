@@ -9669,6 +9669,80 @@ MUTANTS.extend(
 )
 
 
+# Wave 2026-11-20 (MINER OCC integrity): the pricing path must apply the
+# canonical standard-roots filter too. The QSL wave (2c468c8) filtered the
+# two QSL indexes; the miner's EntrySurface still built a header-less
+# sub-document, which left the filter fail-open and served the CBOE B1
+# rows to the enumeration, the pricer and the OI floor.
+MUTANTS.extend(
+    [
+        dict(
+            id="PRICING-OCC-1-sub-document-names-no-underlying",
+            owner="test_the_nonstandard_row_is_absent_from_the_miners_quotes",
+            file="src/tree_options/desk/pricing.py",
+            anchor='                "header": {"underlying": self.underlying},',
+            replacement="                # mutant: the sub-document names no underlying",
+            selectors=["tests/desk_safety/test_miner_occ_integrity.py"],
+            invariant=(
+                "the entry surface's sub-document names the underlying, so"
+                " the canonical store.standard_row_indexes filter applies to"
+                " every quote the miner enumerates or prices"
+            ),
+        ),
+        dict(
+            id="PRICING-OCC-2-miner-surface-thread-dropped",
+            owner="test_the_pricing_path_applies_the_canonical_filter_too",
+            file="src/tree_options/desk/miner.py",
+            anchor="doc, session=self.session, rate=self.rate, underlying=name",
+            replacement="doc, session=self.session, rate=self.rate",
+            selectors=["tests/desk_safety/test_miner_occ_integrity.py"],
+            invariant=(
+                "the miner threads the name it asked for into its entry"
+                " surface — the surface serves THAT name's standard roots"
+                " only"
+            ),
+        ),
+        dict(
+            id="PRICING-OCC-3-value-candidates-thread-dropped",
+            owner="test_the_pricing_path_applies_the_canonical_filter_too",
+            file="src/tree_options/desk/pricing.py",
+            anchor="doc, session=pit.session, rate=paths.spec.rate, underlying=name",
+            replacement="doc, session=pit.session, rate=paths.spec.rate",
+            selectors=["tests/desk_safety/test_miner_occ_integrity.py"],
+            invariant=(
+                "the pricing path threads the name into its entry surface —"
+                " the miner reaches the chain twice (enumeration and"
+                " pricing) and both must be filtered"
+            ),
+        ),
+        dict(
+            id="PRICING-OCC-4-underlying-requirement-gutted",
+            owner="test_the_surface_needs_an_underlying",
+            file="src/tree_options/desk/pricing.py",
+            anchor="        if not isinstance(underlying, str) or not underlying:",
+            replacement="        if False:",
+            selectors=["tests/desk_safety/test_miner_occ_integrity.py"],
+            invariant=(
+                "an entry surface without an underlying is refused — the"
+                " fail-open path must stay unreachable from the miner lane"
+            ),
+        ),
+        dict(
+            id="PRICING-OCC-5-header-mismatch-check-gutted",
+            owner="test_the_surface_needs_an_underlying",
+            file="src/tree_options/desk/pricing.py",
+            anchor="        if isinstance(named_u, str) and named_u and named_u != underlying:",
+            replacement="        if False:",
+            selectors=["tests/desk_safety/test_miner_occ_integrity.py"],
+            invariant=(
+                "a chain that names another underlying is refused, never"
+                " served under the wrong name's filter"
+            ),
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

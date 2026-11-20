@@ -28,6 +28,10 @@ Model (every choice declared, none fitted here):
   the pinned scalar ``bs_price`` before any path is valued. The path
   repricing is a vectorized twin of that function (same formula, same
   half-day floor; a test pins it to 1e-12).
+* only the chain's STANDARD OCC contracts are quoted: the canonical
+  ``desk.store.standard_row_indexes`` filter is applied to every quote, so
+  the nonstandard B1 roots the delayed chain lists beside the standard
+  rows never reach a leg.
 * $0.65 per contract per leg on entry and on exit.
 * reported, money as Decimal (cents): EV (no-view paths), its Monte Carlo
   standard error, EV / max loss (``LegStructure.max_loss()``), probability
@@ -164,9 +168,28 @@ class LegQuote:
 
 class EntrySurface:
     """D's recorded chain as the entry marks and the exit smile/spreads.
-    IVs are solved lazily, per expiry, at ``rate`` (the paths' DTB3)."""
+    IVs are solved lazily, per expiry, at ``rate`` (the paths' DTB3).
 
-    def __init__(self, doc: Mapping[str, Any], *, session: date, rate: float) -> None:
+    The surface serves ONE underlying's contracts: ``underlying`` names it,
+    and the canonical :func:`desk.store.standard_row_indexes` filter (the
+    row-level application of :func:`desk.store.standard_occ`) is applied
+    to every quote it yields.  Since 2026-11-05 the CBOE delayed chain
+    lists nonstandard ``B1VDA…``/``B1SLA…``/``B1SP…``/``B1IW…`` roots
+    beside the standard rows, at the SAME (expiry, right, strike) and
+    AHEAD of them, each duplicating a standard row's contract with a price
+    unrelated to the stock.  A surface that served them would let the
+    miner SELECT a B1 row and PRICE it (AI-BEAR-002 AMENDMENT 2).
+    """
+
+    def __init__(
+        self, doc: Mapping[str, Any], *, session: date, rate: float, underlying: str
+    ) -> None:
+        if not isinstance(underlying, str) or not underlying:
+            raise NotEvaluable("the entry surface needs the chain's underlying")
+        named = doc.get("header")
+        named_u = named.get("underlying") if isinstance(named, dict) else None
+        if isinstance(named_u, str) and named_u and named_u != underlying:
+            raise NotEvaluable(f"the {underlying} chain names {named_u}")
         spot = surface.chain_spot(doc)
         if spot is None:
             raise NotEvaluable("chain has no underlying close")
@@ -174,6 +197,7 @@ class EntrySurface:
         self.session = session
         self.rate = rate
         self.spot = spot
+        self.underlying = underlying
         self._quotes: dict[date, list[surface.Quote]] = {}
         self._nodes: dict[tuple[str, date, str], Nodes] = {}
 
@@ -183,7 +207,16 @@ class EntrySurface:
             want = expiry.isoformat()
             idx = [i for i, e in enumerate(cols["exp"]) if e == want]
             keys = ("occ", "exp", "right", "strike", "bid", "ask", "oi")
-            sub = {"columns": {k: [cols[k][i] for i in idx] for k in keys}}
+            # The sub-document NAMES the underlying, so the canonical
+            # store.standard_row_indexes filter applies to it: only the
+            # standard OCC contracts of THIS underlying are quoted.  The
+            # sub-document used to carry no header, which left the filter
+            # with nothing to test and served every row, the nonstandard
+            # B1 roots included.
+            sub = {
+                "header": {"underlying": self.underlying},
+                "columns": {k: [cols[k][i] for i in idx] for k in keys},
+            }
             self._quotes[expiry] = surface.chain_quotes(
                 sub, session=self.session, spot=self.spot, rate=self.rate
             )
@@ -591,7 +624,7 @@ def value_candidates(
             block=block,
             har_h=har_h,
         )
-        surf = EntrySurface(doc, session=pit.session, rate=paths.spec.rate)
+        surf = EntrySurface(doc, session=pit.session, rate=paths.spec.rate, underlying=name)
     except NotEvaluable as exc:
         return [CandidateResult(s.id, None, str(exc)) for s in structures]
     mr = iv_mean_reversion(pit.iv_history(name), pit.session, len(paths.spec.steps), pit.cal)

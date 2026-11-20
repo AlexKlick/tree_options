@@ -168,7 +168,7 @@ def test_no_view_ev_matches_the_closed_form(cal: StaticSessionCalendar) -> None:
     hold), so EV = 100 x (BS(v_tot) - BS(v_entry)) - commissions."""
     iv, phys = 0.30, 0.20
     doc = _doc(0.0, iv=lambda m: iv, half_spread=lambda p: 0.0)
-    surf = pricing.EntrySurface(doc, session=D, rate=0.0)
+    surf = pricing.EntrySurface(doc, session=D, rate=0.0, underlying="AAA")
     sigma2 = phys * phys / 252.0
     ps = dist.simulate_paths(
         name="AAA", session=D, exit_session=EXIT, cal=cal, row_id="oracle",
@@ -256,7 +256,7 @@ def _oracle_pnl(
 def test_exit_is_sticky_moneyness_with_mean_reversion_spreads_and_costs(
     cal: StaticSessionCalendar, s_exit: float
 ) -> None:
-    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03)
+    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03, underlying="AAA")
     mr = pricing.IvMeanReversion(
         factor=1.1, status="applied", reason="test", ratio=1.2, n=200, half_life=30
     )
@@ -294,7 +294,7 @@ def test_exit_is_sticky_moneyness_with_mean_reversion_spreads_and_costs(
 
 
 def test_debit_floor_and_credit_cap_are_max_loss(cal: StaticSessionCalendar) -> None:
-    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03)
+    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03, underlying="AAA")
     off = pricing.IvMeanReversion.off()
     deep = _constant_paths(cal, 50.0)
     debit = pricing.price_structure(_struct("debit_vertical", CALL_VERTICAL), deep, surf, mr=off)
@@ -317,7 +317,7 @@ def test_debit_floor_and_credit_cap_are_max_loss(cal: StaticSessionCalendar) -> 
 
 
 def test_cvar_probability_and_standard_error(cal: StaticSessionCalendar) -> None:
-    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03)
+    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03, underlying="AAA")
     ps = dist.simulate_paths(
         name="AAA", session=D, exit_session=EXIT, cal=cal, row_id="c",
         z_pool=_pool(1, 400), daily_var=1e-4, rate=0.03, n_paths=100,
@@ -345,7 +345,7 @@ def test_cvar_probability_and_standard_error(cal: StaticSessionCalendar) -> None
 
 @pytest.fixture(scope="module")
 def mc(cal: StaticSessionCalendar) -> tuple[pricing.EntrySurface, dist.PathSet, dist.PathSet]:
-    surf = pricing.EntrySurface(_doc(0.04), session=D, rate=0.04)
+    surf = pricing.EntrySurface(_doc(0.04), session=D, rate=0.04, underlying="AAA")
     kw: dict[str, Any] = dict(
         name="AAA", session=D, exit_session=EXIT, cal=cal, row_id="mc",
         z_pool=_pool(8), daily_var=0.3**2 / 252, rate=0.04,
@@ -400,7 +400,7 @@ def test_calendar_reprices_both_expiries(
 
 
 def test_refusals(cal: StaticSessionCalendar) -> None:
-    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03)
+    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03, underlying="AAA")
     ps = _constant_paths(cal, 100.0)
     off = pricing.IvMeanReversion.off()
     early = date(2025, 4, 4)  # a leg expiring before the planned exit
@@ -427,7 +427,7 @@ def test_refusals(cal: StaticSessionCalendar) -> None:
 
 
 def test_money_is_decimal_and_serializes_as_strings(cal: StaticSessionCalendar) -> None:
-    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03)
+    surf = pricing.EntrySurface(_doc(0.03), session=D, rate=0.03, underlying="AAA")
     val = pricing.price_structure(
         _struct("debit_vertical", CALL_VERTICAL),
         _constant_paths(cal, 103.0),
