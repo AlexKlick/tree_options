@@ -12,8 +12,11 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import urllib.error
+import urllib.request
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from email.message import Message
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -22,7 +25,7 @@ import pytest
 from tests.fixtures.desk_cboe import N_NAMED, chain_payload, default_rows, encode, option_row
 from tree_options.desk import chains, paths, sessions, store
 from tree_options.desk.__main__ import run_cli
-from tree_options.trex.discovery.market import _parse_occ, parse_occ
+from tree_options.trex.discovery.market import MOZILLA_UA, _parse_occ, parse_occ
 
 ET = ZoneInfo("America/New_York")
 D = date(2026, 9, 22)  # Tuesday session
@@ -189,6 +192,84 @@ class TestParseChain:
         assert chains.fetch_raw("KO", _transport({"KO": b"{}"})) == b"{}"
         with pytest.raises(chains.ChainFetchError):
             chains.fetch_raw("PEP", _transport({}))  # 404
+
+
+# ------------------------------------------------------------- CBOE headers
+
+
+class _Resp:
+    """The urlopen result the fake seam serves (the desk/http.py pattern)."""
+
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self.status = status
+
+    def read(self, amt: int | None = None) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _Resp:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+def _capture(monkeypatch: pytest.MonkeyPatch, resp: _Resp | Exception) -> list[dict[str, str]]:
+    """Replace urlopen; return the request headers (lowercased keys) it saw."""
+    seen: list[dict[str, str]] = []
+
+    def fake(req: urllib.request.Request, timeout: float) -> _Resp:
+        seen.append({k.lower(): v for k, v in req.header_items()})
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    return seen
+
+
+class TestCboeRequestHeaders:
+    """Cloudflare fronts cdn-api.cboe.com (cdn.cboe.com 307-redirects there)
+    and answers a scripted client 403 unless the request carries a Referer:
+    measured 2026-11-20 -- UA only -> 403 (4568-byte challenge page), UA +
+    Accept -> 403, UA + Referer -> 200. No network: ``urlopen`` is faked."""
+
+    def test_the_chain_request_carries_referer_and_accept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _capture(monkeypatch, _Resp(b'{"data": {"options": []}}'))
+        status, _body = chains.urllib_transport(chains.chain_url("TSLA"))
+        assert status == 200
+        assert len(seen) == 1
+        hdrs = seen[0]
+        assert hdrs["referer"] == "https://www.cboe.com/"
+        assert hdrs["accept"] == "application/json, text/plain, */*"
+        assert hdrs["user-agent"] == MOZILLA_UA  # the desk's own UA is kept
+
+    def test_the_request_headers_are_exactly_the_module_constant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _capture(monkeypatch, _Resp(b"{}"))
+        chains.urllib_transport(chains.chain_url("NVDA"))
+        for name, value in chains.CBOE_HEADERS.items():
+            assert seen[0][name.lower()] == value
+
+    def test_the_constant_carries_the_referer_the_edge_demands(self) -> None:
+        assert chains.CBOE_HEADERS["Referer"] == "https://www.cboe.com/"
+        assert chains.CBOE_HEADERS["Accept"] == "application/json, text/plain, */*"
+        assert chains.CBOE_HEADERS["User-Agent"] == MOZILLA_UA
+
+    def test_a_cloudflare_403_comes_back_as_a_status_not_an_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # the production symptom: HTTPError -> (403, b"") -> ChainFetchError
+        def fake(req: urllib.request.Request, timeout: float) -> _Resp:
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", Message(), None)
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        assert chains.urllib_transport(chains.chain_url("TSLA")) == (403, b"")
+        with pytest.raises(chains.ChainFetchError):
+            chains.fetch_raw("TSLA", chains.urllib_transport)
 
 
 # ---------------------------------------------------------------- validation

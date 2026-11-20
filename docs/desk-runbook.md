@@ -83,6 +83,15 @@ roster in desk-universe.toml, which the new names are NOT in.
 
 ## Chain store (`artifacts/desk-store/`, `DESK_STORE` overrides)
 
+The chain source is `https://cdn.cboe.com/api/global/delayed_quotes/options/<SYM>.json`,
+which 307-redirects to `cdn-api.cboe.com`. That host sits behind Cloudflare,
+which answers a scripted client `403` unless the request carries a `Referer`
+header (measured 2026-11-20: UA alone -> 403 with a 4568-byte challenge page,
+UA + Referer -> 200). The header set lives in `chains.CBOE_HEADERS` (UA +
+Accept + Referer); the desk's own UA was never the problem. Without the
+Referer every symbol fails with `ChainFetchError: <SYM>: HTTP 403` and the
+session is blind (no chains, no features, the miner queue stops).
+
 - `chains/<D>/<SYM>.json.gz`: schema `desk-chain/1`, columnar
   (`occ exp right strike bid ask bid_size ask_size iv delta gamma theta
   vega rho theo oi volume last last_time`) + a header (session,

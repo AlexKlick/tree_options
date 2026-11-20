@@ -2,7 +2,8 @@
 
 Source: ``https://cdn.cboe.com/api/global/delayed_quotes/options/{SYM}.json``
 (keyless; indices take a leading underscore, ``_SPX``; our universe is
-equities and ETFs).
+equities and ETFs). It 307-redirects to ``cdn-api.cboe.com``, which is behind
+Cloudflare and needs a Referer header (see ``CBOE_HEADERS``).
 
 Probed 2026-09-23 15:13 ET (KO, one request, read-only):
 
@@ -29,6 +30,7 @@ import json
 import math
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -37,6 +39,17 @@ from tree_options.trex.clock import ET
 from tree_options.trex.discovery.market import MOZILLA_UA, Transport, parse_occ
 
 CHAIN_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json"
+# cdn.cboe.com 307-redirects to cdn-api.cboe.com, which sits behind
+# Cloudflare: without a Referer the edge answers 403 with a 4568-byte
+# challenge page instead of the payload (measured 2026-11-20: UA only ->
+# 403; UA + Accept -> 403; UA + Referer -> 200). The desk's plain UA is
+# fine; the Referer is the part that is missing. Accept is optional but is
+# sent so the payload comes back as JSON.
+CBOE_HEADERS: Mapping[str, str] = {
+    "User-Agent": MOZILLA_UA,
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.cboe.com/",
+}
 SOURCE = "cboe-delayed"
 MAX_BYTES = 32_000_000  # SPY's full chain is ~5.5 MB; bigger is refused, never truncated
 TIMEOUT_S = 30.0
@@ -124,7 +137,7 @@ def chain_url(sym: str) -> str:
 
 
 def urllib_transport(url: str, *, timeout: float = TIMEOUT_S) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, headers={"User-Agent": MOZILLA_UA})
+    req = urllib.request.Request(url, headers=dict(CBOE_HEADERS))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return int(resp.status), resp.read(MAX_BYTES + 1)
