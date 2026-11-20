@@ -590,12 +590,8 @@ class TestResolve:
         # the cost is SUBTRACTED in the twin total (SQ-M3's invariant): pin the
         # whole arithmetic — unhedged net + SQQQ leg − hedge RT == twin total
         cost = float(m.group(1))
-        unhedged = float(
-            re.search(r"; net ([+-][\d,]+\.\d{2})", text).group(1).replace(",", "")
-        )
-        leg = float(
-            re.search(r"SQQQ leg P&L: ([+-][\d,]+\.\d{2})", text).group(1).replace(",", "")
-        )
+        unhedged = float(re.search(r"; net ([+-][\d,]+\.\d{2})", text).group(1).replace(",", ""))
+        leg = float(re.search(r"SQQQ leg P&L: ([+-][\d,]+\.\d{2})", text).group(1).replace(",", ""))
         total = float(
             re.search(r"twin total = [^=]+= ([+-][\d,]+\.\d{2}) USD", text)
             .group(1)
