@@ -20,8 +20,15 @@ Without ``--write`` the artifacts are printed to stdout and nothing touches
 disk (the default; the serving checkout is only ever written by an
 owner-authorized coordinator run). Refusals (sha mismatch, duplicate twin,
 exit close not yet in the panel, a moved entry basis, a missing or
-non-OPEN twin ledger row) raise :class:`Refusal` -> exit code 2 from the CLI
-wrapper; ``--resolve`` raises every one of them before its first write.
+non-OPEN twin ledger row, a twin written by a different generator sha256)
+raise :class:`Refusal` -> exit code 2 from the CLI wrapper; ``--resolve``
+raises every one of them before its first write. Both writes (generate and
+``--resolve``) commit the twin card and the twin ledger as one step: both
+tmp files fsynced before either rename (see :func:`_commit_twin_pair`).
+
+FREEZE: the twin records this script's sha256 when it is written and
+``--resolve`` refuses unless it is the same script — so this file must not
+change between a twin's write and its resolve.
 
 Sealed-rule conventions implemented here, each pinned by a unit test:
 
@@ -53,9 +60,12 @@ from __future__ import annotations
 # The sealed prereg's text blocks below are quoted VERBATIM into the twin
 # artifacts: β̂, U+2212 minus signs, em-dashes and ≈ are load-bearing bytes.
 import argparse
+import contextlib
 import hashlib
 import math
+import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from decimal import Decimal
@@ -64,9 +74,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
+# the house tmp writer (store._write_tmp: tmp file + flush + fsync) and its
+# tmp naming, used through the module so the twin's commit shares one
+# data-write primitive with every other desk atomic write
+from tree_options.desk import store as _store  # noqa: E402
 from tree_options.desk.panel import read_panel_with_sha256  # noqa: E402
 from tree_options.desk.paths import paper_dir  # noqa: E402
-from tree_options.desk.store import atomic_write_bytes  # noqa: E402
 
 # ------------------------------------------------ sealed pins (prereg L21-27)
 CARD_PINS: dict[str, str] = {
@@ -193,6 +206,12 @@ class Refusal(Exception):
     """A refusal that must leave every incumbent file untouched."""
 
 
+class Stranded(Exception):
+    """A twin commit failed AND its own rollback failed: the twin card and the
+    twin ledger disagree. The message names the one command that restores the
+    pre-commit state; nothing else is attempted."""
+
+
 @dataclass(frozen=True)
 class CardSpec:
     filename: str
@@ -265,10 +284,14 @@ def check_leg_entry_basis(spec: CardSpec, panel) -> None:
 
 
 def resolved_ledger_bytes(ledger_path: Path, row: str) -> bytes:
-    """The twin ledger with twin #N's OPEN row replaced by ``row``, computed
-    in memory — nothing is written. A missing ledger or one without the OPEN
-    row refuses here, BEFORE the twin card is touched (a resolved card beside
-    an OPEN row would block every re-run at the already-resolved check)."""
+    """The twin ledger with twin #N's OPEN row resolved, computed in memory —
+    nothing is written. ``row`` is the resolved row's status + P&L cells; the
+    OPEN row's identity cells (twin #, card + sha256 16, entry → exit, β̂,
+    h_notional) are KEPT, so the resolved row still says which card it
+    resolves and every number stays under its own header (WT2-c-fix F-C3).
+    A missing ledger or one without the OPEN row refuses here, BEFORE the
+    twin card is touched (a resolved card beside an OPEN row would block
+    every re-run at the already-resolved check)."""
     if not ledger_path.is_file():
         raise Refusal(
             f"{ledger_path} does not exist — twin #{TWIN_NO} has no OPEN ledger "
@@ -278,24 +301,92 @@ def resolved_ledger_bytes(ledger_path: Path, row: str) -> bytes:
     open_re = re.compile(rf"(\| #{TWIN_NO} \| [^\n]*?)\| OPEN \| — \| — \|", re.MULTILINE)
     if not open_re.search(ledger):
         raise Refusal(f"no OPEN ledger row for twin #{TWIN_NO} — refusing to touch {ledger_path}")
-    return open_re.sub(lambda _m: row, ledger, count=1).encode("utf-8")
+    return open_re.sub(lambda m: m.group(1) + row, ledger, count=1).encode("utf-8")
+
+
+def _twin_row(ledger: bytes) -> str:
+    return next(
+        ln for ln in ledger.decode("utf-8").splitlines() if ln.startswith(f"| #{TWIN_NO} |")
+    )
+
+
+def _commit_twin_pair(
+    card_path: Path, card_bytes: bytes, ledger_path: Path, ledger_bytes: bytes, *, new_card: bool
+) -> None:
+    """Commit the twin card and the twin ledger as ONE step — both of the
+    lane's writes: generate (a NEW card, 11-27) and --resolve (the card
+    replaced by itself + its RESOLUTION block, 12-01). WT2-c-fix F-C1/F-C2.
+
+    1. BOTH new files are written as tmp files and fsynced (the house
+       ``store._write_tmp``) while both real files are still untouched, so
+       the I/O that can fail with ENOSPC fails before anything is published.
+    2. Then the two renames run back to back: the card, then the ledger. A
+       new card is published with ``os.link``, which never clobbers (the old
+       ``open("x")``); a replaced card first keeps its pre-image as a hard
+       link — no data write.
+    3. If the ledger rename fails, the card is rolled back WITHOUT a data
+       write (a new card is unlinked; a replaced card's pre-image is renamed
+       back), so the rollback needs no free space and both files end
+       byte-identical to before. If the rollback fails too, :class:`Stranded`
+       names the one command that recovers, and the pre-image is kept.
+
+    The one window this cannot close is a process kill between the two
+    renames; the fsynced tmp / pre-image files left behind then hold both
+    states."""
+    card_tmp, ledger_tmp = _store._tmp_for(card_path), _store._tmp_for(ledger_path)
+    pre = card_path.with_name(f".{card_path.name}.{os.getpid()}.pre")
+    debris = [card_tmp, ledger_tmp]
+    try:
+        _store._write_tmp(card_path, card_bytes)
+        _store._write_tmp(ledger_path, ledger_bytes)
+        if new_card:
+            try:
+                os.link(card_tmp, card_path)
+            except FileExistsError:
+                raise Refusal(
+                    f"{card_path} already exists — one twin per card, rerun refused"
+                ) from None
+        else:
+            os.link(card_path, pre)
+            debris.append(pre)
+            os.replace(card_tmp, card_path)
+        try:
+            os.replace(ledger_tmp, ledger_path)
+        except BaseException:
+            try:
+                if new_card:
+                    card_path.unlink()  # rollback: the card did not exist before
+                else:
+                    os.replace(pre, card_path)  # rollback: by rename, no data write
+            except BaseException as failed:
+                if new_card:
+                    fix = f"rm {shlex.quote(str(card_path))}"
+                else:
+                    debris.remove(pre)  # the pre-resolve card: keep it for the fix
+                    fix = f"mv {shlex.quote(str(pre))} {shlex.quote(str(card_path))}"
+                raise Stranded(
+                    f"twin ledger {ledger_path} was not written and rolling the twin "
+                    f"card back failed ({failed}): the card and the ledger disagree — "
+                    f"run `{fix}` to restore the state before this run, then re-run"
+                ) from failed
+            raise
+    finally:
+        for leftover in debris:
+            with contextlib.suppress(OSError):
+                leftover.unlink()
 
 
 def commit_resolution(
     twin_path: Path, card_raw: bytes, block: str, ledger_path: Path, ledger_bytes: bytes
 ) -> None:
-    """The resolve's two writes, as close to atomic as two markdown files
-    allow: each file is replaced whole by tmp + fsync + rename (the house
-    ``store.atomic_write_bytes``), so neither is ever half-written; the card
-    gains its RESOLUTION block BELOW its unchanged bytes (byte-identical to
-    an append); and if the ledger write fails, the card is put back to its
-    exact pre-resolve bytes."""
-    atomic_write_bytes(twin_path, card_raw + block.encode("utf-8"))
-    try:
-        atomic_write_bytes(ledger_path, ledger_bytes)
-    except BaseException:
-        atomic_write_bytes(twin_path, card_raw)
-        raise
+    """The resolve's two writes, committed as one (:func:`_commit_twin_pair`):
+    the card gains its RESOLUTION block BELOW its unchanged bytes
+    (byte-identical to an append), the ledger its resolved row; neither is
+    renamed into place before both are fsynced, and a failed ledger rename
+    puts the card back as its exact pre-resolve file."""
+    _commit_twin_pair(
+        twin_path, card_raw + block.encode("utf-8"), ledger_path, ledger_bytes, new_card=False
+    )
 
 
 # ------------------------------------------------------------------- parse
@@ -514,7 +605,9 @@ def resolution_block(
     entry_panel_sha: str,
     script_sha: str,
 ) -> tuple[str, str, float, float]:
-    """(block text, resolved ledger row, twin total, unhedged net)."""
+    """(block text, the resolved row's status + P&L cells, twin total,
+    unhedged net). The cells REPLACE only the OPEN row's ``| OPEN | — | — |``
+    tail — :func:`resolved_ledger_bytes` keeps its identity cells."""
     names = [n for n, _, _ in spec.legs]
     for n in [HEDGE_INSTRUMENT, *names]:
         rows = panel.get(n)
@@ -561,9 +654,9 @@ cost stays regime-dependent (RT-4 revisions 3-4) — never "decay + fees".
 
 resolution provenance: card sha256 {spec.sha256} (re-verified); panel sha256
 {panel_sha} (panel at generation: {entry_panel_sha}); generator sha256
-{script_sha}.
+{script_sha} (re-verified: the twin's own generator).
 """
-    row = f"| #{TWIN_NO} | RESOLVED {spec.exit_date} | {_pnl(twin_total)} | {_pnl(unhedged_net)} |"
+    row = f"| RESOLVED {spec.exit_date} | {_pnl(twin_total)} | {_pnl(unhedged_net)} |"
     return text, row, twin_total, unhedged_net
 
 
@@ -586,10 +679,9 @@ def generate(spec: CardSpec, paper: Path, *, write: bool) -> int:
     ledger_path = twins / "LEDGER.md"
     if twin_path.exists():
         raise Refusal(f"{twin_path} already exists — one twin per card, rerun refused")
-    if ledger_path.exists():
-        existing = ledger_path.read_text()
-        if f"| #{TWIN_NO} |" in existing:
-            raise Refusal(f"twin #{TWIN_NO} already has a ledger row — rerun refused")
+    prior = ledger_path.read_bytes() if ledger_path.exists() else b""
+    if f"| #{TWIN_NO} |".encode() in prior:
+        raise Refusal(f"twin #{TWIN_NO} already has a ledger row — rerun refused")
     panel, panel_sha = read_panel_with_sha256(paper / "ohlc-panel.json")
     sq_rows = panel.get(HEDGE_INSTRUMENT)
     if not isinstance(sq_rows, dict) or not _close_ok(sq_rows, spec.entry_date):
@@ -604,13 +696,12 @@ def generate(spec: CardSpec, paper: Path, *, write: bool) -> int:
     script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     card = twin_card_text(spec, res, h, sq_entry, panel_sha=panel_sha, script_sha=script_sha)
     row = ledger_row(spec, res, h) + "\n" + REGIME_MARKER + "\n"
+    # append-only: the new ledger is the prior bytes + this twin's row (the
+    # header only for a missing or empty ledger), committed WITH the card
+    ledger_bytes = prior + (row if prior else LEDGER_HEADER + row).encode("utf-8")
     if write:
         twins.mkdir(parents=True, exist_ok=True)
-        with twin_path.open("x", encoding="utf-8") as fh:
-            fh.write(card)
-        existed = ledger_path.exists() and ledger_path.stat().st_size > 0
-        with ledger_path.open("a", encoding="utf-8") as fh:
-            fh.write(row if existed else LEDGER_HEADER + row)
+        _commit_twin_pair(twin_path, card.encode("utf-8"), ledger_path, ledger_bytes, new_card=True)
     print(card)
     print(row)
     if not write:
@@ -632,6 +723,21 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
     sq_m = re.search(r"\| SQQQ entry close \| \$([\d,]+\.\d{2}) \|", text)
     if not h_m or not sq_m:
         raise Refusal(f"{twin_path}: cannot re-read the sealed h_notional / SQQQ entry")
+    # identity (WT2-c-fix): the resolver must be the very script that wrote
+    # the twin — the twin records its generator's sha256 at the 11-27 write
+    script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    recorded_gen = re.findall(
+        r"^- generator: scripts/desk/sqqq_twin\.py — sha256 ([0-9a-f]{64})$", text, re.MULTILINE
+    )
+    if len(recorded_gen) != 1:
+        raise Refusal(f"{twin_path}: cannot re-read the generator sha256 the twin was written by")
+    if recorded_gen[0] != script_sha:
+        raise Refusal(
+            f"{twin_path.name} records generator sha256 {recorded_gen[0]} but this resolver "
+            f"is sha256 {script_sha} — scripts/desk/sqqq_twin.py changed between the twin "
+            f"write and its resolve; refusing with nothing written (the script is frozen "
+            f"from the twin write until the twin resolves)"
+        )
     h = float(h_m.group(1).replace(",", ""))
     panel, panel_sha = read_panel_with_sha256(paper / "ohlc-panel.json")
     sq_rows = panel.get(HEDGE_INSTRUMENT)
@@ -654,7 +760,6 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
     # ...and every card leg's sealed entry close, at the same tolerance
     check_leg_entry_basis(spec, panel)
     entry_panel_sha = re.search(r"ohlc-panel\.json — sha256 ([0-9a-f]{64})", text)
-    script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     block, row, _twin_total, _unhedged_net = resolution_block(
         spec,
         panel,
@@ -670,7 +775,7 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
     if write:
         commit_resolution(twin_path, card_raw, block, ledger_path, ledger_bytes)
     print(block)
-    print(row)
+    print(_twin_row(ledger_bytes))
     if not write:
         print("(dry run: nothing written; pass --write to record the resolution)")
     return 0
@@ -709,3 +814,6 @@ if __name__ == "__main__":
     except Refusal as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
+    except Stranded as exc:
+        print(f"STRANDED: {exc}", file=sys.stderr)
+        raise SystemExit(3) from None

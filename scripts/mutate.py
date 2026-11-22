@@ -10338,6 +10338,154 @@ MUTANTS.extend(
 )
 
 
+# ---- WT2-c-fix (2026-11-22): the SQQQ-HEDGE-001 twin's two writes, before
+# the 11-27 twin write. generate (11-27) and --resolve (12-01) now commit the
+# twin card and the twin ledger as ONE step (sqqq_twin._commit_twin_pair):
+# both tmp files fsynced before either rename, the renames back to back, a
+# failed ledger rename rolled back without a data write (F-C1, F-C2, F-C4);
+# the resolved ledger row keeps its identity cells (F-C3); --resolve refuses
+# a twin written by a different generator sha256 (verdict §3). FREEZE: from
+# the 11-27 twin write, scripts/desk/sqqq_twin.py must not change until the
+# twin resolves — the 12-01 resolve refuses a different script.
+#
+# The new write protocol moved two anchors out of sqqq_twin.py (each now
+# occurs 0x): SQ-M4's `ledger_path.open("a", ...)` and SQ-RESOLVE-4's
+# `atomic_write_bytes(ledger_path, ledger_bytes)`. Their entries above are
+# NOT edited (append-only registry): they are retired HERE, by id and
+# fail-closed (each must be registered exactly once), and each invariant is
+# re-pinned to the code that now carries it — WT2CFIX-R1 / -R2, same owners.
+_WT2CFIX_RETIRED = {
+    "SQ-M4-ledger-overwrite": "WT2CFIX-R1-ledger-append-drops-prior-rows",
+    "SQ-RESOLVE-4-ledger-write-not-atomic": "WT2CFIX-R2-ledger-rewritten-in-place",
+}
+assert sorted(m["id"] for m in MUTANTS if m["id"] in _WT2CFIX_RETIRED) == sorted(
+    _WT2CFIX_RETIRED
+), "a WT2-c-fix retired id names no single registered mutant"
+MUTANTS[:] = [m for m in MUTANTS if m["id"] not in _WT2CFIX_RETIRED]
+
+_WT2CFIX_LEDGER_TMP = "        _store._write_tmp(ledger_path, ledger_bytes)\n"
+_WT2CFIX_CARD_PUBLISH = (
+    "        if new_card:\n"
+    "            try:\n"
+    "                os.link(card_tmp, card_path)\n"
+    "            except FileExistsError:\n"
+    "                raise Refusal(\n"
+    '                    f"{card_path} already exists — one twin per card, rerun refused"\n'
+    "                ) from None\n"
+    "        else:\n"
+    "            os.link(card_path, pre)\n"
+    "            debris.append(pre)\n"
+    "            os.replace(card_tmp, card_path)\n"
+)
+_WT2CFIX_LEDGER_RENAME = "        try:\n            os.replace(ledger_tmp, ledger_path)\n"
+MUTANTS.extend(
+    [
+        dict(
+            id="WT2CFIX-1-ledger-tmp-written-after-the-card-rename",
+            owner="test_both_tmp_files_are_written_and_fsynced_before_either_rename",
+            file="scripts/desk/sqqq_twin.py",
+            anchor=_WT2CFIX_LEDGER_TMP + _WT2CFIX_CARD_PUBLISH + _WT2CFIX_LEDGER_RENAME,
+            # the pre-fix order: the ledger's data write AFTER the card is in place
+            replacement=_WT2CFIX_CARD_PUBLISH + _WT2CFIX_LEDGER_TMP + _WT2CFIX_LEDGER_RENAME,
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT2CFIX-1 both twin writes (generate, --resolve) write and fsync"
+                " BOTH tmp files before EITHER rename into the twin card or the twin"
+                " ledger, and the two renames run back to back (F-C1, F-C2)"
+            ),
+        ),
+        dict(
+            id="WT2CFIX-2-generate-rollback-removed",
+            owner="test_generate_ledger_rename_failure_unpublishes_the_card",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="                    card_path.unlink()  # rollback: the card did not exist before\n",
+            replacement="                    pass  # mutant: the new card stays published\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT2CFIX-2 a failed ledger rename at generate takes the just-published"
+                " twin card back — no twin card ever exists without its ledger row (F-C2)"
+            ),
+        ),
+        dict(
+            id="WT2CFIX-2b-generate-clobbers-a-card",
+            owner="test_generate_never_clobbers_a_card_that_appears_mid_write",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="                os.link(card_tmp, card_path)\n",
+            replacement="                os.replace(card_tmp, card_path)\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT2CFIX-2b generate publishes the twin card only if it does not exist"
+                " (os.link, the old open('x')) — a card that appears mid-write is never"
+                " overwritten"
+            ),
+        ),
+        dict(
+            id="WT2CFIX-3-resolved-row-drops-identity-cells",
+            owner="test_happy_path_card_and_ledger_agree",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="open_re.sub(lambda m: m.group(1) + row, ledger, count=1)",
+            replacement="open_re.sub(lambda _m: row, ledger, count=1)",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT2CFIX-3 the resolved twin ledger row keeps all 8 cells: the OPEN"
+                " row's twin #, card + sha256 16, entry → exit, β̂ and h_notional stay,"
+                " only status + the two P&L cells resolve (F-C3)"
+            ),
+        ),
+        dict(
+            id="WT2CFIX-4-resolve-rollback-removed",
+            owner="test_ledger_write_failure_restores_the_card",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="                    os.replace(pre, card_path)  # rollback: by rename, no data write\n",
+            replacement="                    pass  # mutant: the resolved card stays beside an OPEN row\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT2CFIX-4 a failed ledger rename at --resolve puts the twin card back"
+                " as its exact pre-resolve file, by rename, with no data write (F-C4)"
+            ),
+        ),
+        dict(
+            id="WT2CFIX-5-generator-hash-unchecked",
+            owner="test_generator_hash_mismatch_refuses_with_nothing_written",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="    if recorded_gen[0] != script_sha:\n",
+            replacement="    if False:\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT2CFIX-5 --resolve refuses, with nothing written, unless the twin's"
+                " recorded generator sha256 equals the resolver's own sha256 (verdict §3)"
+            ),
+        ),
+        dict(
+            id=_WT2CFIX_RETIRED["SQ-M4-ledger-overwrite"],
+            owner="test_ledger_append_never_overwrites",
+            file="scripts/desk/sqqq_twin.py",
+            anchor=(
+                '    ledger_bytes = prior + (row if prior else LEDGER_HEADER + row).encode("utf-8")\n'
+            ),
+            replacement='    ledger_bytes = (row if prior else LEDGER_HEADER + row).encode("utf-8")\n',
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "the twin ledger is append-only: a new twin row never truncates prior"
+                " rows, the header, or the regime marker (SQ-M4, re-pinned by WT2-c-fix)"
+            ),
+        ),
+        dict(
+            id=_WT2CFIX_RETIRED["SQ-RESOLVE-4-ledger-write-not-atomic"],
+            owner="test_ledger_rewrite_is_an_atomic_rename",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="            os.replace(ledger_tmp, ledger_path)\n",
+            replacement="            ledger_path.write_bytes(ledger_bytes)\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "the twin ledger is replaced by tmp + fsync + rename, never rewritten in"
+                " place (SQ-RESOLVE-4, re-pinned by WT2-c-fix)"
+            ),
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

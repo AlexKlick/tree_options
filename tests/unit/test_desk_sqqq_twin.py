@@ -12,6 +12,7 @@ the serving checkout is never touched.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import itertools
@@ -20,11 +21,14 @@ import math
 import os
 import random
 import re
+import shlex
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+from tree_options.desk import store as desk_store
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "desk" / "sqqq_twin.py"
@@ -687,6 +691,13 @@ def _generated(tmp_path: Path, monkeypatch, **panel_kw) -> Path:
     return paper
 
 
+def _partial_then_enospc(path: Path, data: bytes) -> None:
+    """What the house tmp writer (store._write_tmp) leaves behind on a full
+    disk: a partial tmp file, then ENOSPC."""
+    desk_store._tmp_for(path).write_bytes(data[: len(data) // 2])
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
 class TestResolveValidatesBeforeWrite:
     """``--resolve`` validates everything before its first write (a refusal
     leaves every file byte-identical), cross-checks every card leg's entry
@@ -706,9 +717,10 @@ class TestResolveValidatesBeforeWrite:
         paper = _generated(tmp_path, monkeypatch)
         twin, ledger = _twin_paths(paper)
         text = ledger.read_text()
+        # the shape a resolved row really has: identity cells kept (F-C3)
         closed = re.sub(
-            r"\| #1 \| [^\n]*\| OPEN \| — \| — \|",
-            f"| #1 | RESOLVED {EXIT} | +1.00 | +1.00 |",
+            r"\| OPEN \| — \| — \|",
+            f"| RESOLVED {EXIT} | +1.00 | +1.00 |",
             text,
         )
         assert closed != text
@@ -801,22 +813,40 @@ class TestResolveValidatesBeforeWrite:
         assert ledger.stat().st_ino != held.stat().st_ino
         assert b"RESOLVED" in ledger.read_bytes()
 
-    def test_ledger_write_failure_restores_the_card(self, tmp_path, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        "fault", ["ledger_tmp_enospc", "ledger_rename_fails", "ledger_rename_fails_on_a_full_disk"]
+    )
+    def test_ledger_write_failure_restores_the_card(self, tmp_path, monkeypatch, fault) -> None:
+        """The ledger's write fails at its data write (ENOSPC) or at its
+        rename — the latter AFTER the card was renamed into place, and on a
+        disk with no room left for a restore write. Every case ends with the
+        card back as the SAME file (its original inode: put back by rename,
+        never re-written), no tmp debris, and a re-run that resolves."""
         paper = _generated(tmp_path, monkeypatch)
-        _, ledger = _twin_paths(paper)
-        before = sha_map(paper)
-        real = sqqq.atomic_write_bytes
+        twin, ledger = _twin_paths(paper)
+        before, card_ino = sha_map(paper), twin.stat().st_ino
+        real_write, real_replace = desk_store._write_tmp, os.replace
+        disk = {"full": False}
 
-        def failing(path: Path, data: bytes) -> None:
-            if path == ledger:
-                raise OSError("simulated ENOSPC on the ledger write")
-            real(path, data)
+        def write(path: Path, data: bytes) -> Path:
+            if disk["full"] or (fault == "ledger_tmp_enospc" and path == ledger):
+                _partial_then_enospc(path, data)
+            return real_write(path, data)
 
-        monkeypatch.setattr(sqqq, "atomic_write_bytes", failing)
-        with pytest.raises(OSError, match="ENOSPC"):
+        def replace(src, dst) -> None:
+            if fault != "ledger_tmp_enospc" and Path(dst) == ledger:
+                disk["full"] = fault == "ledger_rename_fails_on_a_full_disk"
+                raise OSError(errno.EIO, "simulated failure of the ledger rename")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(desk_store, "_write_tmp", write)
+        monkeypatch.setattr(os, "replace", replace)
+        with pytest.raises(OSError):
             run_resolve(paper)
-        assert sha_map(paper) == before  # the card is back to its exact bytes
-        monkeypatch.setattr(sqqq, "atomic_write_bytes", real)
+        assert sha_map(paper) == before  # the card is back to its exact bytes, no debris
+        assert twin.stat().st_ino == card_ino  # ...as the same file, with no data write
+        monkeypatch.setattr(desk_store, "_write_tmp", real_write)
+        monkeypatch.setattr(os, "replace", real_replace)
         assert run_resolve(paper) == 0  # ...so a re-run is not blocked
 
     def test_happy_path_card_and_ledger_agree(self, tmp_path, monkeypatch) -> None:
@@ -834,8 +864,22 @@ class TestResolveValidatesBeforeWrite:
         pre_lines, post_lines = ledger_pre.splitlines(), ledger.read_text().splitlines()
         changed = [(a, b) for a, b in zip(pre_lines, post_lines, strict=True) if a != b]
         assert len(changed) == 1  # only the twin's own row moved
-        assert "| OPEN | — | — |" in changed[0][0]
-        assert changed[0][1] == f"| #1 | RESOLVED {EXIT} | {total} | {unhedged} |"
+        open_row, resolved_row = changed[0]
+        assert "| OPEN | — | — |" in open_row
+        # F-C3: the FULL 8-cell row — the OPEN row's identity cells (twin,
+        # card + sha256 16, entry → exit, β̂, h_notional) are KEPT, and only
+        # status + the two P&L cells resolve, each under its own header
+        card_sha = hashlib.sha256(CARD_TEXT.encode()).hexdigest()
+        beta, _ = oracle_slope(build_panel(loading=2.0, seed=5), ["AMD", "LLY", "INTC"], WINDOW)
+        h = min(max(beta, 0.0), 3.0) / 3.0 * 7500.0
+        assert resolved_row == (
+            f"| #1 | {CARD_FILE} ({card_sha[:16]}) | {ENTRY} → {EXIT} | {beta:.6f} | "
+            f"${h:,.2f} | RESOLVED {EXIT} | {total} | {unhedged} |"
+        )
+        assert f"{CARD_FILE} ({card_sha[:16]})" in resolved_row  # it still names WHICH card
+        assert resolved_row.startswith(open_row.removesuffix("| OPEN | — | — |"))
+        header = next(ln for ln in post_lines if ln.startswith("| twin |"))
+        assert len(header.strip("|").split("|")) == len(resolved_row.strip("|").split("|")) == 8
         # the sealed card chain is untouched
         after = {k: v for k, v in sha_map(paper).items() if not k.startswith("sqqq-twins/")}
         assert after == chain
@@ -848,3 +892,270 @@ class TestResolveValidatesBeforeWrite:
         before = sha_map(paper)
         assert run_resolve(paper, write=False) == 0
         assert sha_map(paper) == before
+
+    @pytest.mark.parametrize(
+        "change", ["twin_records_another_generator", "resolver_script_changed"]
+    )
+    def test_generator_hash_mismatch_refuses_with_nothing_written(
+        self, tmp_path, monkeypatch, change
+    ) -> None:
+        """The twin card records the generator's sha256 at the 11-27 write;
+        the 12-01 resolve must be the SAME script. A twin that records
+        another generator, or a resolver whose own bytes changed after the
+        twin write, refuses — naming both hashes — with nothing written."""
+        paper = _generated(tmp_path, monkeypatch)
+        twin, _ = _twin_paths(paper)
+        running = hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+        if change == "twin_records_another_generator":
+            recorded, resolver = "0" * 64, running
+            text = twin.read_text()
+            line = f"- generator: scripts/desk/sqqq_twin.py — sha256 {running}\n"
+            assert text.count(line) == 1
+            twin.write_text(text.replace(line, line.replace(running, recorded)))
+        else:
+            edited = tmp_path / "sqqq_twin.py"  # outside the paper tree
+            edited.write_bytes(SCRIPT.read_bytes() + b"# edited after the twin write\n")
+            monkeypatch.setattr(sqqq, "__file__", str(edited))
+            recorded, resolver = running, hashlib.sha256(edited.read_bytes()).hexdigest()
+        assert recorded != resolver
+        before = sha_map(paper)
+        with pytest.raises(
+            sqqq.Refusal,
+            match=rf"records generator sha256 {recorded} but this resolver is sha256 {resolver}",
+        ):
+            run_resolve(paper)
+        assert sha_map(paper) == before
+
+    def test_twin_without_its_generator_sha_refuses(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch)
+        twin, _ = _twin_paths(paper)
+        text = twin.read_text()
+        stripped = re.sub(r"^- generator: [^\n]*\n", "", text, flags=re.MULTILINE)
+        assert stripped != text
+        twin.write_text(stripped)
+        before = sha_map(paper)
+        with pytest.raises(sqqq.Refusal, match="cannot re-read the generator sha256"):
+            run_resolve(paper)
+        assert sha_map(paper) == before
+
+
+# ----------- the twin card and the twin ledger commit as ONE (WT2-c-fix)
+
+
+class TestTwinWritesCommitAsOne:
+    """generate (the 11-27 entry write) and --resolve (the 12-01 exit write)
+    each write the twin card AND the twin ledger. Both new files are written
+    and fsynced as tmp files BEFORE EITHER is renamed into place, the two
+    renames run back to back, and a failed second rename is rolled back
+    without a data write — so no failure the process survives can leave a
+    card and a ledger that disagree (F-C1, F-C2)."""
+
+    @pytest.mark.parametrize("stage", ["generate", "resolve"])
+    def test_both_tmp_files_are_written_and_fsynced_before_either_rename(
+        self, tmp_path, monkeypatch, stage
+    ) -> None:
+        """Reviewer repro test_B, inverted: every data write AND its fsync
+        precede the first rename into either real file, and the two renames
+        are adjacent — no data write between them."""
+        if stage == "generate":
+            paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
+            patch_card_pin(monkeypatch)
+            run = run_generate
+        else:
+            paper = _generated(tmp_path, monkeypatch)
+            run = run_resolve
+        twin, ledger = _twin_paths(paper)
+        finals = (twin.name, ledger.name)
+        events: list[tuple[str, str]] = []
+        writing: list[str] = []
+        real_write, real_fsync = desk_store._write_tmp, os.fsync
+        real_replace, real_link = os.replace, os.link
+
+        def spy_write(path: Path, data: bytes) -> Path:
+            events.append(("write", path.name))
+            writing.append(path.name)
+            try:
+                return real_write(path, data)
+            finally:
+                writing.pop()
+
+        def spy_fsync(fd: int) -> None:
+            events.append(("fsync", writing[-1] if writing else "?"))
+            real_fsync(fd)
+
+        def spy_replace(src, dst) -> None:
+            events.append(("rename", Path(dst).name))
+            real_replace(src, dst)
+
+        def spy_link(src, dst) -> None:
+            events.append(("rename", Path(dst).name))  # a publishing link counts
+            real_link(src, dst)
+
+        monkeypatch.setattr(desk_store, "_write_tmp", spy_write)
+        monkeypatch.setattr(os, "fsync", spy_fsync)
+        monkeypatch.setattr(os, "replace", spy_replace)
+        monkeypatch.setattr(os, "link", spy_link)
+        assert run(paper) == 0
+        renames = [i for i, ev in enumerate(events) if ev[0] == "rename" and ev[1] in finals]
+        assert [events[i][1] for i in renames] == [twin.name, ledger.name]
+        first = renames[0]
+        for name in finals:
+            assert ("write", name) in events[:first], events
+            assert ("fsync", name) in events[:first], events
+        assert renames[1] == first + 1, events  # back to back
+
+    def test_enospc_on_the_ledger_and_on_the_restore_leaves_both_files_untouched(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Reviewer repro test_A, inverted: the disk fills after the first
+        data write, so the ledger's write fails and so would any restore
+        write. Both files stay byte-identical (no RESOLUTION beside an OPEN
+        row, no tmp debris) and the re-run resolves."""
+        paper = _generated(tmp_path, monkeypatch)
+        twin, ledger = _twin_paths(paper)
+        before = sha_map(paper)
+        real = desk_store._write_tmp
+        calls: list[Path] = []
+
+        def disk_fills(path: Path, data: bytes) -> Path:
+            calls.append(path)
+            if len(calls) >= 2:
+                _partial_then_enospc(path, data)
+            return real(path, data)
+
+        monkeypatch.setattr(desk_store, "_write_tmp", disk_fills)
+        with pytest.raises(OSError) as exc:
+            run_resolve(paper)
+        assert exc.value.errno == errno.ENOSPC
+        assert sha_map(paper) == before
+        monkeypatch.setattr(desk_store, "_write_tmp", real)
+        assert run_resolve(paper) == 0  # not stuck at "already carries a RESOLUTION block"
+        assert "## RESOLUTION" in twin.read_text()
+        assert "| OPEN |" not in ledger.read_text()
+
+    def test_generate_ledger_write_failure_strands_no_card(self, tmp_path, monkeypatch) -> None:
+        """Reviewer repro test_C, inverted: the 11-27 ledger write fails on a
+        full disk — through whichever primitive writes it (the house tmp
+        writer, or an in-place append). No twin card may exist without its
+        ledger row: re-generation and the 12-01 resolve both still work."""
+        paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
+        patch_card_pin(monkeypatch)
+        twin, ledger = _twin_paths(paper)
+        before = sha_map(paper)
+        real_write, real_open = desk_store._write_tmp, Path.open
+
+        def full_disk_write(path: Path, data: bytes) -> Path:
+            if path == ledger:
+                _partial_then_enospc(path, data)
+            return real_write(path, data)
+
+        def full_disk_open(self, mode="r", *args, **kwargs):
+            if self == ledger and any(c in mode for c in "wax+"):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_open(self, mode, *args, **kwargs)
+
+        monkeypatch.setattr(desk_store, "_write_tmp", full_disk_write)
+        monkeypatch.setattr(Path, "open", full_disk_open)
+        with pytest.raises(OSError) as exc:
+            run_generate(paper)
+        assert exc.value.errno == errno.ENOSPC
+        assert sha_map(paper) == before  # no card without a row, no tmp debris
+        assert not twin.exists()
+        monkeypatch.setattr(desk_store, "_write_tmp", real_write)
+        monkeypatch.setattr(Path, "open", real_open)
+        assert run_generate(paper) == 0
+        assert run_resolve(paper) == 0
+
+    def test_generate_ledger_rename_failure_unpublishes_the_card(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The card is published, then the ledger rename fails: the card is
+        taken back (it did not exist before), so the twin is not stranded."""
+        paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
+        patch_card_pin(monkeypatch)
+        twin, ledger = _twin_paths(paper)
+        before = sha_map(paper)
+        real_replace = os.replace
+
+        def replace(src, dst) -> None:
+            if Path(dst) == ledger:
+                raise OSError(errno.EIO, "simulated failure of the ledger rename")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", replace)
+        with pytest.raises(OSError, match="ledger rename"):
+            run_generate(paper)
+        assert sha_map(paper) == before
+        assert not twin.exists()
+        monkeypatch.setattr(os, "replace", real_replace)
+        assert run_generate(paper) == 0
+        assert run_resolve(paper) == 0
+
+    def test_generate_never_clobbers_a_card_that_appears_mid_write(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The old open("x") semantics: a twin card that appears after the
+        pre-check (another writer) is never overwritten — refuse, and leave
+        both that card and the ledger as they are."""
+        paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
+        patch_card_pin(monkeypatch)
+        twin, ledger = _twin_paths(paper)
+        real_write = desk_store._write_tmp
+
+        def racing_writer(path: Path, data: bytes) -> Path:
+            if path == ledger and not twin.exists():
+                twin.write_bytes(b"another writer's twin card\n")
+            return real_write(path, data)
+
+        monkeypatch.setattr(desk_store, "_write_tmp", racing_writer)
+        with pytest.raises(sqqq.Refusal, match="already exists"):
+            run_generate(paper)
+        assert twin.read_bytes() == b"another writer's twin card\n"
+        assert not ledger.exists()
+        assert sorted(p.name for p in twin.parent.iterdir()) == [twin.name]  # no debris
+
+    @pytest.mark.parametrize("stage", ["generate", "resolve"])
+    def test_a_failed_rollback_names_the_one_command_that_recovers(
+        self, tmp_path, monkeypatch, stage
+    ) -> None:
+        """The ledger rename fails AND the card's rollback fails too. The
+        commit cannot restore itself, so it raises Stranded naming the exact
+        command — and running that command restores the pre-commit state."""
+        if stage == "generate":
+            paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
+            patch_card_pin(monkeypatch)
+            run = run_generate
+        else:
+            paper = _generated(tmp_path, monkeypatch)
+            run = run_resolve
+        twin, ledger = _twin_paths(paper)
+        before = sha_map(paper)
+        real_replace, real_unlink = os.replace, Path.unlink
+
+        def replace(src, dst) -> None:
+            if Path(dst) == ledger or Path(src).name.endswith(".pre"):
+                raise OSError(errno.EIO, "simulated rename failure")
+            real_replace(src, dst)
+
+        def unlink(self, missing_ok=False) -> None:
+            if self == twin:
+                raise OSError(errno.EIO, "simulated unlink failure")
+            real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(os, "replace", replace)
+        monkeypatch.setattr(Path, "unlink", unlink)
+        with pytest.raises(sqqq.Stranded) as exc:
+            run(paper)
+        assert str(ledger) in str(exc.value)
+        command = re.search(r"`([^`]+)`", str(exc.value)).group(1)
+        argv = shlex.split(command)
+        monkeypatch.setattr(os, "replace", real_replace)
+        monkeypatch.setattr(Path, "unlink", real_unlink)
+        if stage == "generate":
+            assert argv == ["rm", str(twin)]
+            twin.unlink()
+        else:
+            assert argv[0] == "mv" and argv[2] == str(twin)
+            os.replace(argv[1], argv[2])
+        assert sha_map(paper) == before  # the named command IS the recovery
+        assert run(paper) == 0
