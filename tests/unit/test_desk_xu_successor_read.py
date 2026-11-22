@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 
 from tree_options.desk import xu_shadow
+from tree_options.trex_web import ideas_view
 
 # The one-shot script's sealed path carries hyphens (not an importable module
 # name), so it is loaded by file location like the other hyphenated scripts.
@@ -112,7 +113,19 @@ def _xu_card_text(*, entry: str, exit_: str, legs: tuple[str, ...], panel: dict[
             f"| {n} | rank 1/62, 273-session return +1.00% | {e_close} | $2,500 LONG |"
             f" {exit_} close |"
         )
+    lines += _xu_resolution(entry=entry, exit_=exit_, legs=legs, panel=panel)
     lines += [
+        "",
+        "## Draft checks (sealed with the card)",
+        "- ranked 60/62; excluded: BK (no_session_bar), WBA (no_session_bar)",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _xu_resolution(
+    *, entry: str, exit_: str, legs: tuple[str, ...], panel: dict[str, Any]
+) -> list[str]:
+    lines = [
         "",
         f"## Resolution ({exit_} - card resolved at the official close)",
         "",
@@ -124,12 +137,7 @@ def _xu_card_text(*, entry: str, exit_: str, legs: tuple[str, ...], panel: dict[
             f"| {n} | {panel[n][entry]['close']} | {exit_} | {panel[n][exit_]['close']}"
             " | time-stop at horizon close | 0.00 | 0.00 |"
         )
-    lines += [
-        "",
-        "## Draft checks (sealed with the card)",
-        "- ranked 60/62; excluded: BK (no_session_bar), WBA (no_session_bar)",
-    ]
-    return "\n".join(lines) + "\n"
+    return lines
 
 
 def _panel(cal, through: Any) -> dict[str, dict[str, dict[str, Any]]]:
@@ -230,6 +238,53 @@ def _cum(rets: list[str]) -> Decimal:
 
 
 # -------------------------------------------------------------------- READ-1
+
+
+def test_incumbent_loader_rejects_misfiled_xu_draft(paper, synthetic_calendar) -> None:
+    cal = synthetic_calendar
+    _write_incumbent(paper, cal, [UP, DOWN])
+    entry = _months(cal, 3)[-1]
+    exit_ = _exit(cal, entry)
+    panel = _panel(cal, exit_)
+    draft = xu_shadow.xu_draft(panel, entry, cal, exit_session=exit_, generated_at=NOW)
+    assert draft is not None
+    resolution = _xu_resolution(
+        entry=entry.isoformat(), exit_=exit_.isoformat(), legs=SHADOW_LEGS, panel=panel
+    )
+    path = paper / f"{exit_}-xsmom-top3.md"
+    path.write_text(draft + "\n".join(resolution) + "\n")
+
+    with pytest.raises(xr.ReadContractError, match=r"unparseable title: .*XSMOM-TOP3-XU"):
+        xr.load_incumbent_series(paper, paper / "appendix.md")
+
+
+def test_paper_readers_exclude_nested_card_fills(paper, synthetic_calendar) -> None:
+    (exit_,) = _write_incumbent(paper, synthetic_calendar, [UP])
+    incumbent = paper / f"{exit_}-xsmom-top3.md"
+    ledger_row = f"| {exit_} | AMD | {EXIT_CLOSE[UP]} |"
+    (paper / "LEDGER.md").write_text(ledger_row + "\n")
+
+    # An incumbent-compatible basename and title isolate the directory boundary.
+    shadow = paper / "xu-shadow"
+    shadow.mkdir()
+    sentinel = Decimal("777.77")
+    nested = shadow / incumbent.name
+    nested.write_text(incumbent.read_text().replace(EXIT_CLOSE[UP], str(sentinel)))
+    assert xr.parse_card(nested).exit_closes["AMD"] == sentinel
+    (shadow / "XU-SHADOW-LEDGER.md").write_text(
+        f"| {exit_} | {nested.name} | {hashlib.sha256(nested.read_bytes()).hexdigest()} "
+        f"| sealed | AMD fill {sentinel} |\n"
+    )
+
+    cards, _ = xr.load_incumbent_series(paper, paper / "appendix.md")
+    fills = [card.exit_closes["AMD"] for card in cards]
+    assert Decimal(EXIT_CLOSE[UP]) in fills
+    assert sentinel not in fills
+
+    section = ideas_view._cards_section(paper, "AMD")
+    assert section is not None
+    assert ledger_row in section["lines"]
+    assert all(str(sentinel) not in line for line in section["lines"])
 
 
 def test_positive_cumulative_closes_the_question_one_shot(
@@ -368,6 +423,31 @@ def test_placebo_and_bars_are_seed_deterministic(paper, tmp_path, synthetic_cale
     )
 
     assert first == second  # byte-for-byte identical evaluation state
+
+
+def test_main_seeds_the_one_stream_with_20261114(
+    paper, tmp_path, synthetic_calendar, monkeypatch
+) -> None:
+    """The PRODUCTION read path (``main``, not a direct ``evaluate_shadow``
+    call) hands the §4.5 evaluation ONE fresh stream seeded with the sealed
+    literal. Compared against ``random.Random(20261114)`` -- never against
+    ``xr.SEED``, which would let a drifted constant agree with itself."""
+    import random
+
+    state = tmp_path / "state"
+    _write_world(paper, synthetic_calendar, [UP] * 7 + [DOWN] * 11)  # a DISAPPOINTMENT
+    real = xr.evaluate_shadow
+    seen: list[object] = []
+
+    def spy(paper_, panel, cal, incumbent, rng):
+        seen.append(rng.getstate())  # before the evaluation draws anything
+        return real(paper_, panel, cal, incumbent, rng)
+
+    monkeypatch.setattr(xr, "evaluate_shadow", spy)
+
+    assert _run(paper, state, synthetic_calendar) == 0
+    assert len(seen) == 1  # the single §4.5 evaluation ran exactly once
+    assert seen[0] == random.Random(20261114).getstate()
 
 
 def test_aa_twin_failure_fails_the_successor_verdict(paper, tmp_path, synthetic_calendar) -> None:

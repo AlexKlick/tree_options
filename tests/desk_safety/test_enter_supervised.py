@@ -33,7 +33,7 @@ from tree_options.trex.contracts import (
     desk_spec_v2_for,
     effect_v1_sha256,
 )
-from tree_options.trex.plan import LegStructure
+from tree_options.trex.plan import Leg, LegStructure
 from tree_options.trex.supervised_desk import EntryRequest
 
 PATH_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
@@ -231,20 +231,30 @@ def test_a_credit_kind_writes_a_blocked_diagnostic_never_a_draft():
         enter_supervised.complete_draft(doc, **live_bindings(SimpleNamespace(now=world_now())))
 
 
-def test_a_credit_deal_in_the_queue_lands_as_blocked(world):
+def _write_credit_queue(world):
     deal = world.queue["admissible"][0]
     # a bear call credit vertical the miner contract accepts: floor credit
     # 2.00 on width 5, so max loss (5 - 2.00) x 100
     legs = [
-        {**deal["legs"][0], "action": "SELL", "strike": "100"},
-        {**deal["legs"][1], "action": "BUY", "strike": "105"},
+        Leg(right="C", action="SELL", strike=Decimal("100"), expiry=world.expiry),
+        Leg(right="C", action="BUY", strike=Decimal("105"), expiry=world.expiry),
     ]
+    structure_legs = [leg.model_dump(mode="json") for leg in legs]
+    for row_leg, structure_leg in zip(deal["legs"], structure_legs, strict=True):
+        row_leg.update(structure_leg)
     prices = {"limit": "2.00", "ref_mid": "2.05"}
-    deal.update(kind="credit_vertical", legs=legs, fill="2.10", max_loss="300.00", **prices)
+    deal.update(kind="credit_vertical", fill="2.10", max_loss="300.00", **prices)
     deal["structure"].update(
-        kind="credit_vertical", legs=legs, exits={"touch": False, "breach": True}, **prices
+        kind="credit_vertical",
+        legs=structure_legs,
+        exits={"touch": False, "breach": True},
+        **prices,
     )
     world.queue_file()
+
+
+def test_a_credit_deal_in_the_queue_lands_as_blocked(world):
+    _write_credit_queue(world)
     doc = run(world)
     assert doc["written"] == [] and len(doc["blocked"]) == 1
     (blocked,) = list(drafts_dir(world).glob("*.BLOCKED.json"))
@@ -286,17 +296,7 @@ def test_the_ideas_view_lists_exactly_what_the_writer_wrote(world):
 def test_the_ideas_view_lists_a_blocked_deal_as_blocked_never_as_an_idea(world):
     from tree_options.trex_web.entry_ideas_view import ideas_payload
 
-    deal = world.queue["admissible"][0]
-    legs = [
-        {**deal["legs"][0], "action": "SELL", "strike": "100"},
-        {**deal["legs"][1], "action": "BUY", "strike": "105"},
-    ]
-    prices = {"limit": "2.00", "ref_mid": "2.05"}
-    deal.update(kind="credit_vertical", legs=legs, fill="2.10", max_loss="300.00", **prices)
-    deal["structure"].update(
-        kind="credit_vertical", legs=legs, exits={"touch": False, "breach": True}, **prices
-    )
-    world.queue_file()
+    _write_credit_queue(world)
     doc = run(world)
     drafts = ideas_payload(world.root / "execution", world.root / "supervised", world.now)["drafts"]
     assert drafts["items"] == []

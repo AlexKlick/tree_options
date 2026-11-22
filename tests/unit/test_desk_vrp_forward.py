@@ -518,11 +518,15 @@ def test_the_emitter_writes_only_inside_its_own_state_directory(
 # ------------------------------------------------------------------ the CLI
 
 
-def test_cli_requires_exactly_one_mode(tmp_path: Path) -> None:
+def test_cli_requires_exactly_one_mode(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     from tree_options.desk.__main__ import run_cli
 
     assert run_cli(["vrp-cond-forward"]) == 2
+    assert "give exactly one of --session D or --catch-up D" in capsys.readouterr().err
     assert run_cli(["vrp-cond-forward", "--session", "2026-11-02", "--catch-up", "2026-09-22"]) == 2
+    # both flags are refused at PARSE time by the argparse mutually-exclusive
+    # group (argparse's own wording), not by a later hand-written check
+    assert "not allowed with argument" in capsys.readouterr().err
 
 
 def test_cli_session_without_a_recorded_chain_writes_nothing(
@@ -541,6 +545,65 @@ def test_cli_catch_up_with_no_recorded_sessions(tmp_path: Path, static_calendar)
 
     rc = run_cli(["vrp-cond-forward", "--catch-up", "2026-09-22"], cal=static_calendar)
     assert rc == 3
+
+
+def test_cli_catch_up_is_floored_at_the_declared_break(
+    tmp_path: Path, static_calendar, capsys: pytest.CaptureFixture
+) -> None:
+    """--catch-up D never reaches below FORWARD_FIRST (2026-09-22): a recorded
+    chain that PRECEDES the break is not a catch-up candidate even when D asks
+    for it, so the run finds nothing to emit and writes nothing."""
+    from tree_options.desk.__main__ import run_cli
+
+    pre_break = date(2026, 9, 15)
+    assert pre_break < FORWARD_FIRST
+    chain = tmp_path / "store" / "chains" / pre_break.isoformat() / "IWM.json.gz"
+    chain.parent.mkdir(parents=True)
+    chain.write_bytes(b"")
+    assert vrp_forward.recorded_chain_sessions(tmp_path / "store") == [pre_break]
+
+    rc = run_cli(["vrp-cond-forward", "--catch-up", "2026-09-01"], cal=static_calendar)
+
+    assert rc == 3
+    assert f"on or after {FORWARD_FIRST}; nothing to emit" in capsys.readouterr().err
+    assert not vrp_forward.state_dir(tmp_path / "state").exists()
+
+
+def test_cli_reports_a_refused_session_instead_of_dropping_it(
+    tmp_path: Path, static_calendar, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A recorded chain with no usable surface goes through the REAL
+    run_emit/emit_session (only the input loaders and the chain reader are
+    faked) and comes back refused: the CLI prints that session's
+    ``status=refused`` line -- a refused session is reported, never absent."""
+    from tree_options.desk.__main__ import run_cli
+
+    session = date(2026, 11, 2)
+    chain = tmp_path / "store" / "chains" / session.isoformat() / "IWM.json.gz"
+    chain.parent.mkdir(parents=True)
+    chain.write_bytes(b"")
+    reason = "no ATM 30d IV on this chain (no bracketing expiry)"
+    monkeypatch.setattr(vrp_forward, "load_inputs", lambda cal: _fake_inputs(static_calendar))
+    monkeypatch.setattr(
+        vrp_forward,
+        "load_base",
+        lambda inputs, state_root, *, now=None: vrp_forward.BaseRecord(
+            series={date(2026, 1, 1): 0.9}, doc={"anchors": {"pass": True}}
+        ),
+    )
+    monkeypatch.setattr(
+        vrp_forward, "harvol20_by_session", lambda inputs: {session: (0.21, {"h": 20})}
+    )
+    monkeypatch.setattr(
+        vrp_forward, "chain_iv30", lambda path, at, rates: (None, {"reason": reason})
+    )
+
+    rc = run_cli(["vrp-cond-forward", "--session", session.isoformat()], cal=static_calendar)
+
+    assert rc == 0
+    assert f"  {session} written status=refused" in capsys.readouterr().out
+    doc = json.loads(gate_path(tmp_path / "state", session).read_text())
+    assert doc["status"] == "refused" and doc["reason"] == reason
 
 
 # ------------------------------------------------------- acceptance (real inputs)

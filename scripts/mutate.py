@@ -9942,6 +9942,402 @@ MUTANTS.extend(
 )
 
 
+# ---- wave-3 WT2-d (2026-11-22): READ-1 incumbent title and directory fence ----
+MUTANTS.extend(
+    [
+        dict(
+            id="XUR-TITLE-1",
+            owner="test_incumbent_loader_rejects_misfiled_xu_draft",
+            file="scripts/desk/xu-successor-read.py",
+            anchor='_INCUMBENT_TITLE = re.compile(r"^# .*XSMOM-TOP3" + _TITLE_FIELDS)',
+            replacement='_INCUMBENT_TITLE = re.compile(r"^# .*XSMOM-TOP3(?:-XU)?" + _TITLE_FIELDS)',
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_incumbent_loader_rejects_misfiled_xu_draft"
+            ],
+            invariant="INV-WT2-d/1 READ-1 rejects an XU title under an incumbent filename",
+        ),
+        dict(
+            id="XUR-TITLE-2",
+            owner="test_paper_readers_exclude_nested_card_fills",
+            file="scripts/desk/xu-successor-read.py",
+            anchor='paper.glob("????-??-??-xsmom-top3.md")',
+            replacement='paper.rglob("????-??-??-xsmom-top3.md")',
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_paper_readers_exclude_nested_card_fills"
+            ],
+            invariant="INV-WT2-d/2 READ-1 reads incumbent cards only at the paper directory's top level",
+        ),
+    ]
+)
+
+
+# ---- wave-3 lane WT2-a (2026-11-22): mutant closure for six zero-coverage desk surfaces ----
+# R-D round 2's 26-mutant spec, every anchor re-grepped (count == 1) at ab214d8.
+# Families: CHAIN-HDR (desk/chains.py CBOE headers), XUF (fetch_ohlc_xu.py),
+# XUR (xu-successor-read.py), XUD (xu_shadow_draft.py), TSA (tsmom_annotate.py
+# + the burned-era boundary in tsmom_overlay.py), VCF-CLI (the vrp-cond-forward
+# CLI in desk/__main__.py). The hand-written --session/--catch-up guard at
+# __main__.py `if args.session is not None and args.catch_up is not None:` is
+# DEAD CODE behind the argparse group (VCF-CLI-M2 pins the live layer): no
+# mutant is registered on it.
+MUTANTS.extend(
+    [
+        dict(
+            id="CHAIN-HDR-M1-referer-dropped",
+            owner="test_the_chain_request_carries_referer_and_accept",
+            file="src/tree_options/desk/chains.py",
+            anchor='    "Referer": "https://www.cboe.com/",\n',
+            replacement="",
+            selectors=[f"{U}/test_desk_chains.py::TestCboeRequestHeaders"],
+            invariant=(
+                "INV-WT2-a/CHAIN-1 the CBOE chain request carries the Referer the"
+                " Cloudflare edge demands (without it: 403, the 11-19..11-20 outage)"
+            ),
+        ),
+        dict(
+            id="CHAIN-HDR-M2-transport-ignores-headers",
+            owner="test_the_chain_request_carries_referer_and_accept",
+            file="src/tree_options/desk/chains.py",
+            anchor="req = urllib.request.Request(url, headers=dict(CBOE_HEADERS))",
+            replacement='req = urllib.request.Request(url, headers={"User-Agent": MOZILLA_UA})',
+            selectors=[f"{U}/test_desk_chains.py::TestCboeRequestHeaders"],
+            invariant=(
+                "INV-WT2-a/CHAIN-2 the request actually SENT carries CBOE_HEADERS"
+                " (Referer included), not just the module constant"
+            ),
+        ),
+        dict(
+            id="XUF-M1-vendor-lag-writes",
+            owner="test_vendor_lag_exits_3_and_writes_nothing",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor='    if missing:\n        print(\n            f"VENDOR LAG',
+            replacement='    if False:\n        print(\n            f"VENDOR LAG',
+            selectors=[
+                f"{U}/test_desk_fetch_ohlc_xu.py::test_vendor_lag_exits_3_and_writes_nothing"
+            ],
+            invariant=(
+                "INV-WT2-a/XUF-1 vendor lag on any roster name exits 3 and writes"
+                " nothing (panel bytes unchanged, no provenance file)"
+            ),
+        ),
+        dict(
+            id="XUF-M2-roster-drift-writes",
+            owner="test_roster_drift_refuses_to_write",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="        if drift:",
+            replacement="        if False:",
+            selectors=[f"{U}/test_desk_fetch_ohlc_xu.py::test_roster_drift_refuses_to_write"],
+            invariant=(
+                "INV-WT2-a/XUF-2 a frozen-roster name absent from the stored panel"
+                " exits 1 and writes nothing"
+            ),
+        ),
+        dict(
+            id="XUF-M3-roster-61",
+            owner="test_roster_is_pinned_at_62_unique_ticker_names",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor='    "WMT",\n)',
+            replacement=")",
+            selectors=[
+                f"{U}/test_desk_fetch_ohlc_xu.py::test_roster_is_pinned_at_62_unique_ticker_names",
+                f"{U}/test_desk_xu_shadow.py::test_roster_pin_matches_the_fetch_script_pin",
+            ],
+            invariant=(
+                "INV-WT2-a/XUF-3 XU_ROSTER is exactly the 62 names pinned to the"
+                " frozen panel sha256"
+            ),
+        ),
+        dict(
+            id="XUF-M4-rebase-never-fires",
+            owner="test_moved_adjustment_rebases_the_full_window",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="            if old > 0 and abs(new / old - 1) > REBASE_TOL:",
+            replacement="            if False:",
+            selectors=[
+                f"{U}/test_desk_fetch_ohlc_xu.py::test_moved_adjustment_rebases_the_full_window"
+            ],
+            invariant=(
+                "INV-WT2-a/XUF-4 a stored overlap close off by more than REBASE_TOL"
+                " triggers the full-window refetch and a `rebase <NAME>` provenance line"
+            ),
+        ),
+        dict(
+            id="XUF-M5-merge-unlocked",
+            owner="test_merge_happens_under_the_exclusive_panel_lock",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="        fcntl.flock(fh, fcntl.LOCK_EX)",
+            replacement="        pass",
+            selectors=[
+                f"{U}/test_desk_fetch_ohlc_xu.py::test_merge_happens_under_the_exclusive_panel_lock"
+            ],
+            invariant=(
+                "INV-WT2-a/XUF-5 the read/merge/write runs as one transaction under"
+                " the exclusive panel flock (timing-based owner: 0.4 s join window)"
+            ),
+        ),
+        dict(
+            id="XUF-M6-merge-not-renamed",
+            owner="test_extend_merges_target_and_records_provenance",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="    os.replace(tmp, path)",
+            replacement="    path.write_bytes(tmp.read_bytes())",
+            selectors=[
+                f"{U}/test_desk_fetch_ohlc_xu.py::test_extend_merges_target_and_records_provenance"
+            ],
+            invariant=(
+                "INV-WT2-a/XUF-6 the merge lands by atomically renaming a fully"
+                " written temp file, leaving no temp residue"
+            ),
+        ),
+        dict(
+            id="XUF-M7-rebase-tol-loosened",
+            owner="test_moved_adjustment_rebases_the_full_window",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor='REBASE_TOL = Decimal("0.005")',
+            replacement='REBASE_TOL = Decimal("0.5")',
+            selectors=[
+                f"{U}/test_desk_fetch_ohlc_xu.py::test_moved_adjustment_rebases_the_full_window"
+            ],
+            invariant=(
+                "INV-WT2-a/XUF-7 the 0.5% threshold, not just the branch, decides"
+                " whether a rebase fires"
+            ),
+        ),
+        dict(
+            id="XUR-M1-zero-not-disappointment",
+            owner="test_exactly_zero_cumulative_is_a_disappointment",
+            file="scripts/desk/xu-successor-read.py",
+            anchor='        "disappointment": cumulative <= 0,',
+            replacement='        "disappointment": cumulative < 0,',
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_exactly_zero_cumulative_is_a_disappointment"
+            ],
+            invariant=(
+                "INV-WT2-a/XUR-1 READ-1 DISAPPOINTMENT is cumulative <= $0 (inclusive):"
+                " exactly $0 is a disappointment"
+            ),
+        ),
+        dict(
+            id="XUR-M2-17-cards",
+            owner="test_fewer_than_18_valid_cards_is_premature_not_consumed",
+            file="scripts/desk/xu-successor-read.py",
+            anchor="READ1_N_CARDS = 18",
+            replacement="READ1_N_CARDS = 17",
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_fewer_than_18_valid_cards_is_premature_not_consumed",
+                f"{U}/test_desk_xu_successor_read.py::test_open_card_waits_and_is_reported",
+            ],
+            invariant=(
+                "INV-WT2-a/XUR-2 READ-1 aggregates exactly the first 18 valid resolved"
+                " cards; with fewer it exits 2 and writes no marker"
+            ),
+        ),
+        dict(
+            id="XUR-M3-marker-ignored",
+            owner="test_positive_cumulative_closes_the_question_one_shot",
+            file="scripts/desk/xu-successor-read.py",
+            anchor="    if marker.exists():",
+            replacement="    if False:",
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_positive_cumulative_closes_the_question_one_shot"
+            ],
+            invariant=(
+                "INV-WT2-a/XUR-3 one-shot: once the done-marker exists a second run"
+                " refuses with exit 4 and writes nothing"
+            ),
+        ),
+        dict(
+            id="XUR-M4-seed-changed",
+            owner="test_main_seeds_the_one_stream_with_20261114",
+            file="scripts/desk/xu-successor-read.py",
+            anchor="SEED = 20261114",
+            replacement="SEED = 20261115",
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_main_seeds_the_one_stream_with_20261114"
+            ],
+            invariant=(
+                "INV-WT2-a/XUR-4 the placebo / sign-flip / bootstrap stream is seeded"
+                " with the sealed literal 20261114"
+            ),
+        ),
+        dict(
+            id="XUR-M5-main-unseeded",
+            owner="test_main_seeds_the_one_stream_with_20261114",
+            file="scripts/desk/xu-successor-read.py",
+            anchor="random.Random(rng_seed)",
+            replacement="random.Random()",
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_main_seeds_the_one_stream_with_20261114"
+            ],
+            invariant=(
+                "INV-WT2-a/XUR-5 the production read path (main) builds the evaluation's"
+                " RNG from the sealed seed, never an entropy-seeded stream"
+            ),
+        ),
+        dict(
+            id="XUR-M6-shadow-n-bar",
+            owner="test_disappointment_runs_the_full_evaluation_and_passes_the_bars",
+            file="scripts/desk/xu-successor-read.py",
+            anchor='    bars["n_cards"] = len(sealed) >= 18',
+            replacement='    bars["n_cards"] = len(sealed) >= 19',
+            selectors=[
+                f"{U}/test_desk_xu_successor_read.py::test_disappointment_runs_the_full_evaluation_and_passes_the_bars"
+            ],
+            invariant=(
+                "INV-WT2-a/XUR-6 §4.5 bar 1 is n >= 18 valid shadow cards (inclusive:"
+                " exactly 18 passes)"
+            ),
+        ),
+        dict(
+            id="XUD-M1-incumbent-namespace",
+            owner="test_a_drafted_session_writes_exactly_one_xu_namespaced_file",
+            file="scripts/desk/xu_shadow_draft.py",
+            anchor="    path = xu_shadow.write_draft(state, session, text)",
+            replacement=(
+                '    path = state / "card-drafts" / f"{session.isoformat()}-xsmom-top3.md";'
+                " path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text)"
+            ),
+            selectors=[
+                f"{U}/test_desk_xu_fence.py::test_a_drafted_session_writes_exactly_one_xu_namespaced_file"
+            ],
+            invariant=(
+                "INV-WT2-a/XUD-1 the runner writes only through the XU writer"
+                " (card-drafts-xu/), never into the incumbent card-drafts/"
+            ),
+        ),
+        dict(
+            id="XUD-M2-session-ignored",
+            owner="test_a_drafted_session_writes_exactly_one_xu_namespaced_file",
+            file="scripts/desk/xu_shadow_draft.py",
+            anchor="    session = date.fromisoformat(args.session)",
+            replacement="    session = date.fromisoformat(args.session).replace(day=2)",
+            selectors=[
+                f"{U}/test_desk_xu_fence.py::test_a_drafted_session_writes_exactly_one_xu_namespaced_file",
+                f"{U}/test_desk_xu_fence.py::test_runner_refuses_with_no_write_when_the_panel_is_short",
+            ],
+            invariant="INV-WT2-a/XUD-2 the drafter drafts exactly the --session it is given",
+        ),
+        dict(
+            id="TSA-M1-entries-dropped",
+            owner="test_runner_end_to_end",
+            file="scripts/desk/tsmom_annotate.py",
+            anchor="        entries=args.entries,",
+            replacement="        entries=[],",
+            selectors=[f"{U}/test_desk_tsmom_overlay.py::TestRunner::test_runner_end_to_end"],
+            invariant=(
+                "INV-WT2-a/TSA-1 the runner records would-be sizes for exactly the"
+                " --entries names it is given"
+            ),
+        ),
+        dict(
+            id="TSA-M2-session-ignored",
+            owner="test_runner_end_to_end",
+            file="scripts/desk/tsmom_annotate.py",
+            anchor="        session=args.session,",
+            replacement="        session=date(2026, 12, 1),",
+            selectors=[f"{U}/test_desk_tsmom_overlay.py::TestRunner::test_runner_end_to_end"],
+            invariant=(
+                "INV-WT2-a/TSA-2 the runner annotates the --session given, so the"
+                " burned-era refusal reaches the runner"
+            ),
+        ),
+        dict(
+            id="TSA-M4-digest-flag-dropped",
+            owner="test_runner_digest_flag_reaches_the_stage",
+            file="scripts/desk/tsmom_annotate.py",
+            anchor="        digest=args.digest,",
+            replacement="        digest=False,",
+            selectors=[f"{U}/test_desk_tsmom_overlay.py::TestRunner"],
+            invariant="INV-WT2-a/TSA-4 the runner's --digest reaches the overlay stage",
+        ),
+        dict(
+            id="TSA-M3-burned-era-exclusive",
+            owner="test_burned_era_sessions_are_refused",
+            file="src/tree_options/desk/tsmom_overlay.py",
+            anchor="    if session <= BURNED_ERA_END:",
+            replacement="    if session < BURNED_ERA_END:",
+            selectors=[
+                f"{U}/test_desk_tsmom_overlay.py::TestWriter::test_burned_era_sessions_are_refused",
+                f"{U}/test_desk_tsmom_overlay.py::TestRunner::test_runner_end_to_end",
+            ],
+            invariant=(
+                "INV-WT2-a/TSA-3 BURNED_ERA_END (2026-09-11) itself is a burned-era"
+                " session and is refused (the boundary is inclusive)"
+            ),
+        ),
+        dict(
+            id="VCF-CLI-M1-no-mode-accepted",
+            owner="test_cli_requires_exactly_one_mode",
+            file="src/tree_options/desk/__main__.py",
+            anchor="    if args.session is None and args.catch_up is None:",
+            replacement="    if False:",
+            selectors=[f"{U}/test_desk_vrp_forward.py::test_cli_requires_exactly_one_mode"],
+            invariant=(
+                "INV-WT2-a/VCF-CLI-1 vrp-cond-forward with neither --session nor"
+                " --catch-up exits 2 with the give-exactly-one message"
+            ),
+        ),
+        dict(
+            id="VCF-CLI-M2-argparse-group-removed",
+            owner="test_cli_requires_exactly_one_mode",
+            file="src/tree_options/desk/__main__.py",
+            anchor="    vf_target = vf.add_mutually_exclusive_group()",
+            replacement="    vf_target = vf",
+            selectors=[f"{U}/test_desk_vrp_forward.py::test_cli_requires_exactly_one_mode"],
+            invariant=(
+                "INV-WT2-a/VCF-CLI-2 --session and --catch-up are mutually exclusive"
+                " at PARSE time (the argparse group)"
+            ),
+        ),
+        dict(
+            id="VCF-CLI-M3-floor-removed",
+            owner="test_cli_catch_up_is_floored_at_the_declared_break",
+            file="src/tree_options/desk/__main__.py",
+            anchor="        floor = max(args.catch_up, vrp_forward.FORWARD_FIRST)",
+            replacement="        floor = args.catch_up",
+            selectors=[
+                f"{U}/test_desk_vrp_forward.py::test_cli_catch_up_is_floored_at_the_declared_break"
+            ],
+            invariant=(
+                "INV-WT2-a/VCF-CLI-3 --catch-up never reaches below FORWARD_FIRST"
+                " (2026-09-22): a pre-break recorded chain is not a candidate"
+            ),
+        ),
+        dict(
+            id="VCF-CLI-M4-missing-chain-emitted",
+            owner="test_cli_session_without_a_recorded_chain_writes_nothing",
+            file="src/tree_options/desk/__main__.py",
+            anchor="        if not chain.is_file():",
+            replacement="        if False:",
+            selectors=[
+                f"{U}/test_desk_vrp_forward.py::test_cli_session_without_a_recorded_chain_writes_nothing"
+            ],
+            invariant=(
+                "INV-WT2-a/VCF-CLI-4 --session D with no recorded chain exits 3 and"
+                " the emitter writes nothing"
+            ),
+        ),
+        dict(
+            id="VCF-CLI-M5-refused-line-silent",
+            owner="test_cli_reports_a_refused_session_instead_of_dropping_it",
+            file="src/tree_options/desk/__main__.py",
+            anchor=(
+                '            print(f"  {oc.session} {oc.action} status={oc.status}'
+                ' {oc.detail}".rstrip())'
+            ),
+            replacement="            pass",
+            selectors=[
+                f"{U}/test_desk_vrp_forward.py::test_cli_reports_a_refused_session_instead_of_dropping_it"
+            ],
+            invariant=(
+                "INV-WT2-a/VCF-CLI-5 a refused session is reported by the CLI"
+                " (status=refused line), never silently absent"
+            ),
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

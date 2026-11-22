@@ -533,3 +533,32 @@ class TestRunner:
         )
         assert proc.returncode == 1
         assert "status=burned_era_session" in proc.stdout
+
+    def test_runner_digest_flag_reaches_the_stage(
+        self, tmp_path: Path, static_calendar: Calendar
+    ) -> None:
+        """``--digest`` on the runner reaches ``run_overlay``: ten entries in
+        one --digest run cross the 10-entry boundary, so the digest emits."""
+        _write_panel(tmp_path / "paper", static_calendar)
+        env = dict(os.environ)
+        env["TREX_DESK_STATE"] = str(tmp_path / "state")
+        env["DESK_PAPER_DIR"] = str(tmp_path / "paper")
+        runner = REPO / "scripts" / "desk" / "tsmom_annotate.py"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(runner),
+                "--session",
+                "2026-12-01",
+                "--entries",
+                *ENTRY_NAMES[:10],
+                "--digest",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "status=ok entries=10 digest=10 exit=0" in proc.stdout
+        assert (tmp_path / "state" / DIGEST_DIR / "10.json").is_file()

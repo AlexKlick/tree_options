@@ -15,7 +15,7 @@ def test_qsl_command_missing_inputs_is_readiness_failure(world, capsys, monkeypa
         cal=world.cal,
     )
     assert rc == 3
-    assert "no recorded chains" in capsys.readouterr().out
+    assert "not_ready rc=3 no DTB3 series in the store" in capsys.readouterr().out
     assert not (world.root / "state").exists()
 
 

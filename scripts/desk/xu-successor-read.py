@@ -84,10 +84,12 @@ XU_SHADOW_LEDGER = "XU-SHADOW-LEDGER.md"
 REPORT_NAME = "xu-successor-read-report.md"
 MARKER_NAME = "xu-successor-read.done.json"
 
-_TITLE = re.compile(
-    r"^# .*XSMOM-TOP3(?:-XU)? monthly: (?P<legs>[A-Z.]+(?: \+ [A-Z.]+)*) "
+_TITLE_FIELDS = (
+    r" monthly: (?P<legs>[A-Z.]+(?: \+ [A-Z.]+)*) "
     r"\(entry (?P<entry>\d{4}-\d{2}-\d{2}) close (?:->|→) exit (?P<exit>\d{4}-\d{2}-\d{2}) close\)"
 )
+_INCUMBENT_TITLE = re.compile(r"^# .*XSMOM-TOP3" + _TITLE_FIELDS)
+_CARD_TITLE = re.compile(r"^# .*XSMOM-TOP3(?:-XU)?" + _TITLE_FIELDS)
 _ENTRY_ROW = re.compile(
     r"^\| (?P<name>[A-Z.]+) \| [^|]*\| (?P<entry>[0-9.]+) \| \$(?P<notional>[0-9,]+) LONG \|"
 )
@@ -141,7 +143,9 @@ def _legs_from_title(match: re.Match) -> tuple[str, ...]:
     return tuple(match.group("legs").split(" + "))
 
 
-def parse_card(path: Path, *, require_resolution: bool = True) -> Card:
+def parse_card(
+    path: Path, *, require_resolution: bool = True, title_pattern: re.Pattern[str] = _CARD_TITLE
+) -> Card:
     """A sealed card file -> entries + resolution fills. An unresolved card
     (still open: no Resolution fills yet) parses with ``resolved=False``
     unless ``require_resolution``; anything else the contract cannot consume
@@ -150,7 +154,7 @@ def parse_card(path: Path, *, require_resolution: bool = True) -> Card:
     title = next((ln for ln in lines if ln.startswith("# ") and "monthly:" in ln), None)
     if title is None:
         raise ReadContractError(f"{path.name}: no card title line")
-    m = _TITLE.match(title)
+    m = title_pattern.match(title)
     if m is None:
         raise ReadContractError(f"{path.name}: unparseable title: {title!r}")
     legs = _legs_from_title(m)
@@ -234,7 +238,10 @@ def _void_applies(card: Card, void: dict[str, str]) -> bool:
 
 def load_incumbent_series(paper: Path, appendix: Path) -> tuple[list[Card], list[dict[str, str]]]:
     cards = sorted(
-        (parse_card(p, require_resolution=False) for p in paper.glob("????-??-??-xsmom-top3.md")),
+        (
+            parse_card(p, require_resolution=False, title_pattern=_INCUMBENT_TITLE)
+            for p in paper.glob("????-??-??-xsmom-top3.md")
+        ),
         key=lambda c: (c.entry, c.exit),
     )
     voids = parse_appendix_voids(appendix)
