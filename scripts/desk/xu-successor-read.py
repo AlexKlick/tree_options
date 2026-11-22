@@ -236,12 +236,28 @@ def _void_applies(card: Card, void: dict[str, str]) -> bool:
     return card.exit in void["card_ref"] or card.entry in void["card_ref"]
 
 
+def _incumbent_card(path: Path) -> Card:
+    """One incumbent card behind two independent fences (WT4-b F1-D).
+
+    The title fence (``_INCUMBENT_TITLE``) keys on ONE token, ``-XU``: the
+    drafter's other marker, the ``XU-SHADOW`` prefix, is swallowed by the
+    pattern's leading ``.*``. So the roster fence is the one that does not
+    depend on the title: every leg must be a sealed incumbent tradable.
+    The XU roster is disjoint from those names, so an XU card misfiled
+    under an incumbent filename is refused whatever its title says."""
+    card = parse_card(path, require_resolution=False, title_pattern=_INCUMBENT_TITLE)
+    outside = [name for name, _ in card.legs if name not in signals.XSMOM_TRADABLES]
+    if outside:
+        raise ReadContractError(
+            f"{path.name}: legs {outside} are not sealed incumbent tradables"
+            f" ({len(signals.XSMOM_TRADABLES)} names) — not an incumbent card"
+        )
+    return card
+
+
 def load_incumbent_series(paper: Path, appendix: Path) -> tuple[list[Card], list[dict[str, str]]]:
     cards = sorted(
-        (
-            parse_card(p, require_resolution=False, title_pattern=_INCUMBENT_TITLE)
-            for p in paper.glob("????-??-??-xsmom-top3.md")
-        ),
+        (_incumbent_card(p) for p in paper.glob("????-??-??-xsmom-top3.md")),
         key=lambda c: (c.entry, c.exit),
     )
     voids = parse_appendix_voids(appendix)

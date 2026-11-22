@@ -12,6 +12,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -513,6 +514,24 @@ def test_run_qsl_not_ready_without_chains(world, monkeypatch):
     monkeypatch.setenv("DESK_STORE", str(world.root / "empty-store"))
     result = qsl.run_qsl(session=world.session, now=cutoff_instant(world.entry), cal=world.cal)
     assert result.exit_code == 3 and result.status == "not_ready"
+    # WT4-b G1: an empty store also lacks DTB3, so pin WHICH check refused
+    assert result.detail == f"no recorded chains for {world.session}"
+
+
+def test_run_qsl_with_a_rate_but_no_chains_is_not_ready(world, monkeypatch):
+    """WT4-b G1: the "no recorded chains" check was pinned by no test —
+    WT2-e's fixture always writes a chain, and the empty-store case is
+    refused by the DTB3 check anyway. Here DTB3 is present and only the
+    session's chains are missing, so only the chains check can refuse."""
+    monkeypatch.setenv("TREX_DESK_STATE", str(world.root / "state"))
+    monkeypatch.setenv("DESK_STORE", str(world.store))
+    shutil.rmtree(world.store / "chains" / world.session.isoformat())
+    assert qsl.rate_for(world.session, world.store, world.cal)[0] is not None
+    result = qsl.run_qsl(session=world.session, now=cutoff_instant(world.entry), cal=world.cal)
+    assert (result.exit_code, result.status) == (3, "not_ready")
+    assert result.detail == f"no recorded chains for {world.session}"
+    assert result.path is None
+    assert not (world.root / "state").exists()  # no queue, no stage marker
 
 
 # -------------------------------------------------------- pre-registration

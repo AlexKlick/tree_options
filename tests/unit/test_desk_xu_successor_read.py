@@ -258,25 +258,68 @@ def test_incumbent_loader_rejects_misfiled_xu_draft(paper, synthetic_calendar) -
         xr.load_incumbent_series(paper, paper / "appendix.md")
 
 
+def test_incumbent_loader_refuses_xu_legs_whatever_the_title_says(
+    paper, synthetic_calendar
+) -> None:
+    """WT4-b F1-D: the title fence keys on ONE token, ``-XU``. A misfiled XU
+    draft whose title lost ``-XU`` (keeping the ``XU-SHADOW`` prefix, which
+    the pattern's ``.*`` swallows) passes the title fence; the roster fence
+    refuses it, because the XU roster is disjoint from the sealed incumbent
+    tradables. The incumbent cards themselves still load."""
+    cal = synthetic_calendar
+    _write_incumbent(paper, cal, [UP, DOWN])
+    assert not set(xu_shadow.XU_ROSTER) & set(xr.signals.XSMOM_TRADABLES)  # disjoint
+    entry = _months(cal, 3)[-1]
+    exit_ = _exit(cal, entry)
+    panel = _panel(cal, exit_)
+    draft = xu_shadow.xu_draft(panel, entry, cal, exit_session=exit_, generated_at=NOW)
+    assert draft is not None
+    title, _, body = draft.partition("\n")
+    misfiled = title.replace("XSMOM-TOP3-XU", "XSMOM-TOP3")
+    assert title.startswith("# XU-SHADOW ") and misfiled != title
+    assert xr._INCUMBENT_TITLE.match(misfiled)  # the title fence alone accepts it
+    resolution = _xu_resolution(
+        entry=entry.isoformat(), exit_=exit_.isoformat(), legs=SHADOW_LEGS, panel=panel
+    )
+    path = paper / f"{exit_}-xsmom-top3.md"
+    path.write_text(misfiled + "\n" + body + "\n".join(resolution) + "\n")
+
+    with pytest.raises(xr.ReadContractError, match=r"not sealed incumbent tradables"):
+        xr.load_incumbent_series(paper, paper / "appendix.md")
+
+    path.unlink()
+    cards, _ = xr.load_incumbent_series(paper, paper / "appendix.md")
+    assert [tuple(n for n, _ in card.legs) for card in cards] == [INC_LEGS, INC_LEGS]
+
+
 def test_paper_readers_exclude_nested_card_fills(paper, synthetic_calendar) -> None:
-    (exit_,) = _write_incumbent(paper, synthetic_calendar, [UP])
-    incumbent = paper / f"{exit_}-xsmom-top3.md"
+    """Both paper readers stop at the paper directory: READ-1's incumbent
+    loader (pinned by XUR-TITLE-2) and the ideas view's LEDGER section
+    (pinned by WT4B-F2-1, WT4-b F2a — before it no mutant reached it)."""
+    exit_, other = _write_incumbent(paper, synthetic_calendar, [UP, UP])
     ledger_row = f"| {exit_} | AMD | {EXIT_CLOSE[UP]} |"
     (paper / "LEDGER.md").write_text(ledger_row + "\n")
 
-    # An incumbent-compatible basename and title isolate the directory boundary.
+    # An incumbent-compatible basename and title isolate the directory
+    # boundary. The nested card is for a DIFFERENT month than the top-level
+    # one (WT4-b F2b): a recursive loader that de-duplicated by (entry, exit)
+    # and kept the top-level card would pass a same-month sentinel while
+    # still counting a nested card for a new month.
     shadow = paper / "xu-shadow"
     shadow.mkdir()
     sentinel = Decimal("777.77")
-    nested = shadow / incumbent.name
-    nested.write_text(incumbent.read_text().replace(EXIT_CLOSE[UP], str(sentinel)))
+    moved = paper / f"{other}-xsmom-top3.md"
+    nested = shadow / moved.name
+    nested.write_text(moved.read_text().replace(EXIT_CLOSE[UP], str(sentinel)))
+    moved.unlink()
     assert xr.parse_card(nested).exit_closes["AMD"] == sentinel
     (shadow / "XU-SHADOW-LEDGER.md").write_text(
-        f"| {exit_} | {nested.name} | {hashlib.sha256(nested.read_bytes()).hexdigest()} "
+        f"| {other} | {nested.name} | {hashlib.sha256(nested.read_bytes()).hexdigest()} "
         f"| sealed | AMD fill {sentinel} |\n"
     )
 
     cards, _ = xr.load_incumbent_series(paper, paper / "appendix.md")
+    assert [card.exit for card in cards] == [exit_]  # the one top-level card, nothing nested
     fills = [card.exit_closes["AMD"] for card in cards]
     assert Decimal(EXIT_CLOSE[UP]) in fills
     assert sentinel not in fills

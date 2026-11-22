@@ -20,6 +20,8 @@ from tree_options.desk.shadows import database_path
 
 # An operational sample floor from the D7 plan, NOT an adoption criterion.
 MIN_RESOLVED = 20
+# A code INVALIDATES when the evidence is present and wrong; every other code
+# CENSORS (the evidence is missing). The test is per (deal, exit_deadline).
 _INVALIDATING = frozenset(
     {
         "chain_vendor_conflict",
@@ -27,8 +29,27 @@ _INVALIDATING = frozenset(
         "chain_schema",
         "chain_source_session",
         "duplicate_contract_quote",
+        # WT4-b E1: a source (entry) chain's failure keeps its own code under
+        # shadows.ENTRY_SOURCE_PREFIX and is classified exactly as the same
+        # failure of an exit chain (so entry_source_chain_missing censors).
+        "entry_source_chain_vendor_conflict",
+        "entry_source_chain_identity",
+        "entry_source_chain_schema",
+        "entry_source_chain_source_session",
+        # WT4-b E1, DECIDED: a readable OCC-tagged source chain on which no
+        # standard row carries the episode's frozen bid/ask pair (or an
+        # episode record too malformed to test) is a defect, not a gap. Its
+        # one real instance, the NVDA B1 blend, is the owner's sealed void;
+        # its invalidation must not rest on a duplicate_contract_quote row
+        # that the current exit filter no longer produces (census C1-A).
+        "entry_fill_occ_provenance",
     }
 )
+# NOT classified, on purpose: ``voided_corrupt_quote``. No code path writes
+# it; the one row (qsl.sqlite3, NVDA, session 2026-11-20) is the owner's
+# hand-written void record, which says it relies on the deadline-session
+# code to invalidate. It is keyed on a session after that episode's
+# exit_deadline, so this per-(deal, exit_deadline) test never reads it.
 
 
 def _total(resolved: list[dict[str, Any]], field: str) -> str | None:

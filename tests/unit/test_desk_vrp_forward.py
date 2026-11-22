@@ -529,6 +529,22 @@ def test_cli_requires_exactly_one_mode(tmp_path: Path, capsys: pytest.CaptureFix
     assert "not allowed with argument" in capsys.readouterr().err
 
 
+def test_both_modes_never_reach_the_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WT4-b (R-D's claim; F-A1): the argparse group is the layer that does
+    the work. With both flags the handler is NEVER entered, so its own
+    "mutually exclusive" guard is dead from the CLI. Pinned without
+    argparse's English wording: a spy stands in for the handler."""
+    from tree_options.desk import __main__ as cli
+
+    entered: list[object] = []
+    monkeypatch.setattr(cli, "_vrp_cond_forward", lambda args, **_: entered.append(args) or 0)
+    both = ["vrp-cond-forward", "--session", "2026-11-02", "--catch-up", "2026-09-22"]
+    assert cli.run_cli(both) == 2
+    assert entered == []
+    assert cli.run_cli(["vrp-cond-forward", "--session", "2026-11-02"]) == 0  # the spy is live
+    assert len(entered) == 1
+
+
 def test_cli_session_without_a_recorded_chain_writes_nothing(
     tmp_path: Path, static_calendar
 ) -> None:

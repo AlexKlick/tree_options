@@ -39,9 +39,10 @@ last 5 stored sessions per name; a stored close off by > 0.5% triggers a
 full-window re-fetch that REPLACES the name's series (a "rebase <NAME>"
 provenance line). Delisted names (BK, WBA) without a target-session bar are
 kept truncated and get a "truncate <NAME>" provenance line EVERY run — the
-decision is never silent. Exit 0 written; 3 vendor lag / rejection (nothing
-written); 1 roster drift / unusable panel. No ``timedelta`` (the repo's AST
-guard): all date math is epoch/ms arithmetic.
+decision is never silent. Exit 0 written; 3 vendor lag / rejection / plan
+entitlement refusal (nothing written; only vendor lag is cured by a re-arm,
+and an entitlement refusal says so); 1 roster drift / unusable panel. No
+``timedelta`` (the repo's AST guard): all date math is epoch/ms arithmetic.
 """
 
 from __future__ import annotations
@@ -172,6 +173,15 @@ def panel_lock(paper: Path):
 
 class VendorRejected(Exception):
     pass
+
+
+class VendorNotEntitled(VendorRejected):
+    """The plan refused part of the requested range (``FetchedBars.refusal``).
+
+    Permanent, unlike vendor lag: ``BACKFILL_START`` is fixed and the plan's
+    history window only rolls forward, so a re-arm asks for the same refused
+    range and is refused again. Still exit 3 with nothing written; only the
+    operator advice differs (WT4-b F1-EFG)."""
 
 
 class FetchedBars(dict[str, dict[str, Any]]):
@@ -314,7 +324,7 @@ def extend(
     def fetch_complete(name: str, start: str) -> dict[str, dict[str, Any]]:
         bars = fetch_range(client, SYMBOL_MAP.get(name, name), start, target)
         if bars.refusal is not None:
-            raise VendorRejected(
+            raise VendorNotEntitled(
                 f"{name}: incomplete range {start}..{target} ({len(bars)} bars fetched): "
                 f"{bars.refusal}"
             )
@@ -349,6 +359,14 @@ def extend(
             fetched[name] = bars
             span = f"{min(bars)}..{max(bars)}" if bars else "-"
             print(f"{name}: {len(bars)} bars {span}", flush=True)
+    except VendorNotEntitled as exc:
+        print(f"VENDOR NOT ENTITLED {exc}")
+        print(
+            "the plan's history window refuses this range and only rolls forward:"
+            " re-arming cannot fix it - the operator must change the plan or the"
+            " panel's window; nothing written"
+        )
+        return 3, f"vendor not entitled: {exc}"
     except VendorRejected as exc:
         print(f"VENDOR REJECTED {exc}")
         print("re-arm per the ladder; nothing written")

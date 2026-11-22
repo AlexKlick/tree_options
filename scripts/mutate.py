@@ -10486,6 +10486,457 @@ MUTANTS.extend(
 )
 
 
+# ---- WT4-a (2026-11-22): the mutant closure over wave 3's OWN landed code.
+# The line-level census (wave4/verify/mutant_line_coverage_wave3.py) listed
+# 106 changed code lines no anchor's function reaches. Triaged at 30be351:
+# declarations/imports carry no claim; claims a test already defends get a
+# mutant only where no registered mutant attacks that claim; the two claims
+# NO test defended (shadows chain_identity's underlying half; READ-1's title
+# fence in isolation) get a new test AND a mutant. Every anchor occurs once.
+#   shadows.py:      _read_mark (both reads), _read_chain (identity, tuple)
+#   sqqq_twin.py:    check_leg_entry_basis, resolved_ledger_bytes, commit_resolution
+#   xu-successor-read.py: parse_card's caller-supplied pattern, _CARD_TITLE
+# (fetch_ohlc_xu.py's tier-3 lines are the FetchedBars declaration; its two
+# fetch_complete call sites are defended by tests and by XUF-ENT-2.)
+MUTANTS.extend(
+    [
+        dict(
+            id="WT4A-SHADOW-1-mark-skips-the-entry-provenance-gate",
+            owner="test_blended_entry_records_quality_instead_of_a_deadline_mark",
+            file="src/tree_options/desk/shadows.py",
+            anchor="    spec, fill = _verified_entry(episode, root, now)\n",
+            # the pre-wave-3 _read_mark: the fill read straight off the episode
+            replacement=(
+                '    spec = LegStructure.model_validate(episode["deal"]["structure"])\n'
+                '    fill = Decimal(episode["deal"]["fill"])\n'
+            ),
+            selectors=["tests/desk_safety/test_shadow_entry_occ.py"],
+            invariant=(
+                "INV-WT4-a/1 every shadow mark is gated on the entry fill's OCC provenance"
+                " (_verified_entry) — no mark is computed from an unverified frozen fill"
+            ),
+        ),
+        dict(
+            id="WT4A-SHADOW-2-mark-priced-off-the-source-chain",
+            owner="test_clean_calendar_marks_preserve_the_modeled_fill",
+            file="src/tree_options/desk/shadows.py",
+            anchor="    doc, source, fetched = _read_chain(spec.underlying, session, root, now)\n",
+            replacement=(
+                "    doc, source, fetched = _read_chain(\n"
+                '        spec.underlying, date.fromisoformat(episode["source_session"]), root, now\n'
+                "    )\n"
+            ),
+            selectors=["tests/desk_safety/test_shadow_entry_occ.py"],
+            invariant=(
+                "INV-WT4-a/2 a mark prices the MARK session's chain; the source session's"
+                " chain only verifies the entry — the two reads never trade sessions"
+            ),
+        ),
+        dict(
+            id="WT4A-SHADOW-3-chain-identity-ignores-the-underlying",
+            owner="test_a_mark_chain_that_does_not_name_the_underlying_is_refused_as_chain_identity",
+            file="src/tree_options/desk/shadows.py",
+            anchor=(
+                '    if h.get("session") != session.isoformat() or h.get("underlying") != symbol:\n'
+            ),
+            replacement='    if h.get("session") != session.isoformat():\n',
+            selectors=["tests/desk_safety/test_shadow_chain_identity.py"],
+            invariant=(
+                "INV-WT4-a/3 a chain whose header does not name the episode's underlying is"
+                " refused (chain_identity) on both reads — the OCC filter's fail-open branch"
+                " stays unreachable from the shadow lane"
+            ),
+        ),
+        dict(
+            id="WT4A-SHADOW-4-chain-source-and-fetch-instants-swapped",
+            owner="test_historical_card_does_not_use_quotes_received_after_requested_session",
+            file="src/tree_options/desk/shadows.py",
+            anchor="    return doc, source, fetched\n",
+            replacement="    return doc, fetched, source\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT4-a/4 a mark records the chain's own source_as_of and fetched_at under"
+                " their own names — an as-of scorecard never uses a quote received after it"
+            ),
+        ),
+        dict(
+            id="WT4A-SQ-1-leg-basis-skips-the-last-leg",
+            owner="test_leg_split_rebase_refuses_with_nothing_written",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="    for name, sealed_px, _notional in spec.legs:\n",
+            replacement="    for name, sealed_px, _notional in spec.legs[:-1]:\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT4-a/5 EVERY card leg's sealed entry close is cross-checked, the last"
+                " one included — SQ-RESOLVE-2 attacks the call, this attacks 'every'"
+            ),
+        ),
+        dict(
+            id="WT4A-SQ-2-missing-ledger-is-not-a-refusal",
+            owner="test_missing_ledger_refuses_with_nothing_written",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="    if not ledger_path.is_file():\n",
+            replacement="    if False:\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT4-a/6 a missing twin ledger is a Refusal (CLI exit 2, nothing"
+                " written), never a FileNotFoundError traceback"
+            ),
+        ),
+        dict(
+            id="WT4A-SQ-3-non-open-ledger-row-accepted",
+            owner="test_non_open_ledger_row_refuses_with_nothing_written",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="    if not open_re.search(ledger):\n",
+            replacement="    if False:\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT4-a/7 a twin ledger without twin #1's OPEN row refuses with nothing"
+                " written — never a RESOLUTION block beside an unchanged ledger"
+            ),
+        ),
+        dict(
+            id="WT4A-SQ-4-resolve-drops-the-sealed-card-bytes",
+            owner="test_happy_path_card_and_ledger_agree",
+            file="scripts/desk/sqqq_twin.py",
+            anchor='card_raw + block.encode("utf-8")',
+            replacement='block.encode("utf-8")',
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "INV-WT4-a/8 --resolve writes the twin card as its unchanged sealed bytes +"
+                " the RESOLUTION block — the sealed body is never replaced"
+            ),
+        ),
+        dict(
+            id="WT4A-XUR-1-parse-card-ignores-the-callers-pattern",
+            owner="test_the_incumbent_title_fence_alone_refuses_an_xu_title_on_incumbent_legs",
+            file="scripts/desk/xu-successor-read.py",
+            anchor="    m = title_pattern.match(title)\n",
+            replacement="    m = _CARD_TITLE.match(title)\n",
+            selectors=[f"{U}/test_desk_xu_successor_read_title_fence.py"],
+            invariant=(
+                "INV-WT4-a/9 parse_card matches the title against its CALLER's pattern —"
+                " READ-1's incumbent loader refuses an -XU title by the title alone"
+            ),
+        ),
+        dict(
+            id="WT4A-XUR-2-candidate-title-drops-xu",
+            owner="test_the_candidate_parser_reads_both_titles",
+            file="scripts/desk/xu-successor-read.py",
+            anchor='_CARD_TITLE = re.compile(r"^# .*XSMOM-TOP3(?:-XU)?" + _TITLE_FIELDS)',
+            replacement='_CARD_TITLE = re.compile(r"^# .*XSMOM-TOP3" + _TITLE_FIELDS)',
+            selectors=[f"{U}/test_desk_xu_successor_read_title_fence.py"],
+            invariant=(
+                "INV-WT4-a/10 the default card parser reads BOTH titles (XSMOM-TOP3 and"
+                " XSMOM-TOP3-XU) — the shadow evaluation parses -XU cards with it"
+            ),
+        ),
+    ]
+)
+
+
+# ---- wave-4 WT4-b (2026-11-22): the batch lane — wave 3's carried-forward
+# MINOR/NIT findings (codex-review E1-E4/F1/G1, codex-review-2 F1/F2,
+# review-unreviewed F-B1) and the claims R-D could not anchor. The two
+# reviews' "F1"s are renamed F1-EFG (the entitlement advice) and F1-D (the
+# incumbent fence) so neither is dropped.
+MUTANTS.extend(
+    [
+        dict(
+            id="WT4B-F1EFG-1-entitlement-advises-re-arm",
+            owner="test_entitlement_refusal_never_advises_a_re_arm",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="            raise VendorNotEntitled(",
+            replacement="            raise VendorRejected(",
+            selectors=[f"{U}/test_desk_fetch_ohlc_xu.py"],
+            invariant=(
+                "INV-WT4B-F1EFG a plan entitlement refusal exits 3 with nothing written and"
+                " never advises a re-arm, which cannot cure it (BACKFILL_START is fixed)"
+            ),
+        ),
+        dict(
+            id="WT4B-F1D-1-roster-fence-dropped",
+            owner="test_incumbent_loader_refuses_xu_legs_whatever_the_title_says",
+            file="scripts/desk/xu-successor-read.py",
+            anchor=(
+                "    outside = [name for name, _ in card.legs"
+                " if name not in signals.XSMOM_TRADABLES]"
+            ),
+            replacement="    outside: list[str] = []",
+            selectors=[f"{U}/test_desk_xu_successor_read.py"],
+            invariant=(
+                "INV-WT4B-F1D READ-1 refuses any card with a leg outside the sealed incumbent"
+                " tradables, whatever its title says (the title fence is the second check)"
+            ),
+        ),
+    ]
+)
+
+# WT4-b E1 moved the source chain's failures out of _verified_entry's
+# catch-all into shadows._source_chain (entry_source_<cause>). SHADOW-ENT-3's
+# anchor (`raise ContractError("entry_fill_occ_provenance") from exc`) now
+# occurs 2x in shadows.py, and its replacement keys on str(exc) ==
+# "chain_missing", which can no longer reach that clause. Its entry above is
+# NOT edited (append-only registry, the WT2-c-fix precedent): it is retired
+# HERE, by id and fail-closed, and its invariant re-pinned as WT4B-R1 on the
+# code that now carries it, same owner.
+_WT4B_RETIRED = {"SHADOW-ENT-3-missing-source-passes": "WT4B-R1-missing-source-passes"}
+assert sorted(m["id"] for m in MUTANTS if m["id"] in _WT4B_RETIRED) == sorted(_WT4B_RETIRED), (
+    "a WT4-b retired id names no single registered mutant"
+)
+MUTANTS[:] = [m for m in MUTANTS if m["id"] not in _WT4B_RETIRED]
+_WT4B_SHADOWS = "src/tree_options/desk/shadows.py"
+_WT4B_ENTRY = "tests/desk_safety/test_shadow_entry_occ.py"
+MUTANTS.extend(
+    [
+        dict(
+            id=_WT4B_RETIRED["SHADOW-ENT-3-missing-source-passes"],
+            owner="test_missing_source_chain_refuses_until_it_arrives",
+            file=_WT4B_SHADOWS,
+            anchor="    doc = _source_chain(spec, session, root, now)\n",
+            replacement=(
+                "    try:\n"
+                "        doc = _source_chain(spec, session, root, now)\n"
+                "    except ContractError as exc:\n"
+                '        if str(exc) != "entry_source_chain_missing":\n'
+                "            raise\n"
+                "        return spec, fill\n"
+            ),
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT2-e/4 a missing source-session chain refuses the mark (SHADOW-ENT-3,"
+                " re-pinned by WT4-b E1)"
+            ),
+        ),
+        dict(
+            id="WT4B-E1-1-unwitnessed-entry-censors",
+            owner="test_a_rebuilt_store_still_invalidates_the_blended_entry",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        "entry_fill_occ_provenance",\n',
+            replacement="",
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT4B-E1/1 an entry fill no standard OCC row witnesses INVALIDATES on its"
+                " own deadline row, not by a duplicate_contract_quote row (census C1-A)"
+            ),
+        ),
+        dict(
+            id="WT4B-E1-2-source-cause-collapsed",
+            owner="test_a_failed_source_chain_keeps_its_own_cause",
+            file=_WT4B_SHADOWS,
+            anchor="        raise ContractError(ENTRY_SOURCE_PREFIX + str(exc)) from exc",
+            replacement='        raise ContractError("entry_fill_occ_provenance") from exc',
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT4B-E1/2 a failed source chain is stored under its own cause"
+                " (entry_source_<code>), never the entry_fill_occ_provenance catch-all"
+            ),
+        ),
+        dict(
+            id="WT4B-E1-3-source-conflict-censors",
+            owner="test_a_failed_source_chain_keeps_its_own_cause",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        "entry_source_chain_vendor_conflict",\n',
+            replacement="",
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT4B-E1/3 a source-chain failure is scored exactly as the same failure of"
+                " an exit chain (a vendor conflict invalidates on either side)"
+            ),
+        ),
+        dict(
+            id="WT4B-E2-1-occ-less-source-unnamed",
+            owner="test_a_failed_source_chain_keeps_its_own_cause",
+            file=_WT4B_SHADOWS,
+            anchor=(
+                '        if not isinstance(_quote_columns(doc).get("occ"), list):\n'
+                '            raise ContractError("chain_occ_missing")\n'
+            ),
+            replacement="        _quote_columns(doc)\n",
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT4B-E2/1 a source chain with no occ column is refused by name"
+                " (entry_source_chain_occ_missing): it cannot witness OCC provenance"
+            ),
+        ),
+        dict(
+            id="WT4B-E2-2-occ-less-document-serves-every-row",
+            owner="test_a_document_without_an_occ_column_has_no_rows",
+            file="src/tree_options/desk/store.py",
+            anchor="        return list(range(len(occs))) if isinstance(occs, list) else []",
+            replacement=(
+                "        return (\n"
+                "            list(range(len(occs)))\n"
+                "            if isinstance(occs, list)\n"
+                '            else list(range(len(cols.get("right") or [])))\n'
+                "            if isinstance(cols, dict)\n"
+                "            else []\n"
+                "        )"
+            ),
+            selectors=["tests/desk_safety/test_qsl_occ_integrity.py"],
+            invariant=(
+                "INV-WT4B-E2/2 standard_row_indexes returns [] for a document with no occ"
+                " list (the docstring's claim, now true); it never invents every row"
+            ),
+        ),
+        dict(
+            id="WT4B-FB1-1-ragged-occ-escapes-the-run",
+            owner="test_a_ragged_exit_occ_is_a_quality_event_not_a_rolled_back_run",
+            file=_WT4B_SHADOWS,
+            anchor="    if isinstance(occ, list) and len(occ) != n:",
+            replacement="    if False:",
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT4B-FB1 a ragged occ column is a recorded chain_column_lengths quality"
+                " event; it never IndexErrors out of the run's store.atomic() (WT2-b regression)"
+            ),
+        ),
+        dict(
+            id="WT4B-F2-1-ideas-ledger-reads-nested-ledgers",
+            owner="test_paper_readers_exclude_nested_card_fills",
+            file="src/tree_options/trex_web/ideas_view.py",
+            anchor='        raw = (paper_dir / "LEDGER.md").read_bytes()',
+            replacement=(
+                '        raw = b"\\n".join(p.read_bytes() for p in sorted(paper_dir.rglob("*LEDGER.md")))'
+            ),
+            selectors=[f"{U}/test_desk_xu_successor_read.py"],
+            invariant=(
+                "INV-WT4B-F2a the ideas view's LEDGER section reads the paper dir's own"
+                " LEDGER.md only, never a nested ledger (the sentinel test's second half)"
+            ),
+        ),
+        dict(
+            id="WT4B-F2-2-recursive-loader-dedups-by-month",
+            owner="test_paper_readers_exclude_nested_card_fills",
+            file="scripts/desk/xu-successor-read.py",
+            anchor='(_incumbent_card(p) for p in paper.glob("????-??-??-xsmom-top3.md"))',
+            replacement=(
+                "{(c.entry, c.exit): c for c in reversed([_incumbent_card(p) for p in sorted("
+                'paper.rglob("????-??-??-xsmom-top3.md"), key=lambda q: len(q.parts))])}.values()'
+            ),
+            selectors=[f"{U}/test_desk_xu_successor_read.py"],
+            invariant=(
+                "INV-WT4B-F2b READ-1 never counts a nested card, even one for a month the"
+                " top level lacks (a loader that de-duplicates by (entry, exit) still fails)"
+            ),
+        ),
+        dict(
+            id="WT4B-G1-1-no-chains-check-deleted",
+            owner="test_run_qsl_with_a_rate_but_no_chains_is_not_ready",
+            file="src/tree_options/desk/qsl.py",
+            anchor=(
+                "    if not chains:\n"
+                '        return QslResult(3, "not_ready", f"no recorded chains for {d}", d)\n'
+            ),
+            replacement="",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT4B-G1 a session with a DTB3 rate but no recorded chains is not_ready"
+                " (exit 3, nothing written), refused by the chains check itself"
+            ),
+        ),
+        dict(
+            id="WT4B-XUF-M8-panel-written-in-place",
+            owner="test_merge_lands_by_renaming_a_whole_temp_file_over_the_intact_panel",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor='    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")',
+            replacement="    tmp = path",
+            selectors=[f"{U}/test_desk_fetch_ohlc_xu.py"],
+            invariant=(
+                "INV-WT4B-XUF-M8 the XU merge never writes the panel in place: a whole tmp in the"
+                " panel's directory is renamed over the intact old panel (torn-write atomicity)"
+            ),
+        ),
+        dict(
+            id="WT4B-XUF-M9-reread-before-the-lock",
+            owner="test_merge_rereads_the_panel_under_the_lock",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor=(
+                "    with panel_lock(paper):  # one read/merge/write transaction at a time\n"
+                "        panel = json.loads(path.read_text()) if path.exists() else stored\n"
+            ),
+            replacement=(
+                "    panel = json.loads(path.read_text()) if path.exists() else stored\n"
+                "    with panel_lock(paper):  # one read/merge/write transaction at a time\n"
+            ),
+            selectors=[f"{U}/test_desk_fetch_ohlc_xu.py"],
+            invariant=(
+                "INV-WT4B-XUF-M9 the XU merge re-reads the panel AFTER taking the exclusive lock,"
+                " so a rival's commit is kept (timing-based owner: 0.4 s join window)"
+            ),
+        ),
+        dict(
+            # the SAME mutation as VCF-CLI-M2, with a second owner that does not
+            # depend on argparse's English wording (review-unreviewed F-A1)
+            id="WT4B-RD11-1-argparse-group-removed-handler-entered",
+            owner="test_both_modes_never_reach_the_handler",
+            file="src/tree_options/desk/__main__.py",
+            anchor="    vf_target = vf.add_mutually_exclusive_group()",
+            replacement="    vf_target = vf",
+            selectors=[f"{U}/test_desk_vrp_forward.py"],
+            invariant=(
+                "INV-WT4B-RD11 --session with --catch-up is refused at PARSE time: the"
+                " handler, whose own exclusivity guard is dead from the CLI, is never entered"
+            ),
+        ),
+        # R-D's "never card-drafts/" claim, inside xu_shadow.write_draft (R-D's #14
+        # covered only the call site; XU-M3 the DRAFTS_DIRNAME constant)
+        dict(
+            id="WT4B-RD12-1-write-draft-names-the-incumbent-queue",
+            owner="test_a_drafted_session_writes_exactly_one_xu_namespaced_file",
+            file="src/tree_options/desk/xu_shadow.py",
+            anchor="    path = drafts_dir(state_root) / draft_filename(session)",
+            replacement='    path = Path(state_root) / "card-drafts" / draft_filename(session)',
+            selectors=[f"{U}/test_desk_xu_fence.py"],
+            invariant=(
+                "INV-WT4B-RD12/1 write_draft writes only under drafts_dir (card-drafts-xu/),"
+                " never the incumbent card-drafts/ queue"
+            ),
+        ),
+        dict(
+            id="WT4B-RD12-2-draft-named-like-an-incumbent-card",
+            owner="test_a_drafted_session_writes_exactly_one_xu_namespaced_file",
+            file="src/tree_options/desk/xu_shadow.py",
+            anchor='DRAFT_SLUG = "xsmom-top3-xu"',
+            replacement='DRAFT_SLUG = "xsmom-top3"',
+            selectors=[f"{U}/test_desk_xu_fence.py"],
+            invariant=(
+                "INV-WT4B-RD12/2 an XU draft's filename carries the -xu slug, never the"
+                " incumbent <D>-xsmom-top3.md name (the misfile shape F1-D guards against)"
+            ),
+        ),
+        # R-D's "already pinned elsewhere" (burned-era boundary, digest cadence),
+        # verified: the INCLUSIVE edges are pinned by TSA-M3 (`<=` -> `<`) and
+        # TS-M4 (`total + 1` -> `total`); the sealed VALUES were not, so they are
+        # pinned here, against the same existing owners.
+        dict(
+            id="WT4B-RD13-1-burned-era-end-moved",
+            owner="test_burned_era_sessions_are_refused",
+            file="src/tree_options/desk/tsmom_overlay.py",
+            anchor="BURNED_ERA_END = date(2026, 9, 11)",
+            replacement="BURNED_ERA_END = date(2026, 9, 10)",
+            selectors=[f"{U}/test_desk_tsmom_overlay.py"],
+            invariant=(
+                "INV-WT4B-RD13/1 the burned era ends ON 2026-09-11 (the sealed value, not"
+                " only the inclusive comparison TSA-M3 pins)"
+            ),
+        ),
+        dict(
+            id="WT4B-RD13-2-digest-cadence-moved",
+            owner="test_digest_at_every_tenth_entry_only",
+            file="src/tree_options/desk/tsmom_overlay.py",
+            anchor="DIGEST_EVERY = 10",
+            replacement="DIGEST_EVERY = 9",
+            selectors=[f"{U}/test_desk_tsmom_overlay.py"],
+            invariant=(
+                "INV-WT4B-RD13/2 the interim digest fires every 10th ENTRY (the sealed value,"
+                " not only the inclusive end TS-M4 pins)"
+            ),
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

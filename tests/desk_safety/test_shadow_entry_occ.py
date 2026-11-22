@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from tree_options.desk import shadows
+from tree_options.desk import scorecards, shadows
 from tree_options.desk.contracts import ContractError
 from tree_options.desk.evidence import EvidenceStore
 from tree_options.desk.sessions import cutoff_instant
@@ -149,7 +149,9 @@ def test_missing_source_chain_refuses_until_it_arrives(world, deadline_chain):
     write_episode(world, episode(LONG))
     assert run(world)["marks_created"] == 0
     with EvidenceStore(world.db, readonly=True) as store:
-        assert store.get("quality", f"{DEAL_ID}|{DEADLINE}|{CODE}") is not None
+        # WT4-b E1: the source chain's own cause, not the catch-all
+        assert store.get("quality", f"{DEAL_ID}|{DEADLINE}|entry_source_chain_missing") is not None
+        assert store.get("quality", f"{DEAL_ID}|{DEADLINE}|{CODE}") is None
     chain(world, SOURCE, [LONG, SHORT])
     assert run(world)["marks_created"] == 1
 
@@ -253,3 +255,180 @@ def test_clean_calendar_marks_preserve_the_modeled_fill(
         (date(2026, 11, day).isoformat(), Decimal(realistic), Decimal(net))
         for day, _, _, realistic, net in books
     ]
+
+
+# ---- WT4-b (2026-11-22): E1, E2, E3 and F-B1 ---------------------------------
+
+B1_SHORT = ("B1VDA261120P00155000", 155, 0.21, 0.51)
+PREV_SESSION = date(2026, 11, 12)
+INVALIDATING_CHAIN_CAUSES = {
+    "chain_vendor_conflict",
+    "chain_identity",
+    "chain_schema",
+    "chain_source_session",
+}
+
+
+def scored(ep):
+    """The episode plus the family fields the production scorecard keys on."""
+    return dict(ep, row="QSL", tier=None, miner_sha256="m" * 64, playbook_sha256="p" * 64)
+
+
+def quality_codes(world):
+    with EvidenceStore(world.db, readonly=True) as store:
+        return {q["code"] for q in store.all("quality")}
+
+
+def the_family(world):
+    (family,) = scorecards.build_scorecards(world.db)["families"]
+    return family
+
+
+def test_a_rebuilt_store_still_invalidates_the_blended_entry(world, deadline_chain):
+    """Census C1-A: the NVDA episode's INVALIDATED verdict rested on its
+    2026-11-18 ``duplicate_contract_quote`` row, which WT2-b's exit filter no
+    longer produces. On a store the current code writes, the deadline row is
+    the entry guard's own, and that row alone must invalidate the episode;
+    an unwitnessed entry fill is a defect, not missing data (WT4-b E1)."""
+    chain(world, SOURCE, [B1, LONG, SHORT])
+    write_episode(world, scored(episode(B1)))
+    run(world)
+    assert quality_codes(world) == {CODE}  # no duplicate_contract_quote row exists
+    family = the_family(world)
+    assert (family["n_episodes"], family["n_resolved"]) == (1, 0)
+    assert (family["n_censored"], family["n_invalidated"]) == (1, 1)
+
+
+def _source_doc(rows):
+    at = cutoff_instant(SOURCE).isoformat()
+    cols = {
+        name: [row[i] for row in rows] for i, name in enumerate(("occ", "strike", "bid", "ask"))
+    }
+    cols.update(right=["P"] * len(rows), exp=[EXP] * len(rows))
+    header = {
+        "schema": "desk-chain/1",
+        "underlying": "NVDA",
+        "session": SOURCE.isoformat(),
+        "source_as_of": at,
+        "fetched_at": at,
+        "underlying_quote": {"last_trade_time": at},
+    }
+    return {"header": header, "columns": cols}
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [
+        "chain_missing",
+        "chain_vendor_conflict",
+        "chain_schema",
+        "chain_identity",
+        "chain_source_session",
+        "chain_occ_missing",
+        "chain_column_lengths",
+    ],
+)
+def test_a_failed_source_chain_keeps_its_own_cause(world, deadline_chain, cause):
+    """WT4-b E1: the catch-all stored every source-chain failure as
+    ``entry_fill_occ_provenance`` (ContractError is a ValueError), losing the
+    cause and censoring what should invalidate. Each failure now keeps its
+    own code under ``entry_source_`` and is scored exactly as the same code
+    on an exit chain: conflict/identity/schema/stale invalidate, a missing
+    chain censors. E2: a chain with no occ column is refused by name (it
+    cannot witness OCC provenance), and censors. F-B1: a ragged occ column
+    is a recorded quality event on the source chain too."""
+    doc = _source_doc([LONG, SHORT])
+    path = world.store / "chains" / SOURCE.isoformat() / "NVDA.json.gz"
+    if cause == "chain_vendor_conflict":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.with_name("NVDA.conflict.json.gz").write_bytes(encode_document(doc))
+    elif cause == "chain_schema":
+        doc["header"]["schema"] = "desk-chain/0"
+    elif cause == "chain_identity":
+        doc["header"]["underlying"] = "TSLA"
+    elif cause == "chain_source_session":
+        doc["header"]["source_as_of"] = cutoff_instant(PREV_SESSION).isoformat()
+    elif cause == "chain_occ_missing":
+        del doc["columns"]["occ"]
+    elif cause == "chain_column_lengths":
+        doc["columns"]["occ"].append("NVDA261120P00160000")  # ragged: one occ too many
+    if cause != "chain_missing":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(encode_document(doc))
+    write_episode(world, scored(episode(LONG)))
+
+    assert run(world)["marks_created"] == 0
+    code = f"{shadows.ENTRY_SOURCE_PREFIX}{cause}"
+    assert quality_codes(world) == {code}
+    invalidates = cause in INVALIDATING_CHAIN_CAUSES
+    # the entry side is classified exactly as the exit side classifies the cause
+    assert (code in scorecards._INVALIDATING) is (cause in scorecards._INVALIDATING) is invalidates
+    assert the_family(world)["n_invalidated"] == int(invalidates)
+
+
+def test_b1_twins_on_both_chains_the_production_scenario(world):
+    """WT4-b E3: the production shape — B1 twins on the SOURCE chain AND on
+    every EXIT chain, at both legs' keys. The blended entry is refused on
+    every session with the guard's own code (never ``duplicate_contract_quote``:
+    the exit filter drops the twins); the standard entry is marked from the
+    standard exit rows only, never the twins' prices."""
+    twins = [B1, LONG, B1_SHORT, SHORT]
+    chain(world, SOURCE, twins)
+    for day, (short_ask, long_bid) in {16: (4.6, 2.5), 17: (4.7, 2.3), 18: (4.9, 2.0)}.items():
+        chain(
+            world,
+            date(2026, 11, day),
+            [
+                (B1[0], 150, 0.01, 0.02),  # a twin whose price would invent a mark
+                (LONG[0], 150, long_bid, round(long_bid + 0.07, 2)),
+                (B1_SHORT[0], 155, 9.0, 9.5),
+                (SHORT[0], 155, round(short_ask - 0.05, 2), short_ask),
+            ],
+        )
+    blended = scored(episode(B1))
+    write_episode(world, blended)
+    run(world)
+    with EvidenceStore(world.db, readonly=True) as store:
+        assert store.all("mark") == []
+        assert {(q["session"], q["code"]) for q in store.all("quality")} == {
+            (f"2026-11-{day}", CODE) for day in (16, 17, 18)
+        }
+
+    clean_id = DEAL_ID.replace("98470619e0ec", "0123456789ab")
+    clean = scored(episode(LONG))
+    clean["deal_id"] = clean["deal"]["structure"]["id"] = clean_id
+    write_episode(world, clean)
+    run(world)
+    with EvidenceStore(world.db, readonly=True) as store:
+        marks = {m["session"]: m for m in store.all("mark") if m["deal_id"] == clean_id}
+        assert not [q for q in store.all("quality") if q["deal_id"] == clean_id]
+    # credit 1.46 frozen from the standard rows; close = short ask - long bid
+    assert {s: (m["realistic"], m["modeled_net_pnl_dollars"]) for s, m in marks.items()} == {
+        "2026-11-16": ("2.1", "-66.60"),
+        "2026-11-17": ("2.4", "-96.60"),
+        "2026-11-18": ("2.9", "-146.60"),
+    }
+
+
+def test_a_ragged_exit_occ_is_a_quality_event_not_a_rolled_back_run(world):
+    """WT4-b F-B1, the regression WT2-b introduced: an exit chain whose occ
+    list is longer than its quote columns made standard_row_indexes return
+    an index past them; the IndexError escaped ``except ContractError`` and
+    rolled back the whole store.atomic() run, every run, until the chain
+    was fixed. It is now ``chain_column_lengths``, recorded, and the run
+    commits (the reviewer's repro asserted the IndexError; this asserts the
+    fix)."""
+    chain(world, SOURCE, [LONG, SHORT])
+    rows = [(SHORT[0], 155, 4.85, 4.9), (LONG[0], 150, 2.0, 2.07)]
+    cols = {name: [r[i] for r in rows] for i, name in enumerate(("occ", "strike", "bid", "ask"))}
+    cols.update(right=["P", "P"], exp=[EXP, EXP])
+    cols["occ"].append("NVDA261120P00145000")  # ragged
+    write_chain(world, DEADLINE, "NVDA", cols)
+    write_episode(world, episode(LONG))
+
+    report = run(world)  # must not raise
+
+    assert report["marks_created"] == 0
+    with EvidenceStore(world.db, readonly=True) as store:
+        assert store.get("quality", f"{DEAL_ID}|{DEADLINE}|chain_column_lengths") is not None
+        assert store.get("evaluation", DEADLINE.isoformat()) is not None  # the run committed

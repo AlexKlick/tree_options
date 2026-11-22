@@ -149,6 +149,14 @@ def _quote_columns(doc: Mapping[str, Any]) -> dict[str, list[Any]]:
     n = len(columns["right"])
     if not n or any(len(columns[k]) != n for k in needed):
         raise ContractError("chain_column_lengths")
+    # standard_row_indexes enumerates the occ column, so a ragged one would
+    # index past the quote columns: an IndexError that escapes the run's
+    # ``except ContractError`` and rolls back the whole store.atomic() run,
+    # every run, until the chain is fixed. Refuse it as a recorded quality
+    # event instead (WT4-b F-B1; covers the exit chain and the source chain).
+    occ = columns.get("occ")
+    if isinstance(occ, list) and len(occ) != n:
+        raise ContractError("chain_column_lengths")
     return columns
 
 
@@ -162,8 +170,9 @@ def package_prices(spec: LegStructure, doc: Mapping[str, Any]) -> tuple[Decimal 
     # be priced as that leg: where no standard row shares the key, its bid/ask
     # reached ``realistic``/``mid`` (AI-BEAR-002 AMENDMENT 2). A filtered-out
     # leg falls through to ``contract_quote_missing`` below. A document with
-    # no occ column cannot be tested and is served as before (the canonical
-    # rule's fail-open branch, as trex_web.options_view serves it).
+    # no occ column cannot be tested and is served as before: that fail-open
+    # branch is THIS caller's (standard_row_indexes returns no rows for it).
+    # The entry guard deliberately does the opposite (_source_chain, E2).
     rows = standard_row_indexes(doc) if isinstance(columns.get("occ"), list) else range(n)
     quotes: dict[tuple[Any, ...], tuple[Decimal, Decimal]] = {}
     for i in rows:
@@ -256,16 +265,58 @@ def _entry_quotes_match(
     return False
 
 
+# A source (entry) chain's own failure is stored under this prefix, so its
+# cause survives and is never mistaken for the exit chain's (WT4-b E1).
+ENTRY_SOURCE_PREFIX = "entry_source_"
+
+
+def _source_chain(spec: LegStructure, session: date, root: Path, now: datetime) -> dict[str, Any]:
+    """The episode's source-session chain, or ``entry_source_<cause>``.
+
+    A chain with no ``occ`` column is REFUSED here (``chain_occ_missing``):
+    it cannot witness OCC provenance, and serving its every row would let a
+    nonstandard B1 row justify the fill, the defect this guard exists to
+    catch (WT4-b E2). The exit side serves such a chain as before
+    (package_prices); the entry side does not."""
+    try:
+        doc, _, _ = _read_chain(spec.underlying, session, root, now)
+        if not isinstance(_quote_columns(doc).get("occ"), list):
+            raise ContractError("chain_occ_missing")
+    except ContractError as exc:
+        raise ContractError(ENTRY_SOURCE_PREFIX + str(exc)) from exc
+    return doc
+
+
 def _verified_entry(
     episode: dict[str, Any], root: Path, now: datetime
 ) -> tuple[LegStructure, Decimal]:
+    """The frozen entry fill, verified on its source-session chain.
+
+    Two kinds of failure are kept apart, because the scorecard classifies
+    them differently (WT4-b E1; scorecards._INVALIDATING):
+
+    * the source chain itself fails: its own code, prefixed
+      ``entry_source_`` (``entry_source_chain_missing``, ...), classified
+      exactly as the same code on an exit chain; a chain with no ``occ``
+      column is ``entry_source_chain_occ_missing`` (untestable: censored);
+    * the chain is readable and OCC-tagged but no standard row carries a
+      frozen bid/ask pair (the NVDA B1 blend), or the episode's own record
+      is too malformed to test: ``entry_fill_occ_provenance``. That is a
+      defect in the evidence, not missing evidence, so it INVALIDATES.
+    """
     try:
         deal = episode["deal"]
         spec = LegStructure.model_validate(deal["structure"])
         fill = money(deal["fill"])
         session = iso_date(episode.get("source_session"), "entry_fill_occ_provenance")
-        doc, _, _ = _read_chain(spec.underlying, session, root, now)
-        matched = _entry_quotes_match(spec, deal["legs"], doc)
+        legs = deal["legs"]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ContractError("entry_fill_occ_provenance") from exc
+    doc = _source_chain(spec, session, root, now)
+    try:
+        # the chain's columns are verified above: what can fail here is the
+        # episode's own frozen legs
+        matched = _entry_quotes_match(spec, legs, doc)
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise ContractError("entry_fill_occ_provenance") from exc
     if not matched:

@@ -353,6 +353,20 @@ def test_a_document_without_an_underlying_serves_every_row() -> None:
     assert len(qsl._sizes(doc)) == 1
 
 
+def test_a_document_without_an_occ_column_has_no_rows() -> None:
+    """WT4-b E2: with no ``occ`` list there is nothing to enumerate, so the
+    result is ``[]`` — NOT every row, as the docstring used to claim. The
+    callers that serve such a document as before do it themselves
+    (shadows.package_prices, trex_web.options_view); the shadows entry
+    guard refuses it by name (``entry_source_chain_occ_missing``)."""
+    doc = _duplicated_chain()
+    assert store.standard_row_indexes(doc) == [1]
+    del doc["columns"]["occ"]
+    assert store.standard_row_indexes(doc) == []
+    doc["header"].pop("underlying")  # no underlying either: still nothing to enumerate
+    assert store.standard_row_indexes(doc) == []
+
+
 def test_a_row_whose_occ_is_not_a_string_is_kept() -> None:
     """Nothing to test, nothing to drop — the fail-closed-on-nothing rule."""
     doc = _duplicated_chain()

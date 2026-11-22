@@ -9,7 +9,9 @@ literal (pinned to the frozen panel sha256 recorded in the prereg §4.1).
 from __future__ import annotations
 
 import ast
+import fcntl
 import json
+import os
 import re
 import threading
 from datetime import UTC, date, datetime
@@ -327,7 +329,7 @@ def test_entitlement_short_rebase_exits_3_without_writing(paper: Path, capsys) -
     ]
     summary = capsys.readouterr().out.splitlines()[-1]
     assert summary == (
-        f"vendor rejected: WMT: incomplete range {fx.BACKFILL_START}..{D} (500 bars fetched): "
+        f"vendor not entitled: WMT: incomplete range {fx.BACKFILL_START}..{D} (500 bars fetched): "
         f"/v2/aggs/ticker/WMT/range/1/day/{fx.BACKFILL_START}/2024-12-15?adjusted=true: "
         f"not entitled on this API tier — vendor says: {message}"
     )
@@ -353,12 +355,52 @@ def test_first_request_refusal_is_reported(paper: Path, capsys, status, body, re
     assert fx.main([D], client=_client(transport)) == 3
     assert transport.calls == 1
     summary = capsys.readouterr().out.splitlines()[-1]
-    assert summary.startswith("vendor rejected: ABBV: ")
+    # a plan refusal (200 NOT_AUTHORIZED, 403 timeframe) is an entitlement
+    # stop; a rejected key (401) is not (WT4-b F1-EFG)
+    kind = "vendor rejected" if status == 401 else "vendor not entitled"
+    assert summary.startswith(f"{kind}: ABBV: ")
     assert reason in summary
     if status != 401:
         assert "(0 bars fetched)" in summary
     assert not fx.panel_path(paper).exists()
     assert not fx.provenance_path(paper).exists()
+
+
+def test_entitlement_refusal_never_advises_a_re_arm(paper: Path, capsys) -> None:
+    """WT4-b F1-EFG: BACKFILL_START is fixed and the plan's history window
+    only rolls forward, so "re-arm per the ladder" cannot cure a plan refusal.
+    The refusal is still exit 3 with nothing written; only the advice differs.
+    Vendor lag (curable by waiting) keeps the re-arm advice."""
+    panel = _stored_panel()
+    panel["WMT"][fx.BACKFILL_START] = panel["WMT"][PREV]
+    fx.panel_path(paper).write_text(json.dumps(panel))
+    before = fx.panel_path(paper).read_bytes()
+    message = "Your plan doesn't include this data timeframe."
+    transport = transport_of(
+        *(json.dumps(_route_ok(n, PREV, D)) for n in EXPECTED_ROSTER[:-1]),
+        json.dumps(_body(_bar(PREV, "90.00"), _bar(D, "90.00"))),
+        json.dumps(_capped_body("90.00")),
+        json.dumps({"status": "NOT_AUTHORIZED", "message": message}),
+    )
+
+    assert fx.main([D], client=_client(transport)) == 3
+    out = capsys.readouterr().out
+    assert "VENDOR NOT ENTITLED WMT: incomplete range" in out
+    assert "re-arming cannot fix it" in out
+    assert "re-arm per the ladder" not in out
+    assert out.splitlines()[-1].startswith("vendor not entitled: WMT: ")
+    assert fx.panel_path(paper).read_bytes() == before
+    assert not fx.provenance_path(paper).exists()
+
+    # the contrast: vendor lag is curable by waiting, and still says so
+    def lagging(ticker: str, start: str, end: str):
+        return _body(_bar(start)) if ticker == "TGT" else _route_ok(ticker, start, end)
+
+    fx.panel_path(paper).write_text(json.dumps(_stored_panel()))
+    assert fx.main([D], client=FakeVendor(lagging)) == 3
+    lag = capsys.readouterr().out
+    assert "re-arm per the ladder" in lag
+    assert "re-arming cannot fix it" not in lag
 
 
 def test_500_cap_head_chase_merges_the_head_range(paper: Path) -> None:
@@ -433,3 +475,80 @@ def test_merge_happens_under_the_exclusive_panel_lock(paper: Path) -> None:
     thread.join(10)
     assert result["rc"] == 0
     assert D in json.loads(panel_path.read_text())["GE"]
+
+
+def test_merge_lands_by_renaming_a_whole_temp_file_over_the_intact_panel(
+    paper: Path, monkeypatch
+) -> None:
+    """WT4-b XUF-M8 (R-D's unanchored claim: torn-write atomicity). The one
+    os.replace call is (tmp, panel): the tmp sits in the panel's own
+    directory (one filesystem, so the rename is atomic), it already holds
+    the WHOLE merged panel, and at that moment the panel is still its old,
+    intact bytes — nothing wrote it in place first. No production change."""
+    panel_path = fx.panel_path(paper)
+    panel_path.write_text(json.dumps(_stored_panel()))
+    before = panel_path.read_bytes()
+    real_replace = os.replace
+    seen: list[tuple[Path, Path, bool, Any]] = []
+
+    def spy(src, dst) -> None:
+        src, dst = Path(src), Path(dst)
+        seen.append((src, dst, dst.read_bytes() == before, json.loads(src.read_text())))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(fx.os, "replace", spy)
+    assert fx.main([D], client=FakeVendor(lambda t, s, e: _route_ok(t, s, e))) == 0
+
+    ((src, dst, intact, staged),) = seen
+    assert dst == panel_path
+    assert src != dst and src.parent == dst.parent
+    assert src.name.startswith(f".{panel_path.name}.") and src.name.endswith(".tmp")
+    assert intact, "the panel was written in place before the rename (a torn write)"
+    assert staged == json.loads(panel_path.read_text())  # the tmp held the whole panel
+    assert staged["GE"][D]["close"] == "101.00"
+    assert not src.exists()
+
+
+def test_merge_rereads_the_panel_under_the_lock(paper: Path) -> None:
+    """WT4-b XUF-M9 (R-D's unanchored claim). The merge base is the panel as
+    it stands once the exclusive lock is HELD, not extend's unlocked
+    snapshot: a rival writer that commits while extend waits on the lock
+    keeps its commit. Confirmed by reading the code (fetch_ohlc_xu.extend:
+    the re-read is the first statement inside ``with panel_lock``), so no
+    production change. Timing-based like the XUF-M5 owner (0.4 s): slowness
+    can only let a mutant survive, never fake a kill."""
+    panel_path = fx.panel_path(paper)
+    panel_path.write_text(json.dumps(_stored_panel()))
+    lock = fx.lock_path(paper)
+    lock.touch()
+    reached_last_name = threading.Event()
+
+    def route(ticker: str, start: str, end: str):
+        if ticker == "WMT":  # the roster's last name: the lock wait is next
+            reached_last_name.set()
+        return _route_ok(ticker, start, end)
+
+    result: dict[str, Any] = {}
+
+    def run() -> None:
+        result["rc"] = fx.main([D], client=FakeVendor(route))
+
+    later = "2026-11-16"  # after the target: the merge itself never touches it
+    rival_bar = {"close": "123.45", "open": "123.45", "high": "123.45", "low": "123.45"}
+    with lock.open("a") as fh:  # the rival writer holds LOCK_EX
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        thread = threading.Thread(target=run)
+        thread.start()
+        assert reached_last_name.wait(5), "fetch loop never reached the last name"
+        thread.join(0.4)
+        assert thread.is_alive(), "extend wrote while a rival held the lock"
+        rival = json.loads(panel_path.read_text())
+        rival["GE"][later] = rival_bar
+        panel_path.write_text(json.dumps(rival))  # the rival commits under its lock
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    thread.join(10)
+
+    assert result["rc"] == 0
+    merged = json.loads(panel_path.read_text())
+    assert merged["GE"][later] == rival_bar, "the merge used a pre-lock snapshot"
+    assert merged["GE"][D]["close"] == "101.00"  # and extend's own merge landed

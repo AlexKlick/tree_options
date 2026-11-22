@@ -1046,6 +1046,9 @@ def _vrp_cond_forward(args: argparse.Namespace, *, clock: store.Clock, cal: Sess
     if args.session is None and args.catch_up is None:
         print("vrp-cond-forward: give exactly one of --session D or --catch-up D", file=sys.stderr)
         return 2
+    # DEAD from the CLI (R-D; WT4-b): the argparse group (vf_target) refuses
+    # both flags at parse time, before this handler runs. Kept, not deleted;
+    # the live layer is pinned by VCF-CLI-M2 and WT4B-RD11-1.
     if args.session is not None and args.catch_up is not None:
         print("vrp-cond-forward: --session and --catch-up are mutually exclusive", file=sys.stderr)
         return 2
