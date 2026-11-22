@@ -12,12 +12,16 @@ import ast
 import json
 import re
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from scripts.desk import fetch_ohlc_xu as fx
+
+from tests.fixtures.massive_responses import FakeResponse, FakeTransport, transport_of
+from tree_options.data.massive_client import MassiveClient, RateGovernor
+from tree_options.time.synthetic import SyntheticCalendar
 
 # The frozen 62-name roster, INDEPENDENTLY written out (derived from
 # ohlc-panel-xu.json at sha256 3753dcb8…036c0a5a — XU-SUCCESSOR-001 §4.1).
@@ -105,6 +109,18 @@ def _body(*rows: dict[str, Any]) -> dict[str, Any]:
     return {"status": "OK", "results": list(rows)}
 
 
+def _capped_body(close: str) -> dict[str, Any]:
+    sessions = SyntheticCalendar(date(2024, 12, 16), n_sessions=500).sessions()
+    assert sessions[-1].isoformat() == D
+    return _body(*(_bar(d.isoformat(), close) for d in sessions))
+
+
+def _client(transport: FakeTransport) -> MassiveClient:
+    return MassiveClient(
+        api_key="test-key", transport=transport, cache_dir=None, governor=RateGovernor(None)
+    )
+
+
 class FakeVendor:
     """Routes /v2/aggs range requests; records every (ticker, start, end)."""
 
@@ -133,9 +149,11 @@ def paper(tmp_path: Path, monkeypatch) -> Path:
 def _stored_panel(*, drop: str | None = None, close: str = "100.00") -> dict[str, Any]:
     days = ["2026-11-05", "2026-11-06", "2026-11-09", "2026-11-10", "2026-11-11", PREV]
     panel = {
-        n: {d: {"close": close, "open": close, "high": close, "low": close, "volume": 1}}
+        n: {
+            d: {"close": close, "open": close, "high": close, "low": close, "volume": 1}
+            for d in days
+        }
         for n in EXPECTED_ROSTER
-        for d in days
     }
     # the two delisted names end long before the target (their real shape)
     for n in ("BK", "WBA"):
@@ -262,28 +280,97 @@ def test_short_full_refetch_is_a_vendor_rejection(paper: Path) -> None:
         if ticker != "WMT":
             return _route_ok(ticker, start, end)
         if start == fx.BACKFILL_START:  # a broken short full refetch
-            return _body(_bar("2026-01-05", "90.00"), _bar("2026-01-06", "90.00"))
+            return _body(_bar("2026-01-05", "90.00"), _bar(D, "90.00"))
         return _body(_bar(start, "90.00"), _bar(end, "90.00"))
 
     assert fx.main([D], client=FakeVendor(route)) == 3
     assert panel_path.read_bytes() == before
 
 
+def test_entitlement_stop_returns_the_fetched_bars() -> None:
+    transport = transport_of(
+        json.dumps(_capped_body("90.00")),
+        json.dumps({"status": "NOT_AUTHORIZED", "message": "Historical access denied"}),
+    )
+    bars = fx.fetch_range(_client(transport), "ABBV", fx.BACKFILL_START, D)
+
+    assert [url.rsplit("/", 1)[1] for url in transport.paths()] == [D, "2024-12-15"]
+    assert len(bars) == 500
+    assert bars["2024-12-16"]["close"] == bars[D]["close"] == "90.00"
+    assert bars.refusal and "Historical access denied" in bars.refusal
+
+
+def test_entitlement_short_rebase_exits_3_without_writing(paper: Path, capsys) -> None:
+    panel = _stored_panel()
+    panel["WMT"][fx.BACKFILL_START] = panel["WMT"][PREV]
+    panel_path = fx.panel_path(paper)
+    panel_path.write_text(json.dumps(panel))
+    before = panel_path.read_bytes()
+    provenance = fx.provenance_path(paper)
+    provenance.write_bytes(b"prior extend\n")
+
+    # WMT is last. Its overlap moves, then the full refetch serves the target
+    # and 499 other sessions before refusing the older, previously stored head.
+    message = "Your plan doesn't include this data timeframe."
+    transport = transport_of(
+        *(json.dumps(_route_ok(n, PREV, D)) for n in EXPECTED_ROSTER[:-1]),
+        json.dumps(_body(_bar(PREV, "90.00"), _bar(D, "90.00"))),
+        json.dumps(_capped_body("90.00")),
+        json.dumps({"status": "NOT_AUTHORIZED", "message": message}),
+    )
+
+    assert fx.main([D], client=_client(transport)) == 3
+    assert [url.split("/ticker/")[1] for url in transport.paths()[-3:]] == [
+        f"WMT/range/1/day/2026-11-06/{D}",
+        f"WMT/range/1/day/{fx.BACKFILL_START}/{D}",
+        f"WMT/range/1/day/{fx.BACKFILL_START}/2024-12-15",
+    ]
+    summary = capsys.readouterr().out.splitlines()[-1]
+    assert summary == (
+        f"vendor rejected: WMT: incomplete range {fx.BACKFILL_START}..{D} (500 bars fetched): "
+        f"/v2/aggs/ticker/WMT/range/1/day/{fx.BACKFILL_START}/2024-12-15?adjusted=true: "
+        f"not entitled on this API tier — vendor says: {message}"
+    )
+    assert panel_path.read_bytes() == before
+    assert provenance.read_bytes() == b"prior extend\n"
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "reason"),
+    [
+        (
+            200,
+            {"status": "NOT_AUTHORIZED", "message": "History unavailable"},
+            "History unavailable",
+        ),
+        (403, {"message": "data timeframe"}, "data timeframe"),
+        (401, {"message": "invalid key"}, "key rejected"),
+    ],
+)
+def test_first_request_refusal_is_reported(paper: Path, capsys, status, body, reason) -> None:
+    transport = FakeTransport([FakeResponse(status=status, body=json.dumps(body))])
+
+    assert fx.main([D], client=_client(transport)) == 3
+    assert transport.calls == 1
+    summary = capsys.readouterr().out.splitlines()[-1]
+    assert summary.startswith("vendor rejected: ABBV: ")
+    assert reason in summary
+    if status != 401:
+        assert "(0 bars fetched)" in summary
+    assert not fx.panel_path(paper).exists()
+    assert not fx.provenance_path(paper).exists()
+
+
 def test_500_cap_head_chase_merges_the_head_range(paper: Path) -> None:
     panel_path = paper / "ohlc-panel-xu.json"
-    head_boundary = "2024-12-31"
+    head_boundary = "2024-12-15"
 
     def route(ticker: str, start: str, end: str):
         if ticker != "ABBV":
             return _route_ok(ticker, start, end)
         if end == head_boundary:  # the residual head range
-            return _body(_bar("2024-06-16", "98.00"), _bar("2024-12-30", "98.00"))
-        # exactly 500 capped rows, oldest (2025-01-01) far newer than the
-        # requested start (2024-06-16): the vendor dropped the head
-        days = [
-            f"{y}-{m:02d}-{d:02d}" for y in (2025, 2026) for m in range(1, 13) for d in range(1, 29)
-        ]
-        return _body(*(_bar(d) for d in days[:500]), _bar(D))
+            return _body(_bar("2024-06-16", "98.00"), _bar("2024-12-13", "98.00"))
+        return _capped_body("100.00")
 
     # ABBV's stored series is stale (ends 2024-06): its overlap range spans
     # more than 500 sessions, so the vendor caps the head
@@ -299,7 +386,8 @@ def test_500_cap_head_chase_merges_the_head_range(paper: Path) -> None:
     assert len(abbv_calls) == 2  # the capped request + the head chase
     assert abbv_calls[1] == ("ABBV", "2024-06-16", head_boundary)
     merged = json.loads(panel_path.read_text())
-    assert "2024-12-30" in merged["ABBV"] and D in merged["ABBV"]
+    assert merged["ABBV"]["2024-12-13"]["close"] == "98.00"
+    assert merged["ABBV"][D]["close"] == "100.00"
 
 
 def test_roster_drift_refuses_to_write(paper: Path) -> None:

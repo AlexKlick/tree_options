@@ -9743,6 +9743,205 @@ MUTANTS.extend(
 )
 
 
+# Wave 2026-11-21 (SHADOW OCC integrity): the shadow mark is the fourth chain
+# consumer, and it must apply the canonical standard-roots filter too.
+# shadows.package_prices keyed its quotes on (right, strike, exp) over EVERY
+# row, so an orphan B1 row (no standard twin at its key) was priced into the
+# shadow mark's realistic/mid and modeled P&L (AI-BEAR-002 AMENDMENT 2).
+MUTANTS.extend(
+    [
+        dict(
+            id="SHADOW-OCC-1-package-prices-unfiltered",
+            owner="test_an_orphan_nonstandard_row_is_refused_not_priced",
+            file="src/tree_options/desk/shadows.py",
+            anchor=(
+                '    rows = standard_row_indexes(doc) if isinstance(columns.get("occ"), list)'
+                " else range(n)"
+            ),
+            replacement="    rows = range(n)",
+            selectors=["tests/desk_safety/test_shadows_occ_integrity.py"],
+            invariant=(
+                "the shadow mark prices only standard OCC contracts — a"
+                " nonstandard root's bid/ask must never reach realistic/mid"
+            ),
+        ),
+        dict(
+            id="SHADOW-OCC-2-orphan-leg-priced-not-refused",
+            owner="test_an_orphan_nonstandard_row_is_refused_not_priced",
+            file="src/tree_options/desk/shadows.py",
+            anchor='            raise ContractError("contract_quote_missing")',
+            replacement="            continue",
+            selectors=["tests/desk_safety/test_shadows_occ_integrity.py"],
+            invariant=(
+                "a leg whose key carries no standard row is refused"
+                " (contract_quote_missing), never dropped from a package"
+                " that is then priced on the remaining legs"
+            ),
+        ),
+        dict(
+            id="SHADOW-OCC-3-duplicate-quote-accepted",
+            owner="test_two_kept_rows_at_one_key_still_fail_closed",
+            file="src/tree_options/desk/shadows.py",
+            anchor='            raise ContractError("duplicate_contract_quote")',
+            replacement="            continue",
+            selectors=["tests/desk_safety/test_shadows_occ_integrity.py"],
+            invariant=(
+                "two rows the canonical filter keeps at one (right, strike,"
+                " exp) still fail closed as duplicate_contract_quote — the"
+                " filter never silently prefers one of them"
+            ),
+        ),
+    ]
+)
+
+
+# WT2-c (2026-11-21, SQQQ-HEDGE-001 --resolve): the only forward-stream entry
+# point that writes under artifacts/paper-trades/ (twin #1's exit leg,
+# 2026-12-01). It validates the twin ledger BEFORE its first write,
+# cross-checks every card leg's entry basis against the panel, compares cents
+# as parsed Decimals (a >= $1,000 close carries a thousands separator) and
+# replaces the twin ledger by atomic rename. Owners live in
+# tests/unit/test_desk_sqqq_twin.py::TestResolveValidatesBeforeWrite.
+_SQ_RESOLVE_LEDGER_GATE = (
+    "    ledger_bytes = resolved_ledger_bytes(ledger_path, row)\n"
+    "    if write:\n"
+    "        commit_resolution(twin_path, card_raw, block, ledger_path, ledger_bytes)\n"
+)
+MUTANTS.extend(
+    [
+        dict(
+            id="SQ-RESOLVE-1-card-written-before-ledger-validated",
+            owner="test_missing_ledger_refuses_with_nothing_written",
+            file="scripts/desk/sqqq_twin.py",
+            anchor=_SQ_RESOLVE_LEDGER_GATE,
+            replacement=(
+                "    if write:\n"
+                '        with twin_path.open("a", encoding="utf-8") as fh:\n'
+                "            fh.write(block)\n" + _SQ_RESOLVE_LEDGER_GATE
+            ),
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "--resolve reads the twin ledger, requires twin #1's OPEN row"
+                " and builds the resolved ledger in memory BEFORE the twin"
+                " card is touched — a missing ledger or non-OPEN row refuses"
+                " with nothing written"
+            ),
+        ),
+        dict(
+            id="SQ-RESOLVE-2-leg-entry-basis-unchecked",
+            owner="test_leg_split_rebase_refuses_with_nothing_written",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="    check_leg_entry_basis(spec, panel)\n",
+            replacement="    pass  # mutant: only SQQQ is cross-checked\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "every card leg's sealed entry close is cross-checked against"
+                " the panel's entry-session close to the cent — a split"
+                " rebase between entry and exit refuses, never mis-states the"
+                " leg P&L by the split ratio"
+            ),
+        ),
+        dict(
+            id="SQ-RESOLVE-3-thousands-separator-string-compare",
+            owner="test_lly_leg_over_1000_matches_its_sealed_entry",
+            file="scripts/desk/sqqq_twin.py",
+            anchor='    return Decimal(f"{panel_px:.2f}") == Decimal(sealed.replace(",", ""))',
+            replacement='    return f"{panel_px:,.2f}" == sealed.replace(",", "")',
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "entry closes are compared as parsed Decimal cents, never as"
+                " formatted strings — a >= $1,000 close (LLY 1410.99) matches"
+                " its sealed entry"
+            ),
+        ),
+        dict(
+            id="SQ-RESOLVE-4-ledger-write-not-atomic",
+            owner="test_ledger_rewrite_is_an_atomic_rename",
+            file="scripts/desk/sqqq_twin.py",
+            anchor="        atomic_write_bytes(ledger_path, ledger_bytes)\n",
+            replacement="        ledger_path.write_bytes(ledger_bytes)\n",
+            selectors=[f"{U}/test_desk_sqqq_twin.py"],
+            invariant=(
+                "the twin ledger is replaced by tmp + fsync + rename"
+                " (store.atomic_write_bytes), never rewritten in place"
+            ),
+        ),
+    ]
+)
+
+
+# ---- wave-3 WT2-f (2026-11-21): the vendor entitlement head-chase ----
+MUTANTS.extend(
+    [
+        dict(
+            id="XUF-ENT-1-refusal-escapes",
+            owner="test_entitlement_stop_returns_the_fetched_bars",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="except (MassiveAuthRejectedError, MassiveNotEntitledError) as exc:",
+            replacement="except MassiveAuthRejectedError as exc:",
+            selectors=["tests/unit/test_desk_fetch_ohlc_xu.py"],
+            invariant="INV-WT2-f/1 a refused head chase returns the bars already fetched",
+        ),
+        dict(
+            id="XUF-ENT-2-short-rebase-accepted",
+            owner="test_entitlement_short_rebase_exits_3_without_writing",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="if bars.refusal is not None:",
+            replacement="if False:",
+            selectors=["tests/unit/test_desk_fetch_ohlc_xu.py"],
+            invariant="INV-WT2-f/2 a refused rebase preserves panel and provenance at exit 3",
+        ),
+        dict(
+            id="XUF-ENT-3-served-bars-dropped",
+            owner="test_500_cap_head_chase_merges_the_head_range",
+            file="scripts/desk/fetch_ohlc_xu.py",
+            anchor="series.update({d: b for d, b in bars.items() if d == target or d not in series})",
+            replacement="pass",
+            selectors=["tests/unit/test_desk_fetch_ohlc_xu.py"],
+            invariant="INV-WT2-f/3 a served head and target are merged into ohlc-panel-xu.json",
+        ),
+    ]
+)
+
+
+# ---- wave-3 WT2-e (2026-11-21): the entry fill's OCC provenance ----
+MUTANTS.extend(
+    [
+        dict(
+            id="SHADOW-ENT-1-unfiltered-source",
+            owner="test_blended_entry_records_quality_instead_of_a_deadline_mark",
+            file="src/tree_options/desk/shadows.py",
+            anchor="    for i in standard_row_indexes(doc):",
+            replacement='    for i in range(len(cols["right"])):',
+            selectors=["tests/desk_safety/test_shadow_entry_occ.py"],
+            invariant="INV-WT2-e/2 a nonstandard source quote cannot justify a mark",
+        ),
+        dict(
+            id="SHADOW-ENT-2-reversed-source-quote",
+            owner="test_clean_calendar_marks_preserve_the_modeled_fill",
+            file="src/tree_options/desk/shadows.py",
+            anchor='            quote = _number(cols["bid"][i]), _number(cols["ask"][i])',
+            replacement='            quote = _number(cols["ask"][i]), _number(cols["bid"][i])',
+            selectors=["tests/desk_safety/test_shadow_entry_occ.py"],
+            invariant="INV-WT2-e/3 matching standard bids and asks preserve clean marks",
+        ),
+        dict(
+            id="SHADOW-ENT-3-missing-source-passes",
+            owner="test_missing_source_chain_refuses_until_it_arrives",
+            file="src/tree_options/desk/shadows.py",
+            anchor='        raise ContractError("entry_fill_occ_provenance") from exc',
+            replacement=(
+                '        if str(exc) != "chain_missing":\n'
+                '            raise ContractError("entry_fill_occ_provenance") from exc\n'
+                "        matched = True"
+            ),
+            selectors=["tests/desk_safety/test_shadow_entry_occ.py"],
+            invariant="INV-WT2-e/4 a missing source-session chain refuses the mark",
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

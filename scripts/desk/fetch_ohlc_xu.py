@@ -174,6 +174,12 @@ class VendorRejected(Exception):
     pass
 
 
+class FetchedBars(dict[str, dict[str, Any]]):
+    """Session bars, with the vendor's reason if it refused part of the range."""
+
+    refusal: str | None = None
+
+
 def _prev_day(iso: str) -> str:
     """The calendar day before ISO date ``iso`` (epoch math, no timedelta)."""
     ts = dt.datetime.fromisoformat(iso).replace(tzinfo=dt.UTC).timestamp()
@@ -204,14 +210,15 @@ def _row_to_bar(row: dict, where: str) -> tuple[str, dict[str, Any]]:
     return session, bar
 
 
-def fetch_range(client, ticker: str, start: str, end: str) -> dict[str, dict[str, Any]]:
-    """Bars for one name over [start, end]; raises on vendor rejection. The
-    free/paid-tier 500-result cap drops a long range's EARLIEST sessions, so
-    when the oldest fetched bar is newer than the requested start the head is
-    chased with a second range and merged (the fetch_ohlc.py pattern)."""
-    from tree_options.data.massive_client import MassiveAuthRejectedError
+def fetch_range(client, ticker: str, start: str, end: str) -> FetchedBars:
+    """Fetch [start, end], chasing earlier sessions dropped by the 500-result cap.
 
-    bars: dict[str, dict[str, Any]] = {}
+    If the plan refuses a request, return the bars collected so far and the
+    refusal. A refusal on the first request yields zero bars with a reason.
+    """
+    from tree_options.data.massive_client import MassiveAuthRejectedError, MassiveNotEntitledError
+
+    bars = FetchedBars()
     range_start = start
     original_end = end
     while True:
@@ -224,10 +231,13 @@ def fetch_range(client, ticker: str, start: str, end: str) -> dict[str, dict[str
                 {"adjusted": "true"},
                 use_cache=False,
             )
-        except MassiveAuthRejectedError as exc:
-            if end != original_end or "timeframe" in str(exc):
-                # head-chase past the rolling entitlement boundary: keep what
-                # we have and stop chasing (documented, like the original)
+        except (MassiveAuthRejectedError, MassiveNotEntitledError) as exc:
+            if (
+                isinstance(exc, MassiveNotEntitledError)
+                or end != original_end
+                or "timeframe" in str(exc)
+            ):
+                bars.refusal = str(exc)
                 break
             raise VendorRejected(f"{ticker}: {exc}") from exc
         results = body.get("results") or []
@@ -301,6 +311,15 @@ def extend(
                 f"sha256 {XU_PANEL_SHA256_FROZEN[:16]}… — investigate before writing"
             )
 
+    def fetch_complete(name: str, start: str) -> dict[str, dict[str, Any]]:
+        bars = fetch_range(client, SYMBOL_MAP.get(name, name), start, target)
+        if bars.refusal is not None:
+            raise VendorRejected(
+                f"{name}: incomplete range {start}..{target} ({len(bars)} bars fetched): "
+                f"{bars.refusal}"
+            )
+        return bars
+
     fetched: dict[str, dict[str, dict[str, Any]]] = {}
     rebased: list[str] = []
     truncated: list[str] = []
@@ -310,17 +329,12 @@ def extend(
         for name in XU_ROSTER:
             series = stored.get(name, {})
             overlap = sorted(d for d in series if d < target)[-REBASE_OVERLAP:]
-            bars = fetch_range(
-                client,
-                SYMBOL_MAP.get(name, name),
-                overlap[0] if overlap else BACKFILL_START,
-                target,
-            )
+            bars = fetch_complete(name, overlap[0] if overlap else BACKFILL_START)
             req += 1
             if adjustment_moved(series, bars, overlap) or name in SYMBOL_MAP:
                 # a moved adjustment (or a pinned remap) re-fetches the whole
                 # window and REPLACES the series
-                bars = fetch_range(client, SYMBOL_MAP.get(name, name), BACKFILL_START, target)
+                bars = fetch_complete(name, BACKFILL_START)
                 req += 1
                 if len(bars) < REBASE_MIN_SESSIONS:
                     raise VendorRejected(f"{name}: adjustment moved but full refetch short")

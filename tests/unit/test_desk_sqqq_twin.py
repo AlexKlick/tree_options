@@ -17,6 +17,7 @@ import importlib.util
 import itertools
 import json
 import math
+import os
 import random
 import re
 import sys
@@ -164,6 +165,12 @@ def _qrets(seed: int = 7) -> list[float]:
     return [rng.gauss(0.0, 0.01) for _ in range(len(SESSIONS) - 1)]
 
 
+ENTRY_IDX = SESSIONS.index(ENTRY)
+# the sealed card's entry prices ARE the panel's entry-session closes (the
+# real panel: AMD 466.84 / LLY 1410.99 / INTC 59.97 at 2026-11-02)
+PINNED_ENTRY = {"AMD": 466.84, "LLY": 1410.99, "INTC": 59.97}
+
+
 def build_panel(
     *,
     loading: float = 2.0,
@@ -172,23 +179,27 @@ def build_panel(
     idio: float = 0.0,
     overrides: dict[tuple[str, int], float] | None = None,
     skip_sessions: dict[str, tuple[str, ...]] | None = None,
+    sqqq_entry: float | None = None,
 ) -> dict[str, dict[str, dict[str, str]]]:
     """A synthetic panel: QQQ plus AMD/LLY/INTC at ``loading`` on QQQ, SQQQ at
     -3x with a drag, closes stored as strings. ``overrides[(name, i)]`` sets
     name's return over transition i (SESSIONS[i] -> SESSIONS[i+1]); a return
-    of None drops the bar. ``skip_sessions[name]`` deletes those sessions."""
+    of None drops the bar. ``skip_sessions[name]`` deletes those sessions.
+    Each card leg's path is rescaled so its ENTRY close is the sealed card's
+    entry price (``--resolve`` cross-checks every leg's entry basis); a
+    uniform rescale leaves every return — hence beta — unchanged.
+    ``sqqq_entry`` rescales SQQQ the same way (e.g. a >= $1,000 entry)."""
     q = list(qrets or _qrets(seed))
     overrides = overrides or {}
     skip = skip_sessions or {}
     names = ["QQQ", "AMD", "LLY", "INTC", "SQQQ"]
     base = {"QQQ": 400.0, "AMD": 466.84, "LLY": 1410.99, "INTC": 59.97, "SQQQ": 43.55}
-    panel: dict[str, dict[str, dict[str, str]]] = {n: {} for n in names}
+    path: dict[str, list[float]] = {n: [] for n in names}
     px = dict(base)
     rng = random.Random(seed + 1)
-    for i, s in enumerate(SESSIONS):
+    for i in range(len(SESSIONS)):
         for n in names:
-            c = f"{px[n]:.6f}"
-            panel[n][s] = {"open": c, "high": c, "low": c, "close": c, "volume": "1"}
+            path[n].append(px[n])
         if i == len(SESSIONS) - 1:
             break
         qm = q[i]
@@ -202,6 +213,17 @@ def build_panel(
             r = overrides.get((n, i), r)
             if r is not None:
                 px[n] *= 1.0 + r
+    pins = dict(PINNED_ENTRY)
+    if sqqq_entry is not None:
+        pins["SQQQ"] = sqqq_entry
+    for n, pin in pins.items():
+        scale = pin / path[n][ENTRY_IDX]
+        path[n] = [v * scale for v in path[n]]
+    panel: dict[str, dict[str, dict[str, str]]] = {n: {} for n in names}
+    for n in names:
+        for s, v in zip(SESSIONS, path[n], strict=True):
+            c = f"{v:.6f}"
+            panel[n][s] = {"open": c, "high": c, "low": c, "close": c, "volume": "1"}
     for n, ss in skip.items():
         for s in ss:
             panel[n].pop(s, None)
@@ -642,3 +664,187 @@ class TestResolve:
         (paper / CARD_FILE).write_text(CARD_TEXT.replace("59.97", "59.98"))
         with pytest.raises(sqqq.Refusal, match="sha256"):
             run_resolve(paper)
+
+
+# ------------------------------- resolve: validate before write (WT2-c)
+
+
+def _twin_paths(paper: Path) -> tuple[Path, Path]:
+    twins = paper / "sqqq-twins"
+    return twins / "2026-12-01-sqqq-twin.md", twins / "LEDGER.md"
+
+
+def _rewrite_panel(paper: Path, edit) -> None:
+    panel = json.loads((paper / "ohlc-panel.json").read_text())
+    edit(panel)
+    (paper / "ohlc-panel.json").write_text(json.dumps(panel))
+
+
+def _generated(tmp_path: Path, monkeypatch, **panel_kw) -> Path:
+    paper = make_paper_tree(tmp_path, build_panel(**{"loading": 2.0, **panel_kw}))
+    patch_card_pin(monkeypatch)
+    assert run_generate(paper) == 0
+    return paper
+
+
+class TestResolveValidatesBeforeWrite:
+    """``--resolve`` validates everything before its first write (a refusal
+    leaves every file byte-identical), cross-checks every card leg's entry
+    basis, and replaces the twin ledger by atomic rename."""
+
+    def test_missing_ledger_refuses_with_nothing_written(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch)
+        twin, ledger = _twin_paths(paper)
+        ledger.unlink()
+        before = sha_map(paper)
+        with pytest.raises(sqqq.Refusal, match=r"LEDGER\.md does not exist"):
+            run_resolve(paper)
+        assert sha_map(paper) == before
+        assert "## RESOLUTION" not in twin.read_text()
+
+    def test_non_open_ledger_row_refuses_with_nothing_written(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch)
+        twin, ledger = _twin_paths(paper)
+        text = ledger.read_text()
+        closed = re.sub(
+            r"\| #1 \| [^\n]*\| OPEN \| — \| — \|",
+            f"| #1 | RESOLVED {EXIT} | +1.00 | +1.00 |",
+            text,
+        )
+        assert closed != text
+        ledger.write_text(closed)
+        before = sha_map(paper)
+        with pytest.raises(sqqq.Refusal, match="no OPEN ledger row"):
+            run_resolve(paper)
+        assert sha_map(paper) == before
+        assert "## RESOLUTION" not in twin.read_text()
+
+    @pytest.mark.parametrize("leg", ["AMD", "LLY", "INTC"])
+    def test_leg_split_rebase_refuses_with_nothing_written(
+        self, tmp_path, monkeypatch, leg
+    ) -> None:
+        """A 2:1 split between entry and exit with the incumbent panel
+        rebased: exit_px on the new basis, the sealed entry_px on the old
+        one — the leg P&L would be off by the split ratio, so refuse."""
+        paper = _generated(tmp_path, monkeypatch)
+
+        def rebase(panel) -> None:
+            for bar in panel[leg].values():
+                for k in ("open", "high", "low", "close"):
+                    bar[k] = f"{float(bar[k]) / 2.0:.6f}"
+
+        _rewrite_panel(paper, rebase)
+        before = sha_map(paper)
+        with pytest.raises(sqqq.Refusal, match=rf"panel {leg} close at {ENTRY} .*different bases"):
+            run_resolve(paper)
+        assert sha_map(paper) == before
+
+    def test_one_cent_leg_drift_refuses(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch)
+        _rewrite_panel(paper, lambda p: p["AMD"][ENTRY].update(close="466.850000"))
+        before = sha_map(paper)
+        with pytest.raises(sqqq.Refusal, match=r"\(\$466\.85\) no longer matches .*\$466\.84"):
+            run_resolve(paper)
+        assert sha_map(paper) == before
+
+    def test_leg_without_an_entry_session_close_refuses(self, tmp_path, monkeypatch) -> None:
+        # the beta window ends BEFORE entry, so generation still succeeds
+        paper = _generated(tmp_path, monkeypatch, skip_sessions={"INTC": (ENTRY,)})
+        before = sha_map(paper)
+        with pytest.raises(
+            sqqq.Refusal, match=f"no usable INTC entry-session close at session {ENTRY}"
+        ):
+            run_resolve(paper)
+        assert sha_map(paper) == before
+
+    def test_same_cents_compares_parsed_decimals(self) -> None:
+        assert sqqq.same_cents(1410.99, "1410.99")
+        assert sqqq.same_cents(1410.99, "1,410.99")
+        assert sqqq.same_cents(12345.67, "12,345.67")
+        assert sqqq.same_cents(1410.990001, "1410.99")  # sub-cent noise: same cents
+        assert sqqq.same_cents(43.55, "43.55")
+        assert not sqqq.same_cents(1411.0, "1410.99")
+        assert not sqqq.same_cents(705.495, "1410.99")  # a 2:1 rebase
+
+    def test_lly_leg_over_1000_matches_its_sealed_entry(self, tmp_path, monkeypatch) -> None:
+        """LLY's sealed entry is 1410.99: the cents cross-check must MATCH a
+        >= $1,000 close (the comma-keeping string compare never could) and
+        the leg resolves on the sealed basis."""
+        panel = build_panel(loading=2.0)
+        assert panel["LLY"][ENTRY]["close"] == "1410.990000"
+        paper = make_paper_tree(tmp_path, panel)
+        patch_card_pin(monkeypatch)
+        assert run_generate(paper) == 0
+        assert run_resolve(paper) == 0
+        twin, _ = _twin_paths(paper)
+        lly_exit = float(panel["LLY"][EXIT]["close"])
+        assert f"| LLY (card) | 1410.99 | {lly_exit:.2f} |" in twin.read_text()
+
+    def test_sqqq_entry_over_1000_matches_the_sealed_twin_card(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch, sqqq_entry=1234.56)
+        twin, _ = _twin_paths(paper)
+        assert "| SQQQ entry close | $1,234.56 |" in twin.read_text()
+        assert run_resolve(paper) == 0
+        assert "| SQQQ (hedge) | 1234.56 |" in twin.read_text()
+
+    def test_ledger_rewrite_is_an_atomic_rename(self, tmp_path, monkeypatch) -> None:
+        """The ledger is replaced by tmp + rename, never rewritten in place:
+        a reader holding the pre-resolve ledger keeps it whole, and the path
+        names a new inode."""
+        paper = _generated(tmp_path, monkeypatch)
+        _, ledger = _twin_paths(paper)
+        pre = ledger.read_bytes()
+        held = tmp_path / "ledger-held-by-a-reader"  # outside the paper tree
+        os.link(ledger, held)
+        assert run_resolve(paper) == 0
+        assert held.read_bytes() == pre  # the old inode was never written
+        assert ledger.stat().st_ino != held.stat().st_ino
+        assert b"RESOLVED" in ledger.read_bytes()
+
+    def test_ledger_write_failure_restores_the_card(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch)
+        _, ledger = _twin_paths(paper)
+        before = sha_map(paper)
+        real = sqqq.atomic_write_bytes
+
+        def failing(path: Path, data: bytes) -> None:
+            if path == ledger:
+                raise OSError("simulated ENOSPC on the ledger write")
+            real(path, data)
+
+        monkeypatch.setattr(sqqq, "atomic_write_bytes", failing)
+        with pytest.raises(OSError, match="ENOSPC"):
+            run_resolve(paper)
+        assert sha_map(paper) == before  # the card is back to its exact bytes
+        monkeypatch.setattr(sqqq, "atomic_write_bytes", real)
+        assert run_resolve(paper) == 0  # ...so a re-run is not blocked
+
+    def test_happy_path_card_and_ledger_agree(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch, seed=5)
+        twin, ledger = _twin_paths(paper)
+        card_pre, ledger_pre = twin.read_bytes(), ledger.read_text()
+        chain = {k: v for k, v in sha_map(paper).items() if not k.startswith("sqqq-twins/")}
+        assert run_resolve(paper) == 0
+        card = twin.read_bytes()
+        # the RESOLUTION block lands BELOW the generated bytes, exactly once
+        assert card.startswith(card_pre) and card.count(b"## RESOLUTION") == 1
+        text = card.decode("utf-8")
+        total = re.search(r"twin total = [^=]+= ([+-][\d,]+\.\d{2}) USD", text).group(1)
+        unhedged = re.search(r"; net ([+-][\d,]+\.\d{2})", text).group(1)
+        pre_lines, post_lines = ledger_pre.splitlines(), ledger.read_text().splitlines()
+        changed = [(a, b) for a, b in zip(pre_lines, post_lines, strict=True) if a != b]
+        assert len(changed) == 1  # only the twin's own row moved
+        assert "| OPEN | — | — |" in changed[0][0]
+        assert changed[0][1] == f"| #1 | RESOLVED {EXIT} | {total} | {unhedged} |"
+        # the sealed card chain is untouched
+        after = {k: v for k, v in sha_map(paper).items() if not k.startswith("sqqq-twins/")}
+        assert after == chain
+        assert sorted(sha_map(paper)) == sorted(
+            [*chain, "sqqq-twins/2026-12-01-sqqq-twin.md", "sqqq-twins/LEDGER.md"]
+        )
+
+    def test_resolve_dry_run_writes_nothing(self, tmp_path, monkeypatch) -> None:
+        paper = _generated(tmp_path, monkeypatch)
+        before = sha_map(paper)
+        assert run_resolve(paper, write=False) == 0
+        assert sha_map(paper) == before

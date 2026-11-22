@@ -23,6 +23,8 @@ from tree_options.desk.contracts import (
     Deal,
     Queue,
     digest,
+    iso_date,
+    money,
     parse_deal,
     parse_queue,
     read_json,
@@ -31,6 +33,7 @@ from tree_options.desk.contracts import (
 from tree_options.desk.evidence import EvidenceError, EvidenceStore
 from tree_options.desk.rails import COMMISSION_PER_CONTRACT_USD
 from tree_options.desk.sessions import Calendar, cutoff_instant, latest_completed_session
+from tree_options.desk.store import standard_row_indexes
 from tree_options.trex.clock import ET
 from tree_options.trex.plan import LegStructure
 
@@ -138,7 +141,7 @@ def _number(value: Any) -> Decimal:
     return out
 
 
-def package_prices(spec: LegStructure, doc: Mapping[str, Any]) -> tuple[Decimal | None, Decimal]:
+def _quote_columns(doc: Mapping[str, Any]) -> dict[str, list[Any]]:
     columns = doc.get("columns")
     needed = ("right", "strike", "exp", "bid", "ask")
     if not isinstance(columns, dict) or any(not isinstance(columns.get(k), list) for k in needed):
@@ -146,9 +149,24 @@ def package_prices(spec: LegStructure, doc: Mapping[str, Any]) -> tuple[Decimal 
     n = len(columns["right"])
     if not n or any(len(columns[k]) != n for k in needed):
         raise ContractError("chain_column_lengths")
+    return columns
+
+
+def package_prices(spec: LegStructure, doc: Mapping[str, Any]) -> tuple[Decimal | None, Decimal]:
+    columns = _quote_columns(doc)
+    n = len(columns["right"])
     target = {(g.right, g.strike, g.expiry.isoformat()) for g in spec.legs}
+    # Only the standard OCC contracts are priced (store.standard_row_indexes,
+    # the one rule every chain consumer shares). The key names no OCC root,
+    # so a nonstandard B1 row at a leg's (right, strike, exp) would otherwise
+    # be priced as that leg: where no standard row shares the key, its bid/ask
+    # reached ``realistic``/``mid`` (AI-BEAR-002 AMENDMENT 2). A filtered-out
+    # leg falls through to ``contract_quote_missing`` below. A document with
+    # no occ column cannot be tested and is served as before (the canonical
+    # rule's fail-open branch, as trex_web.options_view serves it).
+    rows = standard_row_indexes(doc) if isinstance(columns.get("occ"), list) else range(n)
     quotes: dict[tuple[Any, ...], tuple[Decimal, Decimal]] = {}
-    for i in range(n):
+    for i in rows:
         key = (columns["right"][i], _number(columns["strike"][i]), columns["exp"][i])
         if key not in target:
             continue
@@ -171,12 +189,13 @@ def package_prices(spec: LegStructure, doc: Mapping[str, Any]) -> tuple[Decimal 
     return mid, realistic
 
 
-def _read_mark(episode: dict[str, Any], session: date, root: Path, now: datetime) -> dict[str, Any]:
-    spec = LegStructure.model_validate(episode["deal"]["structure"])
-    path = root / "chains" / session.isoformat() / f"{spec.underlying}.json.gz"
+def _read_chain(
+    symbol: str, session: date, root: Path, now: datetime
+) -> tuple[dict[str, Any], datetime, datetime]:
+    path = root / "chains" / session.isoformat() / f"{symbol}.json.gz"
     if path.is_symlink():
         raise ContractError("chain_symlink")
-    if path.with_name(f"{spec.underlying}.conflict.json.gz").exists():
+    if path.with_name(f"{symbol}.conflict.json.gz").exists():
         raise ContractError("chain_vendor_conflict")
     try:
         with gzip.open(path, "rb") as stream:
@@ -188,7 +207,7 @@ def _read_mark(episode: dict[str, Any], session: date, root: Path, now: datetime
     h = doc.get("header")
     if not isinstance(h, dict) or h.get("schema") != "desk-chain/1":
         raise ContractError("chain_schema")
-    if h.get("session") != session.isoformat() or h.get("underlying") != spec.underlying:
+    if h.get("session") != session.isoformat() or h.get("underlying") != symbol:
         raise ContractError("chain_identity")
     fetched, source = timestamp(h.get("fetched_at")), timestamp(h.get("source_as_of"))
     if fetched > now or source > now or source > fetched:
@@ -203,8 +222,61 @@ def _read_mark(episode: dict[str, Any], session: date, root: Path, now: datetime
     last_trade = timestamp(underlying.get("last_trade_time"))
     if last_trade.astimezone(ET).date() != session or last_trade > source:
         raise ContractError("chain_source_session")
+    return doc, source, fetched
+
+
+def _entry_quotes_match(
+    spec: LegStructure, legs: list[dict[str, Any]], doc: dict[str, Any]
+) -> bool:
+    """Each frozen bid/ask pair must occur together on a kept row for that leg."""
+    remaining = {
+        (leg["right"], _number(leg["strike"]), leg["expiry"]): (
+            _number(leg["bid"]),
+            _number(leg["ask"]),
+        )
+        for leg in legs
+    }
+    if len(remaining) != len(legs) or remaining.keys() != {
+        (leg.right, leg.strike, leg.expiry.isoformat()) for leg in spec.legs
+    }:
+        return False
+    cols = _quote_columns(doc)
+    for i in standard_row_indexes(doc):
+        try:
+            key = (cols["right"][i], _number(cols["strike"][i]), cols["exp"][i])
+            if key not in remaining:
+                continue
+            quote = _number(cols["bid"][i]), _number(cols["ask"][i])
+        except ContractError:
+            continue  # An unquoted row cannot witness a match; a later row can.
+        if remaining[key] == quote:
+            del remaining[key]
+            if not remaining:
+                return True
+    return False
+
+
+def _verified_entry(
+    episode: dict[str, Any], root: Path, now: datetime
+) -> tuple[LegStructure, Decimal]:
+    try:
+        deal = episode["deal"]
+        spec = LegStructure.model_validate(deal["structure"])
+        fill = money(deal["fill"])
+        session = iso_date(episode.get("source_session"), "entry_fill_occ_provenance")
+        doc, _, _ = _read_chain(spec.underlying, session, root, now)
+        matched = _entry_quotes_match(spec, deal["legs"], doc)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ContractError("entry_fill_occ_provenance") from exc
+    if not matched:
+        raise ContractError("entry_fill_occ_provenance")
+    return spec, fill
+
+
+def _read_mark(episode: dict[str, Any], session: date, root: Path, now: datetime) -> dict[str, Any]:
+    spec, fill = _verified_entry(episode, root, now)
+    doc, source, fetched = _read_chain(spec.underlying, session, root, now)
     mid, realistic = package_prices(spec, doc)
-    fill = Decimal(episode["deal"]["fill"])
     gross = (fill - realistic if spec.is_credit else realistic - fill) * 100 * spec.quantity
     fees = Decimal(episode["commission_per_contract_per_side"]) * 2 * len(spec.legs) * spec.quantity
     return {

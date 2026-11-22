@@ -6,7 +6,6 @@ installation is unavailable. It does not replace the repository-wide gate.
 
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
@@ -54,7 +53,9 @@ class World:
         p.write_text(json.dumps(doc, sort_keys=True))
         return p
 
-    def chain(self, session, long=("3.00", "3.10"), short=("0.80", "0.90"), *, fetched=None):
+    def chain(
+        self, session, long=("3.00", "3.10"), short=("0.80", "0.90"), *, fetched=None, occ=None
+    ):
         at = datetime.combine(session, time(16, 15), ET)
         doc = {
             "header": {
@@ -75,6 +76,8 @@ class World:
                 "ask": [float(long[1]), float(short[1])],
             },
         }
+        if occ is not None:
+            doc["columns"]["occ"] = occ
         p = self.store / "chains" / session.isoformat() / "AAPL.json.gz"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(encode_document(doc))
@@ -111,6 +114,7 @@ def world(tmp_path):
         "ref_mid": "2.15",
         "exits": {"touch": True, "breach": False},
     }
+    long_quote, short_quote = ("3.00", "3.05"), ("0.85", "0.90")
     row = {
         "deal_id": deal_id,
         "rank": 1,
@@ -125,7 +129,10 @@ def world(tmp_path):
         "quantity": 1,
         "entry_session": entry.isoformat(),
         "exit_deadline": deadline.isoformat(),
-        "legs": copy.deepcopy(legs),
+        "legs": [
+            dict(leg, bid=bid, ask=ask)
+            for leg, (bid, ask) in zip(legs, (long_quote, short_quote), strict=True)
+        ],
         "width": "5",
         "ref_mid": "2.15",
         "fill": "2.20",
@@ -154,4 +161,8 @@ def world(tmp_path):
         "surfaced": [],
         "rows": {},
     }
-    return World(cal, s, entry, deadline, expiry, now, queue, tmp_path)
+    w = World(cal, s, entry, deadline, expiry, now, queue, tmp_path)
+    w.chain(
+        s, long_quote, short_quote, occ=[f"AAPL{expiry:%y%m%d}C{k:08d}" for k in (100000, 105000)]
+    )
+    return w

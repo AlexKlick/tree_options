@@ -19,8 +19,9 @@ writes it; everything this script writes lives under
 Without ``--write`` the artifacts are printed to stdout and nothing touches
 disk (the default; the serving checkout is only ever written by an
 owner-authorized coordinator run). Refusals (sha mismatch, duplicate twin,
-exit close not yet in the panel) raise :class:`Refusal` -> exit code 2 from
-the CLI wrapper.
+exit close not yet in the panel, a moved entry basis, a missing or
+non-OPEN twin ledger row) raise :class:`Refusal` -> exit code 2 from the CLI
+wrapper; ``--resolve`` raises every one of them before its first write.
 
 Sealed-rule conventions implemented here, each pinned by a unit test:
 
@@ -57,6 +58,7 @@ import math
 import re
 import sys
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,6 +66,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tree_options.desk.panel import read_panel_with_sha256  # noqa: E402
 from tree_options.desk.paths import paper_dir  # noqa: E402
+from tree_options.desk.store import atomic_write_bytes  # noqa: E402
 
 # ------------------------------------------------ sealed pins (prereg L21-27)
 CARD_PINS: dict[str, str] = {
@@ -231,6 +234,68 @@ def _close(rows, session: str, what: str) -> float:
     if not _close_ok(rows, session):
         raise Refusal(f"no usable {what} close at session {session}")
     return float(str(rows[session]["close"]))
+
+
+def same_cents(panel_px: float, sealed: str) -> bool:
+    """The panel close, rounded to cents exactly as the sealed displays were
+    (``:.2f`` on the float), equals the sealed cents value. Compared as
+    parsed :class:`Decimal` numbers, never as formatted strings: a thousands
+    separator on either side (``1,410.99``) must not decide the match — the
+    pre-WT2-c string compare kept the comma on the panel side only, so any
+    close >= $1,000 could never match."""
+    return Decimal(f"{panel_px:.2f}") == Decimal(sealed.replace(",", ""))
+
+
+def check_leg_entry_basis(spec: CardSpec, panel) -> None:
+    """Every card leg's sealed entry close must still be the panel's close at
+    the entry session, to the cent (the SQQQ cross-check's tolerance).
+    ``resolution_block`` prices exit_px from the panel and entry_px from the
+    sealed card: a split between entry and exit with a rebased panel would
+    put the two on different bases and mis-state the leg P&L by the split
+    ratio — refuse instead."""
+    for name, sealed_px, _notional in spec.legs:
+        panel_px = _close(panel.get(name), spec.entry_date, f"{name} entry-session")
+        if not same_cents(panel_px, repr(sealed_px)):
+            raise Refusal(
+                f"panel {name} close at {spec.entry_date} (${panel_px:,.2f}) no "
+                f"longer matches the sealed card entry (${sealed_px:,.2f}) — a "
+                f"split or rebase would put entry and exit on different bases; "
+                f"refusing to resolve against a moved panel"
+            )
+
+
+def resolved_ledger_bytes(ledger_path: Path, row: str) -> bytes:
+    """The twin ledger with twin #N's OPEN row replaced by ``row``, computed
+    in memory — nothing is written. A missing ledger or one without the OPEN
+    row refuses here, BEFORE the twin card is touched (a resolved card beside
+    an OPEN row would block every re-run at the already-resolved check)."""
+    if not ledger_path.is_file():
+        raise Refusal(
+            f"{ledger_path} does not exist — twin #{TWIN_NO} has no OPEN ledger "
+            f"row to resolve; refusing with nothing written"
+        )
+    ledger = ledger_path.read_bytes().decode("utf-8")
+    open_re = re.compile(rf"(\| #{TWIN_NO} \| [^\n]*?)\| OPEN \| — \| — \|", re.MULTILINE)
+    if not open_re.search(ledger):
+        raise Refusal(f"no OPEN ledger row for twin #{TWIN_NO} — refusing to touch {ledger_path}")
+    return open_re.sub(lambda _m: row, ledger, count=1).encode("utf-8")
+
+
+def commit_resolution(
+    twin_path: Path, card_raw: bytes, block: str, ledger_path: Path, ledger_bytes: bytes
+) -> None:
+    """The resolve's two writes, as close to atomic as two markdown files
+    allow: each file is replaced whole by tmp + fsync + rename (the house
+    ``store.atomic_write_bytes``), so neither is ever half-written; the card
+    gains its RESOLUTION block BELOW its unchanged bytes (byte-identical to
+    an append); and if the ledger write fails, the card is put back to its
+    exact pre-resolve bytes."""
+    atomic_write_bytes(twin_path, card_raw + block.encode("utf-8"))
+    try:
+        atomic_write_bytes(ledger_path, ledger_bytes)
+    except BaseException:
+        atomic_write_bytes(twin_path, card_raw)
+        raise
 
 
 # ------------------------------------------------------------------- parse
@@ -559,7 +624,8 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
     ledger_path = twins / "LEDGER.md"
     if not twin_path.exists():
         raise Refusal(f"{twin_path} does not exist — generate the twin before resolving it")
-    text = twin_path.read_text()
+    card_raw = twin_path.read_bytes()
+    text = card_raw.decode("utf-8")
     if "## RESOLUTION" in text:
         raise Refusal(f"{twin_path} already carries a RESOLUTION block — one per twin")
     h_m = re.search(r"\| h_notional \| \$([\d,]+\.\d{2}) \|", text)
@@ -577,13 +643,16 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
     sq_entry = float(str(sq_rows[spec.entry_date]["close"]))
     # cross-check the sealed display against the panel (immutable history):
     # h stays SEALED from the twin card (never recomputed), the entry close is
-    # priced exactly from the panel
-    if f"{sq_entry:,.2f}" != sq_m.group(1).replace(",", ""):
+    # priced exactly from the panel; compared as parsed Decimals, so a
+    # >= $1,000 close (comma in the sealed display) can match
+    if not same_cents(sq_entry, sq_m.group(1)):
         raise Refusal(
             f"panel {HEDGE_INSTRUMENT} close at {spec.entry_date} "
             f"(${sq_entry:,.2f}) no longer matches the sealed twin card "
             f"(${sq_m.group(1)}) — refusing to resolve against a moved panel"
         )
+    # ...and every card leg's sealed entry close, at the same tolerance
+    check_leg_entry_basis(spec, panel)
     entry_panel_sha = re.search(r"ohlc-panel\.json — sha256 ([0-9a-f]{64})", text)
     script_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     block, row, _twin_total, _unhedged_net = resolution_block(
@@ -595,16 +664,11 @@ def resolve(spec: CardSpec, paper: Path, *, write: bool) -> int:
         entry_panel_sha=entry_panel_sha.group(1) if entry_panel_sha else "unknown",
         script_sha=script_sha,
     )
+    # validate-before-write (WT2-c): the ledger is read, its OPEN row required
+    # and the resolved ledger built IN MEMORY before the first byte is written
+    ledger_bytes = resolved_ledger_bytes(ledger_path, row)
     if write:
-        with twin_path.open("a", encoding="utf-8") as fh:
-            fh.write(block)
-        ledger = ledger_path.read_text()
-        open_re = re.compile(rf"(\| #{TWIN_NO} \| [^\n]*?)\| OPEN \| — \| — \|", re.MULTILINE)
-        if not open_re.search(ledger):
-            raise Refusal(
-                f"no OPEN ledger row for twin #{TWIN_NO} — refusing to touch {ledger_path}"
-            )
-        ledger_path.write_text(open_re.sub(lambda _m: row, ledger, count=1))
+        commit_resolution(twin_path, card_raw, block, ledger_path, ledger_bytes)
     print(block)
     print(row)
     if not write:
