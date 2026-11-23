@@ -162,18 +162,21 @@ def _quote_columns(doc: Mapping[str, Any]) -> dict[str, list[Any]]:
 
 def package_prices(spec: LegStructure, doc: Mapping[str, Any]) -> tuple[Decimal | None, Decimal]:
     columns = _quote_columns(doc)
-    n = len(columns["right"])
     target = {(g.right, g.strike, g.expiry.isoformat()) for g in spec.legs}
     # Only the standard OCC contracts are priced (store.standard_row_indexes,
     # the one rule every chain consumer shares). The key names no OCC root,
     # so a nonstandard B1 row at a leg's (right, strike, exp) would otherwise
     # be priced as that leg: where no standard row shares the key, its bid/ask
     # reached ``realistic``/``mid`` (AI-BEAR-002 AMENDMENT 2). A filtered-out
-    # leg falls through to ``contract_quote_missing`` below. A document with
-    # no occ column cannot be tested and is served as before: that fail-open
-    # branch is THIS caller's (standard_row_indexes returns no rows for it).
-    # The entry guard deliberately does the opposite (_source_chain, E2).
-    rows = standard_row_indexes(doc) if isinstance(columns.get("occ"), list) else range(n)
+    # leg falls through to ``contract_quote_missing`` below.
+    # A document with no occ column cannot be tested, so it is REFUSED
+    # (``chain_occ_missing``), exactly as the entry side refuses it
+    # (_source_chain, WT4-b E2): serving it whole would price a nonstandard
+    # row the canonical rule never keeps (WT6-a; the 2026-11-23 chain-store
+    # census found 0 of 1,367 recorded chains without the column).
+    if not isinstance(columns.get("occ"), list):
+        raise ContractError("chain_occ_missing")
+    rows = standard_row_indexes(doc)
     quotes: dict[tuple[Any, ...], tuple[Decimal, Decimal]] = {}
     for i in rows:
         key = (columns["right"][i], _number(columns["strike"][i]), columns["exp"][i])
@@ -219,8 +222,17 @@ def _read_chain(
     if h.get("session") != session.isoformat() or h.get("underlying") != symbol:
         raise ContractError("chain_identity")
     fetched, source = timestamp(h.get("fetched_at")), timestamp(h.get("source_as_of"))
-    if fetched > now or source > now or source > fetched:
+    # Two causes, two codes (WT6-a). A chain fetched after the as-of was not
+    # yet known: censored, and a later run accepts it. It is tested FIRST, so
+    # nothing about a document unknown at the as-of (its header's defects
+    # included) is recorded before it was fetched. A header whose source
+    # stamp is after its own fetch is corrupt: no later run repairs it. A
+    # source stamp after the as-of needs no clause of its own: with the fetch
+    # at or before the as-of, it is a source stamp after the fetch.
+    if fetched > now:
         raise ContractError("chain_not_known_at_asof")
+    if source > fetched:
+        raise ContractError("chain_header_source_after_fetch")
     # The producer already validates the actual class-specific closing time.
     # This consumer additionally prevents a previous-session stamp masquerading as D.
     if source.astimezone(ET).date() < session:
@@ -276,8 +288,9 @@ def _source_chain(spec: LegStructure, session: date, root: Path, now: datetime) 
     A chain with no ``occ`` column is REFUSED here (``chain_occ_missing``):
     it cannot witness OCC provenance, and serving its every row would let a
     nonstandard B1 row justify the fill, the defect this guard exists to
-    catch (WT4-b E2). The exit side serves such a chain as before
-    (package_prices); the entry side does not."""
+    catch (WT4-b E2). The exit side refuses it with the same code
+    (package_prices, WT6-a); here, like every source-chain failure, it is
+    stored under the ``entry_source_`` prefix."""
     try:
         doc, _, _ = _read_chain(spec.underlying, session, root, now)
         if not isinstance(_quote_columns(doc).get("occ"), list):

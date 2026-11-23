@@ -138,10 +138,14 @@ def test_an_orphan_nonstandard_row_is_refused_not_priced() -> None:
 
 
 def test_the_orphan_refusal_is_the_occ_filters() -> None:
-    """The control: the SAME rows with nothing to test (no occ column) are
-    served unfiltered and price the junk quote — the pre-change number. So
-    the refusal above comes from the OCC filter and nothing else."""
-    assert _priced(_without_occ(_orphan())) == PRE_CHANGE_ORPHAN_JUNK_PRICED
+    """The control: the SAME rows, the junk row relabelled with the standard
+    root, price the junk quote — the pre-change number. So the refusal above
+    comes from the OCC filter (the row's root) and nothing else. (Before
+    WT6-a this control dropped the occ column instead; such a document is
+    now refused outright, see the occ-less refusal below.)"""
+    doc = _orphan()
+    doc["columns"]["occ"][0] = STD_150
+    assert _priced(doc) == PRE_CHANGE_ORPHAN_JUNK_PRICED
 
 
 @pytest.mark.parametrize("b1_root", ["B1VDA", "B1SLA", "B1SP", "B1IW", "B1IWM"])
@@ -198,10 +202,8 @@ def test_two_kept_rows_at_one_key_still_fail_closed(twin_occ: Any) -> None:
 
 def test_a_standard_only_document_prices_exactly_as_before() -> None:
     """Byte-level: the filtered path's result for a standard-only document is
-    the pre-change result, and the same as the unfiltered (no occ column)
-    path's — the fix moves no honest mark."""
+    the pre-change result — the fix moves no honest mark."""
     assert _priced(_standard_only()) == PRE_CHANGE_STANDARD_ONLY
-    assert _priced(_without_occ(_standard_only())) == PRE_CHANGE_STANDARD_ONLY
 
 
 # ------------------------------------------------------- the fail-open control
@@ -222,19 +224,41 @@ def test_a_document_without_an_underlying_is_served_as_before() -> None:
     assert _priced(honest) == PRE_CHANGE_STANDARD_ONLY
 
 
-def test_a_document_without_an_occ_column_is_served_as_before() -> None:
-    """No occ column, nothing to test: every row is served as before. (The
-    canonical ``standard_row_indexes`` enumerates the occ column, so it has
-    no rows to return here; ``package_prices`` serves the document whole.)"""
-    assert _priced(_without_occ(_standard_only())) == PRE_CHANGE_STANDARD_ONLY
-    assert _priced(_without_occ(_orphan())) == PRE_CHANGE_ORPHAN_JUNK_PRICED
-
-
 def test_the_filter_is_the_canonical_rule() -> None:
     """No competing implementation: the shadow lane calls the store's own
     ``standard_row_indexes``."""
     assert shadows.standard_row_indexes is store.standard_row_indexes
     assert "standard_row_indexes(doc)" in inspect.getsource(shadows.package_prices)
+
+
+# ------------------------------------------------ the occ-less refusal (WT6-a)
+
+
+def _occ_set_to(value: Any):
+    def edit(doc: dict[str, Any]) -> dict[str, Any]:
+        doc["columns"]["occ"] = value
+        return doc
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    "drop_occ",
+    [_without_occ, _occ_set_to(None), _occ_set_to(STD_150)],
+    ids=["no-occ-key", "occ-null", "occ-not-a-list"],
+)
+@pytest.mark.parametrize("build", [_standard_only, _orphan], ids=["standard-rows", "orphan"])
+def test_a_document_without_an_occ_column_is_refused(build, drop_occ) -> None:
+    """WT6-a: with no occ list there is nothing to test, so the document is
+    REFUSED as ``chain_occ_missing``, the code the entry side raises for the
+    same chain (_source_chain, WT4-b E2). It is refused whole, honest rows
+    included. Before WT6-a it was served whole, and the orphan's junk row
+    priced the package (PRE_CHANGE_ORPHAN_JUNK_PRICED)."""
+    doc = drop_occ(build())
+    assert store.standard_row_indexes(doc) == []  # the canonical rule has no row to give
+    with pytest.raises(ContractError) as exc:
+        shadows.package_prices(_spec(), doc)
+    assert str(exc.value) == "chain_occ_missing"
 
 
 # ----------------------------------------------------------- the lane itself
@@ -280,10 +304,31 @@ def test_the_shadow_lane_censors_a_leg_whose_only_row_is_nonstandard(world) -> N
     }
 
 
+def test_the_shadow_lane_refuses_an_exit_chain_without_an_occ_column(world) -> None:
+    """End to end, WT6-a: the exit chains carry no occ column, so no mark is
+    written and each refusal is recorded as ``chain_occ_missing``. That is
+    the EXIT side's own code, with no ``entry_source_`` prefix: the source
+    chain (the world fixture's, occ-tagged) verified the entry. Their rows
+    are the honest quotes that marked before WT6-a (the control below)."""
+    world.queue_file()
+    for d in (world.entry, world.deadline):
+        _, doc = world.chain(d, occ=None)
+        assert "occ" not in doc["columns"]
+    result = _run(world, world.deadline)
+    assert result["marks_created"] == 0
+    with EvidenceStore(world.db, readonly=True) as ev:
+        assert ev.all("mark") == []
+        # the sessions between entry and deadline have no chain: chain_missing
+        codes = {q["session"]: q["code"] for q in ev.all("quality") if q["code"] != "chain_missing"}
+    assert codes == {
+        world.entry.isoformat(): "chain_occ_missing",
+        world.deadline.isoformat(): "chain_occ_missing",
+    }
+
+
 def test_the_shadow_lane_marks_standard_rows_as_before(world) -> None:
     """End to end, the control: the same chain with standard roots marks
-    exactly as the occ-less fixture chain does (test_shadows: -10.00 gross
-    at the deadline)."""
+    exactly as before (test_shadows: -10.00 gross at the deadline)."""
     world.queue_file()
     for d in (world.entry, world.deadline):
         _occ_chain(world, d, [_occ("AAPL", world, "C", 100), _occ("AAPL", world, "C", 105)])
@@ -293,7 +338,8 @@ def test_the_shadow_lane_marks_standard_rows_as_before(world) -> None:
         episode = ev.all("episode")[0]
         terminal = next(m for m in ev.all("mark") if m["session"] == world.deadline.isoformat())
     assert Decimal(terminal["modeled_gross_pnl_dollars"]) == Decimal("-10.00")
-    # the occ-less fixture chain (served unfiltered) prices the same bytes
+    # the fixture's default chain (standard roots since WT6-a: an occ-less
+    # exit chain is refused, above) prices the same bytes
     _, plain = world.chain(world.deadline)
     spec = LegStructure.model_validate(episode["deal"]["structure"])
     mid, realistic = shadows.package_prices(spec, plain)

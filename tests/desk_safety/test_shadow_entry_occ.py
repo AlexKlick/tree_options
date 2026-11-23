@@ -1,6 +1,6 @@
 """Source-session quote provenance for frozen paper episodes."""
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -326,6 +326,7 @@ def _source_doc(rows):
         "chain_source_session",
         "chain_occ_missing",
         "chain_column_lengths",
+        "chain_header_source_after_fetch",
     ],
 )
 def test_a_failed_source_chain_keeps_its_own_cause(world, deadline_chain, cause):
@@ -336,7 +337,10 @@ def test_a_failed_source_chain_keeps_its_own_cause(world, deadline_chain, cause)
     on an exit chain: conflict/identity/schema/stale invalidate, a missing
     chain censors. E2: a chain with no occ column is refused by name (it
     cannot witness OCC provenance), and censors. F-B1: a ragged occ column
-    is a recorded quality event on the source chain too."""
+    is a recorded quality event on the source chain too. WT6-a: a header
+    whose source stamp is after its own fetch has its own permanent code
+    (test_shadow_chain_header_times), and the prefix carries it to the
+    entry side unchanged."""
     doc = _source_doc([LONG, SHORT])
     path = world.store / "chains" / SOURCE.isoformat() / "NVDA.json.gz"
     if cause == "chain_vendor_conflict":
@@ -352,6 +356,10 @@ def test_a_failed_source_chain_keeps_its_own_cause(world, deadline_chain, cause)
         del doc["columns"]["occ"]
     elif cause == "chain_column_lengths":
         doc["columns"]["occ"].append("NVDA261120P00160000")  # ragged: one occ too many
+    elif cause == "chain_header_source_after_fetch":
+        # fetched five minutes before the source stamp it carries; both known
+        fetched = cutoff_instant(SOURCE) - timedelta(minutes=5)
+        doc["header"]["fetched_at"] = fetched.isoformat()
     if cause != "chain_missing":
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(encode_document(doc))

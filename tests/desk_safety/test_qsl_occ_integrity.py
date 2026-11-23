@@ -355,10 +355,11 @@ def test_a_document_without_an_underlying_serves_every_row() -> None:
 
 def test_a_document_without_an_occ_column_has_no_rows() -> None:
     """WT4-b E2: with no ``occ`` list there is nothing to enumerate, so the
-    result is ``[]`` — NOT every row, as the docstring used to claim. The
-    callers that serve such a document as before do it themselves
-    (shadows.package_prices, trex_web.options_view); the shadows entry
-    guard refuses it by name (``entry_source_chain_occ_missing``)."""
+    result is ``[]`` — NOT every row, as the docstring used to claim. A
+    caller that serves such a document as before does it itself
+    (trex_web.options_view); both shadow chain readers refuse it by name
+    (the exit side's ``chain_occ_missing``, shadows.package_prices since
+    WT6-a; the entry side's ``entry_source_chain_occ_missing``)."""
     doc = _duplicated_chain()
     assert store.standard_row_indexes(doc) == [1]
     del doc["columns"]["occ"]

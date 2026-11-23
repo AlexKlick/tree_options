@@ -20,6 +20,13 @@ from tree_options.trex.clock import ET
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# World.chain's default occ column: the standard roots of its two rows. The
+# recorded chains carry an occ column (the 2026-11-23 census: 0 of 1,367 lack
+# one), and both shadow chain readers refuse a chain without one
+# (chain_occ_missing, WT6-a), so the fixture's chains carry it unless a test
+# asks for none (occ=None).
+STANDARD_OCC = object()
+
 
 @dataclass
 class World:
@@ -53,9 +60,24 @@ class World:
         p.write_text(json.dumps(doc, sort_keys=True))
         return p
 
+    def standard_occ(self) -> list[str]:
+        """The standard OCC symbols of the fixture chain's two rows (100C, 105C)."""
+        return [f"AAPL{self.expiry:%y%m%d}C{k:08d}" for k in (100000, 105000)]
+
     def chain(
-        self, session, long=("3.00", "3.10"), short=("0.80", "0.90"), *, fetched=None, occ=None
+        self,
+        session,
+        long=("3.00", "3.10"),
+        short=("0.80", "0.90"),
+        *,
+        fetched=None,
+        occ=STANDARD_OCC,
     ):
+        """Write the session's AAPL chain. ``occ`` defaults to the standard
+        roots; pass a list to tag the rows otherwise, or ``None`` for a chain
+        with no occ column at all."""
+        if occ is STANDARD_OCC:
+            occ = self.standard_occ()
         at = datetime.combine(session, time(16, 15), ET)
         doc = {
             "header": {
@@ -162,7 +184,5 @@ def world(tmp_path):
         "rows": {},
     }
     w = World(cal, s, entry, deadline, expiry, now, queue, tmp_path)
-    w.chain(
-        s, long_quote, short_quote, occ=[f"AAPL{expiry:%y%m%d}C{k:08d}" for k in (100000, 105000)]
-    )
+    w.chain(s, long_quote, short_quote)  # the source-session chain, standard roots
     return w

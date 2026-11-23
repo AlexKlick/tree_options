@@ -11032,6 +11032,113 @@ MUTANTS.extend(
 )
 
 
+# ---- WT6-a (2026-11-23): the shadow lane's exit side. ITEM 1: package_prices
+# REFUSES a document with no occ list (chain_occ_missing), the entry side's
+# code for the same chain (_source_chain, WT4-b E2); its range(n) fail-open
+# branch is gone (the 2026-11-23 census: 0 of 1,367 recorded chains lack the
+# column). ITEM 2:
+# _read_chain's chain_not_known_at_asof meant two things. A source stamp
+# after the fetch is now its own PERMANENT code,
+# chain_header_source_after_fetch. The not-yet-fetched check runs first, and
+# `source > now` has no clause of its own (with the fetch at or before the
+# as-of it IS a source stamp after the fetch).
+#
+# ITEM 1 removed SHADOW-OCC-1's anchor: its `rows = ... else range(n)` line
+# now occurs 0x. Its entry above is NOT edited (append-only registry, the
+# WT2-c-fix / WT4-b precedent). It is retired HERE, by id and fail-closed,
+# and its invariant is re-pinned as WT6A-SH-R1 on the line that now carries
+# it, with the same owner. Every anchor below occurs once in shadows.py.
+_WT6A_RETIRED = {"SHADOW-OCC-1-package-prices-unfiltered": "WT6A-SH-R1-package-prices-unfiltered"}
+assert sorted(m["id"] for m in MUTANTS if m["id"] in _WT6A_RETIRED) == sorted(_WT6A_RETIRED), (
+    "a WT6-a retired id names no single registered mutant"
+)
+MUTANTS[:] = [m for m in MUTANTS if m["id"] not in _WT6A_RETIRED]
+_WT6A_SHADOWS = "src/tree_options/desk/shadows.py"
+_WT6A_OCC = "tests/desk_safety/test_shadows_occ_integrity.py"
+_WT6A_TIMES = "tests/desk_safety/test_shadow_chain_header_times.py"
+_WT6A_ROWS = "    rows = standard_row_indexes(doc)\n"
+_WT6A_NOT_KNOWN = '    if fetched > now:\n        raise ContractError("chain_not_known_at_asof")\n'
+_WT6A_CORRUPT = (
+    '    if source > fetched:\n        raise ContractError("chain_header_source_after_fetch")\n'
+)
+MUTANTS.extend(
+    [
+        dict(
+            id=_WT6A_RETIRED["SHADOW-OCC-1-package-prices-unfiltered"],
+            owner="test_an_orphan_nonstandard_row_is_refused_not_priced",
+            file=_WT6A_SHADOWS,
+            anchor=_WT6A_ROWS,
+            replacement='    rows = range(len(columns["right"]))\n',
+            selectors=[_WT6A_OCC],
+            invariant=(
+                "the shadow mark prices only standard OCC contracts — a nonstandard root's"
+                " bid/ask must never reach realistic/mid (SHADOW-OCC-1, re-pinned by WT6-a)"
+            ),
+        ),
+        dict(
+            id="WT6A-SH-1-occ-less-exit-chain-served-whole",
+            owner="test_a_document_without_an_occ_column_is_refused",
+            file=_WT6A_SHADOWS,
+            anchor=(
+                '    if not isinstance(columns.get("occ"), list):\n'
+                '        raise ContractError("chain_occ_missing")\n' + _WT6A_ROWS
+            ),
+            # the pre-WT6-a line (its `n` spelled out): no occ list, every row served
+            replacement=(
+                '    rows = standard_row_indexes(doc) if isinstance(columns.get("occ"), list)'
+                ' else range(len(columns["right"]))\n'
+            ),
+            selectors=[_WT6A_OCC],
+            invariant=(
+                "INV-WT6A-1 the exit side refuses a chain with no occ list as"
+                " chain_occ_missing, the entry side's code — never serves its every row,"
+                " a nonstandard row's quote included"
+            ),
+        ),
+        dict(
+            id="WT6A-SH-2-corrupt-header-reported-as-not-yet-known",
+            owner="test_a_source_stamp_after_the_fetch_has_its_own_code",
+            file=_WT6A_SHADOWS,
+            anchor='        raise ContractError("chain_header_source_after_fetch")\n',
+            replacement='        raise ContractError("chain_not_known_at_asof")\n',
+            selectors=[_WT6A_TIMES],
+            invariant=(
+                "INV-WT6A-2 a header whose source stamp is after its own fetch is refused"
+                " under its own permanent code (chain_header_source_after_fetch), never the"
+                " transient chain_not_known_at_asof"
+            ),
+        ),
+        dict(
+            id="WT6A-SH-3-corrupt-header-recorded-before-its-fetch",
+            owner="test_a_chain_not_yet_fetched_is_not_known_even_if_its_header_is_corrupt",
+            file=_WT6A_SHADOWS,
+            anchor=_WT6A_NOT_KNOWN + _WT6A_CORRUPT,
+            replacement=_WT6A_CORRUPT + _WT6A_NOT_KNOWN,
+            selectors=[_WT6A_TIMES],
+            invariant=(
+                "INV-WT6A-3 a chain fetched after the as-of is not yet known even when its"
+                " header is also corrupt: nothing about a document is recorded before it"
+                " was fetched"
+            ),
+        ),
+        dict(
+            id="WT6A-SH-4-source-after-the-as-of-reported-as-not-yet-known",
+            owner="test_a_source_stamp_after_the_fetch_and_the_as_of_is_corrupt",
+            file=_WT6A_SHADOWS,
+            anchor="    if fetched > now:\n",
+            # the coordinator's literal "transient pair" ahead of the permanent check
+            replacement="    if fetched > now or source > now:\n",
+            selectors=[_WT6A_TIMES],
+            invariant=(
+                "INV-WT6A-4 a fetch known at the as-of with a source stamp after both is"
+                " the permanent code: it is a source stamp after the fetch, and no later"
+                " run would report anything else"
+            ),
+        ),
+    ]
+)
+
+
 # ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
 # TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
 # id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would
