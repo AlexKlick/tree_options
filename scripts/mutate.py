@@ -11139,6 +11139,46 @@ MUTANTS.extend(
 )
 
 
+# ---- WT6-a, the coordinator's merge-time decision (wave 6, 2026-11-23) -------------
+# The lane split chain_not_known_at_asof and left the new code's SCORECARD class
+# open (its NOT_DONE). DECIDED: a header whose source stamp is after its own
+# fetch is evidence PRESENT AND WRONG, so it INVALIDATES (the class
+# chain_identity / chain_schema / chain_source_session already have) on an exit
+# chain and, under the entry_source_ prefix, on a source chain. The transient
+# chain_not_known_at_asof stays censored. Each set entry has its own mutant: they
+# are two separate lines, and a test that pins one of them pins neither the other.
+_WT6A_SCORECARDS = "src/tree_options/desk/scorecards.py"
+MUTANTS.extend(
+    [
+        dict(
+            id="WT6A-SH-5-exit-corrupt-header-scored-as-censored",
+            owner="test_the_exit_side_classifies_each_header_time_as_the_entry_side_does",
+            file=_WT6A_SCORECARDS,
+            anchor='        "chain_header_source_after_fetch",\n',
+            replacement="",
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT6A-5 an exit chain whose header stamps its source after its own"
+                " fetch INVALIDATES the (deal, exit_deadline) test: the evidence is present"
+                " and wrong, not missing"
+            ),
+        ),
+        dict(
+            id="WT6A-SH-6-entry-corrupt-header-scored-as-censored",
+            owner="test_a_failed_source_chain_keeps_its_own_cause",
+            file=_WT6A_SCORECARDS,
+            anchor='        "entry_source_chain_header_source_after_fetch",\n',
+            replacement="",
+            selectors=[_WT4B_ENTRY],
+            invariant=(
+                "INV-WT6A-6 a source chain's corrupt header is scored exactly as the same"
+                " failure of an exit chain (it invalidates on either side)"
+            ),
+        ),
+    ]
+)
+
+
 # ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
 # TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
 # id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would

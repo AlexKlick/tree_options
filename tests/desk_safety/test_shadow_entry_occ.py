@@ -9,7 +9,7 @@ from tree_options.desk import scorecards, shadows
 from tree_options.desk.contracts import ContractError
 from tree_options.desk.evidence import EvidenceStore
 from tree_options.desk.sessions import cutoff_instant
-from tree_options.desk.store import encode_document
+from tree_options.desk.store import encode_document, read_chain
 
 DEAL_ID = "d-20261113-qsl-put-credit-NVDA-98470619e0ec"
 SOURCE = date(2026, 11, 13)
@@ -266,6 +266,8 @@ INVALIDATING_CHAIN_CAUSES = {
     "chain_identity",
     "chain_schema",
     "chain_source_session",
+    # WT6-a: evidence present and wrong, same class as identity/schema
+    "chain_header_source_after_fetch",
 }
 
 
@@ -372,6 +374,53 @@ def test_a_failed_source_chain_keeps_its_own_cause(world, deadline_chain, cause)
     # the entry side is classified exactly as the exit side classifies the cause
     assert (code in scorecards._INVALIDATING) is (cause in scorecards._INVALIDATING) is invalidates
     assert the_family(world)["n_invalidated"] == int(invalidates)
+
+
+def restamp(world, session, **stamps):
+    """Re-write a written NVDA chain's header times (WT6-a)."""
+    path = world.store / "chains" / session.isoformat() / "NVDA.json.gz"
+    doc = read_chain(path)
+    doc["header"].update(stamps)
+    path.write_bytes(encode_document(doc))
+
+
+@pytest.mark.parametrize(
+    ("fetched", "source", "code", "invalidates"),
+    [
+        (0, 1, "chain_header_source_after_fetch", True),
+        (2, 0, "chain_not_known_at_asof", False),
+    ],
+    ids=["corrupt-header-invalidates", "late-fetch-only-censors"],
+)
+def test_the_exit_side_classifies_each_header_time_as_the_entry_side_does(
+    world, fetched, source, code, invalidates
+):
+    """WT6-a, the exit side's scorecard class: the mirror of the test above,
+    with the roles swapped. The source chain is clean and the DEADLINE chain's
+    header is wrong. Evidence present and wrong (a source stamp after the
+    chain's own fetch) INVALIDATES the (deal, exit_deadline) test; evidence not
+    yet available (a fetch after the as-of) only censors, the class
+    ``chain_not_known_at_asof`` has always had. One class per cause, on both
+    sides."""
+    chain(world, SOURCE, [LONG, SHORT])
+    # every chain is clean; the deadline chain's two header times are set below
+    for day in (date(2026, 11, 16), date(2026, 11, 17), DEADLINE):
+        chain(world, day, [LONG, SHORT])
+    t = cutoff_instant(DEADLINE)
+    restamp(
+        world,
+        DEADLINE,
+        fetched_at=(t + fetched * timedelta(hours=1)).isoformat(),
+        source_as_of=(t + source * timedelta(hours=1)).isoformat(),
+    )
+    write_episode(world, scored(episode(LONG)))
+    run(world)
+    with EvidenceStore(world.db, readonly=True) as store:
+        assert store.get("mark", f"{DEAL_ID}|{DEADLINE}") is None
+    assert quality_codes(world) == {code}
+    family = the_family(world)
+    assert (family["n_episodes"], family["n_resolved"]) == (1, 0)
+    assert (family["n_censored"], family["n_invalidated"]) == (1, int(invalidates))
 
 
 def test_b1_twins_on_both_chains_the_production_scenario(world):

@@ -156,8 +156,9 @@ def standard_row_indexes(doc: Mapping[str, Any]) -> list[int]:
     ``occ`` list has nothing to enumerate, and the result is ``[]`` (no
     row), not every row: this function cannot count rows without that
     column. A caller that serves such a document as before must do so
-    itself, as ``trex_web.options_view`` and ``shadows.package_prices``
-    do; the shadows entry guard refuses it instead (WT4-b E2). The result
+    itself, as ``trex_web.options_view`` does; the shadow lane's entry
+    guard (WT4-b E2) and its exit pricer (WT6-a) both refuse it instead
+    (``chain_occ_missing``). The result
     indexes the ``occ`` column, so a caller must check that column's length
     against the columns it reads (``shadows._quote_columns``, WT4-b F-B1).
     """

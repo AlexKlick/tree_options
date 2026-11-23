@@ -29,6 +29,12 @@ _INVALIDATING = frozenset(
         "chain_schema",
         "chain_source_session",
         "duplicate_contract_quote",
+        # WT6-a, DECIDED by the coordinator on the lane's NOT_DONE: a header
+        # whose source stamp is after its own fetch is evidence PRESENT AND
+        # WRONG (same class as chain_identity/chain_schema), not evidence
+        # missing — no later run repairs it, so it invalidates. The transient
+        # chain_not_known_at_asof (fetched after the as-of) stays censored.
+        "chain_header_source_after_fetch",
         # WT4-b E1: a source (entry) chain's failure keeps its own code under
         # shadows.ENTRY_SOURCE_PREFIX and is classified exactly as the same
         # failure of an exit chain (so entry_source_chain_missing censors).
@@ -36,6 +42,7 @@ _INVALIDATING = frozenset(
         "entry_source_chain_identity",
         "entry_source_chain_schema",
         "entry_source_chain_source_session",
+        "entry_source_chain_header_source_after_fetch",
         # WT4-b E1, DECIDED: a readable OCC-tagged source chain on which no
         # standard row carries the episode's frozen bid/ask pair (or an
         # episode record too malformed to test) is a defect, not a gap. Its
