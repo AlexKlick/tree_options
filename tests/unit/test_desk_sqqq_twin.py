@@ -21,6 +21,7 @@ import math
 import os
 import random
 import re
+import runpy
 import shlex
 import sys
 from pathlib import Path
@@ -1159,3 +1160,164 @@ class TestTwinWritesCommitAsOne:
             os.replace(argv[1], argv[2])
         assert sha_map(paper) == before  # the named command IS the recovery
         assert run(paper) == 0
+
+
+# ------------------------- the row --resolve prints is twin #1's own (WT5-a)
+
+# rows of OTHER twins, placed BEFORE twin #1's own row: a matcher that takes
+# any twin's row, or that drops the cell boundary after the twin number (#10
+# read as #1), returns one of these instead of twin #1's row
+_FOREIGN_TWIN_ROWS = (
+    "| #10 | 2027-09-01-xsmom-top3.md (aaaaaaaaaaaaaaaa) | 2027-08-03 → 2027-09-01 | "
+    "1.500000 | $3,750.00 | OPEN | — | — |",
+    "| #2 | 2027-01-04-xsmom-top3.md (bbbbbbbbbbbbbbbb) | 2026-12-01 → 2027-01-04 | "
+    "0.900000 | $2,250.00 | RESOLVED 2027-01-04 | -12.34 | +5.67 |",
+)
+
+
+class TestResolvePrintsThisTwinsRow:
+    """``--resolve`` prints the resolved ledger row (``_twin_row``): in a dry
+    run it is the preview the owner reads before passing ``--write``, with
+    ``--write`` the record of what was committed. The twin ledger holds one
+    row per twin, so the printed row must be twin #1's OWN, whatever other
+    twins' rows precede it. (The row the resolve WRITES is chosen separately,
+    by resolved_ledger_bytes; this pins the row it SHOWS.)"""
+
+    @pytest.mark.parametrize("write", [False, True], ids=["dry_run", "write"])
+    def test_the_printed_row_is_this_twins_row_not_a_foreign_one(
+        self, tmp_path, monkeypatch, capsys, write
+    ) -> None:
+        paper = _generated(tmp_path, monkeypatch, seed=5)
+        _, ledger = _twin_paths(paper)
+        text = ledger.read_text()
+        open_row = next(ln for ln in text.splitlines() if ln.startswith(f"| #1 | {CARD_FILE} ("))
+        assert open_row.endswith("| OPEN | — | — |")
+        assert text.count(open_row + "\n") == 1
+        foreign = "".join(row + "\n" for row in _FOREIGN_TWIN_ROWS)
+        ledger.write_text(text.replace(open_row + "\n", foreign + open_row + "\n"))
+        before = sha_map(paper)
+        capsys.readouterr()  # generation's own output
+        assert run_resolve(paper, write=write) == 0
+        out = capsys.readouterr().out
+        total = re.search(r"twin total = [^=]+= ([+-][\d,]+\.\d{2}) USD", out)
+        unhedged = re.search(r"; net ([+-][\d,]+\.\d{2})", out)
+        assert total and unhedged, out
+        cells = f"| RESOLVED {EXIT} | {total.group(1)} | {unhedged.group(1)} |"
+        want = open_row.removesuffix("| OPEN | — | — |") + cells
+        printed = [ln for ln in out.splitlines() if ln.startswith("| #")]
+        assert printed == [want]  # twin #1's own row, and only it
+        if write:
+            post = ledger.read_text().splitlines()
+            assert want in post  # the printed row IS the committed row
+            for row in _FOREIGN_TWIN_ROWS:
+                assert row in post  # the other twins' rows are left as they were
+        else:
+            assert sha_map(paper) == before
+
+
+# --------------- the CLI's module-level handlers, run AS the CLI (WT5-a)
+
+
+def _sealed_pin_sha256():
+    """A ``hashlib.sha256`` under which the synthetic stand-in card's bytes —
+    and only those bytes — hash to the SEALED card's sha256. A runpy run
+    builds a fresh module namespace whose CARD_PINS is the real sealed pin,
+    out of patch_card_pin's reach; every other digest (the generator's, the
+    panel's) stays the real one."""
+    real = hashlib.sha256
+    card = CARD_TEXT.encode()
+
+    class _SealedDigest:
+        def hexdigest(self) -> str:
+            return SEALED_CARD_SHA
+
+    def sha256(data=b"", *args, **kwargs):
+        return _SealedDigest() if data == card else real(data, *args, **kwargs)
+
+    return sha256
+
+
+def _strand_through_the_cli(tmp_path: Path, monkeypatch, capsys, stage: str):
+    """Run scripts/desk/sqqq_twin.py AS THE CLI — ``runpy.run_path`` with
+    ``run_name="__main__"``, so the module-level ``except Refusal`` /
+    ``except Stranded`` handlers execute — while the ledger rename AND the
+    card's rollback both fail: the commit strands. Returns (exit code,
+    stderr, paper tree, the tree's sha map before the run)."""
+    if stage == "generate":
+        paper = make_paper_tree(tmp_path, build_panel(loading=2.0))
+        patch_card_pin(monkeypatch)  # for the in-process re-run after recovery
+    else:
+        paper = _generated(tmp_path, monkeypatch)
+    twin, ledger = _twin_paths(paper)
+    argv = ["--entry-card", str(paper / CARD_FILE), "--paper-dir", str(paper), "--write"]
+    if stage == "resolve":
+        argv.append("--resolve")
+    before = sha_map(paper)
+    capsys.readouterr()  # generation's own output is not the CLI run's
+    real_replace, real_unlink = os.replace, Path.unlink
+
+    def replace(src, dst) -> None:
+        if Path(dst) == ledger or Path(src).name.endswith(".pre"):
+            raise OSError(errno.EIO, "simulated rename failure")
+        real_replace(src, dst)
+
+    def unlink(self, missing_ok=False) -> None:
+        if self == twin:
+            raise OSError(errno.EIO, "simulated unlink failure")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with monkeypatch.context() as m:
+        m.setattr(hashlib, "sha256", _sealed_pin_sha256())
+        m.setattr(os, "replace", replace)
+        m.setattr(Path, "unlink", unlink)
+        m.setattr(sys, "argv", [str(SCRIPT), *argv])
+        m.setattr(sys, "path", list(sys.path))  # the script's own sys.path.insert
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_path(str(SCRIPT), run_name="__main__")
+    return exc.value.code, capsys.readouterr().err, paper, before
+
+
+class TestStrandedThroughTheCli:
+    """The CLI's two handlers live in the module-level ``if __name__ ==
+    "__main__":`` block, which no test that calls ``main()`` executes. A
+    refusal (``REFUSED:``, exit 2) promises every file untouched; a stranded
+    commit (the ledger rename failed AND the card's rollback failed) leaves a
+    card and a ledger that DISAGREE, so it must exit 3 with ``STRANDED:`` and
+    the one command that recovers — and never be reported as a refusal."""
+
+    @pytest.mark.parametrize("stage", ["generate", "resolve"])
+    def test_a_stranded_commit_is_never_reported_as_a_refusal(
+        self, tmp_path, monkeypatch, capsys, stage
+    ) -> None:
+        code, err, _paper, _before = _strand_through_the_cli(tmp_path, monkeypatch, capsys, stage)
+        assert "REFUSED:" not in err, err  # the refusal handler did not catch it
+        assert code != 2  # ...nor did its "nothing written" exit code
+        assert not issubclass(sqqq.Stranded, sqqq.Refusal)
+
+    @pytest.mark.parametrize("stage", ["generate", "resolve"])
+    def test_the_cli_exits_3_on_a_stranded_commit(
+        self, tmp_path, monkeypatch, capsys, stage
+    ) -> None:
+        code, err, _paper, _before = _strand_through_the_cli(tmp_path, monkeypatch, capsys, stage)
+        assert code == 3, err
+
+    @pytest.mark.parametrize("stage", ["generate", "resolve"])
+    def test_the_cli_names_the_stranded_recovery_command_on_stderr(
+        self, tmp_path, monkeypatch, capsys, stage
+    ) -> None:
+        _code, err, paper, before = _strand_through_the_cli(tmp_path, monkeypatch, capsys, stage)
+        twin, ledger = _twin_paths(paper)
+        line = err.strip()
+        assert line.startswith("STRANDED:") and "\n" not in line, err
+        assert str(ledger) in line  # it names the ledger that was not written
+        command = re.search(r"`([^`]+)`", line)
+        assert command, f"the STRANDED line names no recovery command: {line!r}"
+        argv = shlex.split(command.group(1))
+        if stage == "generate":
+            assert argv == ["rm", str(twin)]
+            twin.unlink()
+        else:
+            assert argv[0] == "mv" and argv[2] == str(twin)
+            os.replace(argv[1], argv[2])
+        assert sha_map(paper) == before  # the printed command IS the recovery
+        assert (run_generate if stage == "generate" else run_resolve)(paper) == 0

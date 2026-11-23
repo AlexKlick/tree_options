@@ -10937,6 +10937,118 @@ MUTANTS.extend(
 )
 
 
+# ---- WT5-a (2026-11-23): the three regions of scripts/desk/sqqq_twin.py no
+# anchor reached. The file is FREEZE-LOCKED from the 11-27 twin write to the
+# 12-01 resolve (the twin card records the generator's sha256 and --resolve
+# refuses any other), so this lane adds mutants + tests ONLY — the file's
+# bytes are unchanged. Every anchor occurs once; every owner is in
+# tests/unit/test_desk_sqqq_twin.py.
+#   L209      class Stranded(Exception)  — a stranded commit is not a Refusal
+#   L309      _twin_row's predicate      — the printed row is twin #1's own
+#   L818-819  the CLI's except Stranded  — STRANDED: + the recovery command, exit 3
+# _twin_row picks the row --resolve PRINTS (the dry-run preview, the write's
+# record); the row it WRITES is chosen by resolved_ledger_bytes's open_re,
+# already pinned by WT2CFIX-3 / WT4A-SQ-3. The handlers are module-level
+# (`if __name__ == "__main__":`), so their owners run the script AS the CLI
+# (runpy, run_name="__main__"); no test that calls main() executes them.
+_WT5A_TWIN = "scripts/desk/sqqq_twin.py"
+_WT5A_CLI = f"{U}/test_desk_sqqq_twin.py::TestStrandedThroughTheCli"
+_WT5A_ROW = (
+    f"{U}/test_desk_sqqq_twin.py::TestResolvePrintsThisTwinsRow"
+    "::test_the_printed_row_is_this_twins_row_not_a_foreign_one"
+)
+_WT5A_ROW_PICK = (
+    '        ln for ln in ledger.decode("utf-8").splitlines() if ln.startswith(f"| #{TWIN_NO} |")\n'
+)
+MUTANTS.extend(
+    [
+        dict(
+            id="WT5A-SQ-1-stranded-caught-as-a-refusal",
+            owner="test_a_stranded_commit_is_never_reported_as_a_refusal",
+            file=_WT5A_TWIN,
+            anchor="class Stranded(Exception):\n",
+            replacement="class Stranded(Refusal):\n",
+            selectors=[f"{_WT5A_CLI}::test_a_stranded_commit_is_never_reported_as_a_refusal"],
+            invariant=(
+                "INV-WT5A-1 Stranded is not a Refusal: the CLI's `except Refusal` (REFUSED:,"
+                " exit 2, 'nothing written') never catches a commit whose twin card and twin"
+                " ledger disagree"
+            ),
+        ),
+        dict(
+            id="WT5A-SQ-2a-printed-row-any-twins-row",
+            owner="test_the_printed_row_is_this_twins_row_not_a_foreign_one",
+            file=_WT5A_TWIN,
+            anchor=_WT5A_ROW_PICK,
+            replacement=(
+                '        ln for ln in ledger.decode("utf-8").splitlines() if ln.startswith("| #")\n'
+            ),
+            selectors=[_WT5A_ROW],
+            invariant=(
+                "INV-WT5A-2a the row --resolve prints (dry-run preview and write record) is"
+                " twin #1's OWN ledger row, never another twin's row that precedes it"
+            ),
+        ),
+        dict(
+            id="WT5A-SQ-2b-printed-row-twin-number-prefix",
+            owner="test_the_printed_row_is_this_twins_row_not_a_foreign_one",
+            file=_WT5A_TWIN,
+            anchor=_WT5A_ROW_PICK,
+            replacement=(
+                '        ln for ln in ledger.decode("utf-8").splitlines()'
+                ' if ln.startswith(f"| #{TWIN_NO}")\n'
+            ),
+            selectors=[_WT5A_ROW],
+            invariant=(
+                "INV-WT5A-2b the printed row's twin-number cell matches exactly, cell boundary"
+                " included: twin #10's row is never printed as twin #1's"
+            ),
+        ),
+        dict(
+            id="WT5A-SQ-3a-stranded-exits-the-refusal-code",
+            owner="test_the_cli_exits_3_on_a_stranded_commit",
+            file=_WT5A_TWIN,
+            anchor="        raise SystemExit(3) from None\n",
+            replacement="        raise SystemExit(2) from None\n",
+            selectors=[f"{_WT5A_CLI}::test_the_cli_exits_3_on_a_stranded_commit"],
+            invariant=(
+                "INV-WT5A-3a a stranded commit exits 3, never the refusal's exit 2 (which"
+                " tells a caller nothing was written)"
+            ),
+        ),
+        dict(
+            id="WT5A-SQ-3b-stranded-line-drops-the-recovery-command",
+            owner="test_the_cli_names_the_stranded_recovery_command_on_stderr",
+            file=_WT5A_TWIN,
+            anchor='        print(f"STRANDED: {exc}", file=sys.stderr)\n',
+            replacement='        print("STRANDED:", file=sys.stderr)\n',
+            selectors=[f"{_WT5A_CLI}::test_the_cli_names_the_stranded_recovery_command_on_stderr"],
+            invariant=(
+                "INV-WT5A-3b a stranded commit's STRANDED: line on stderr names the one command"
+                " that restores the pre-commit state (and running it does)"
+            ),
+        ),
+    ]
+)
+
+
+# ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
+# TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
+# id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would
+# then be checking one anchor twice while never checking the other.  A registry that
+# cannot say which mutant it is talking about is not evidence of anything.
+#
+# THIS IS CHECKED AT IMPORT TIME, so it fails at the first line of the campaign
+# instead of after a 65-minute gate.  And it is checked on the ACTIVE registry:
+# the module import IS the authority (the retirement maps are applied by the import),
+# so this assert sees exactly the registry the gate will run — not a static scan's
+# lower bound.
+assert len({m["id"] for m in MUTANTS}) == len(MUTANTS), (
+    "the registry holds two mutants with the same id — the mutation report is keyed by"
+    " id, so one verdict would overwrite the other"
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout
