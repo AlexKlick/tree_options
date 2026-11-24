@@ -11257,6 +11257,329 @@ MUTANTS.extend(
 )
 
 
+# ---- WT8-C, the QSL gate's mutation gap (wave 8, 2026-11-24) ---------------------
+# Thirty mutants in desk/qsl.py, one file and one selector. Twelve are owned by tests
+# that existed at f401d6c. Eighteen sat on bounds no test sat on (a crossed, a locked
+# and a zero-bid book, the inclusive theta and floor bounds, each touch size and each
+# leg's open interest on its own, a zero package mid, the entry terms' width refusal,
+# three chain-header refusals and the hold window): every test went through the
+# fixture's chain, so none sat exactly ON a bound. They are owned by the twelve
+# hand-built tests WT8-C appended to test_qsl.py. Several mutants share one anchor on
+# purpose: one line, several ways to break it, each with its own owner.
+MUTANTS.extend(
+    [
+        dict(
+            id="WT8C-QS-01-crossed-book-two-sided",
+            owner="test_a_crossed_book_is_not_two_sided",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid <= leg.ask:\n",
+            replacement="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-1 a crossed book (bid above ask) is not a two-sided quote",
+        ),
+        dict(
+            id="WT8C-QS-02-locked-book-refused",
+            owner="test_a_locked_book_is_two_sided",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid <= leg.ask:\n",
+            replacement="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid < leg.ask:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-2 a locked book (bid equal to ask) IS a two-sided quote",
+        ),
+        dict(
+            id="WT8C-QS-03-zero-bid-two-sided",
+            owner="test_a_zero_bid_is_not_two_sided",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid <= leg.ask:\n",
+            replacement="        if leg.bid is None or leg.ask is None or not leg.bid <= leg.ask:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-3 a non-positive bid is not a quote: the leg is not two-sided",
+        ),
+        dict(
+            id="WT8C-QS-04-theta-bound-exclusive",
+            owner="test_the_theta_bound_is_inclusive_at_exactly_a_tenth",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        elif penalty > THETA * mid:\n",
+            replacement="        elif penalty >= THETA * mid:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-4 a crossing penalty of exactly theta times the package mid passes"
+                " the gate: the bound is inclusive"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-05-theta-never-enforced",
+            owner="test_put_family_fails_theta_on_a_moderately_wide_book",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        elif penalty > THETA * mid:\n",
+            replacement="        elif False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-5 a crossing penalty above theta times the package mid is refused"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-06-short-bid-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        short.bid_size >= SIZE_FLOOR\n",
+            replacement="        True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-6 the short leg's bid size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-07-short-ask-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        and short.ask_size >= SIZE_FLOOR\n",
+            replacement="        and True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-7 the short leg's ask size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-08-long-bid-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        and long.bid_size >= SIZE_FLOOR\n",
+            replacement="        and True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-8 the long leg's bid size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-09-long-ask-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        and long.ask_size >= SIZE_FLOOR\n",
+            replacement="        and True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-9 the long leg's ask size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-10-size-floor-exclusive",
+            owner="test_the_floors_are_inclusive_at_exactly_ten_and_one_hundred",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        short.bid_size >= SIZE_FLOOR\n",
+            replacement="        short.bid_size > SIZE_FLOOR\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-10 a touch size exactly at the floor clears it: the bound is inclusive"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-11-oi-floor-either-leg",
+            owner="test_each_legs_open_interest_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (short.oi >= OI_FLOOR and long.oi >= OI_FLOOR):\n",
+            replacement="    if not (short.oi >= OI_FLOOR or long.oi >= OI_FLOOR):\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-11 both legs' open interest must clear the floor, each on its own"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-12-oi-floor-never-enforced",
+            owner="test_size_and_oi_floors_refuse",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (short.oi >= OI_FLOOR and long.oi >= OI_FLOOR):\n",
+            replacement="    if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-12 open interest below the floor is refused",
+        ),
+        dict(
+            id="WT8C-QS-13-oi-floor-exclusive",
+            owner="test_the_floors_are_inclusive_at_exactly_ten_and_one_hundred",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (short.oi >= OI_FLOOR and long.oi >= OI_FLOOR):\n",
+            replacement="    if not (short.oi > OI_FLOOR and long.oi > OI_FLOOR):\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-13 open interest exactly at the floor clears it: the bound is inclusive"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-14-package-mid-family-swapped",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='        mid = cents(short.mid - long.mid) if family == "put_credit" else cents(long.mid - short.mid)\n',
+            replacement='        mid = cents(long.mid - short.mid) if family == "put_credit" else cents(short.mid - long.mid)\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-14 a put credit's package mid is the short's mid minus the long's;"
+                " a call debit's is the reverse"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-15-package-cross-family-swapped",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='            cents(short.bid - long.ask) if family == "put_credit" else cents(long.ask - short.bid)\n',
+            replacement='            cents(long.ask - short.bid) if family == "put_credit" else cents(short.bid - long.ask)\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-15 the crossing entry is the short's bid minus the long's ask for a"
+                " put credit, and the long's ask minus the short's bid for a call debit"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-16-crossing-penalty-always-zero",
+            owner="test_call_family_fails_theta_on_a_very_wide_book",
+            file="src/tree_options/desk/qsl.py",
+            anchor='        penalty = (mid - cross) if family == "put_credit" else (cross - mid)\n',
+            replacement="        penalty = _ZERO\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-16 the gate's crossing penalty is the sum of the legs' half-spreads,"
+                " never zero by fiat"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-17-zero-mid-not-refused",
+            owner="test_a_zero_package_mid_is_not_positive",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if mid <= _ZERO:\n",
+            replacement="        if mid < _ZERO:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-17 a non-positive package mid, zero included, is refused",
+        ),
+        dict(
+            id="WT8C-QS-18-limit-on-the-wrong-side-of-the-fill",
+            owner="test_limit_is_the_first_cent_beyond_the_crossing_fill",
+            file="src/tree_options/desk/qsl.py",
+            anchor='    limit = fill - _CENT if family == "put_credit" else fill + _CENT\n',
+            replacement='    limit = fill + _CENT if family == "put_credit" else fill - _CENT\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-18 the limit is the first cent beyond the crossing fill: below it"
+                " for a credit, above it for a debit"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-19-limit-width-bound-dropped",
+            owner="test_entry_terms_refuse_terms_not_strictly_inside_the_width",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (_ZERO < limit < width and _ZERO < fill < width):\n",
+            replacement="    if not (_ZERO < fill < width):\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-19 the entry limit must sit strictly inside the width",
+        ),
+        dict(
+            id="WT8C-QS-20-entry-terms-never-refused",
+            owner="test_entry_terms_refuse_terms_not_strictly_inside_the_width",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (_ZERO < limit < width and _ZERO < fill < width):\n",
+            replacement="    if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-20 when no legal entry terms exist on a width the answer is no"
+                " terms (None)"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-21-row-penalty-family-swapped",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='    penalty = (mid - fill) if family == "put_credit" else (fill - mid)\n',
+            replacement='    penalty = (fill - mid) if family == "put_credit" else (mid - fill)\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-21 the row's crossing penalty is measured against the crossing fill,"
+                " with the family's sign"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-22-row-penalty-frac-always-one-hundredth",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='    penalty_frac = (penalty / mid).quantize(Decimal("0.0001"))\n',
+            replacement='    penalty_frac = (penalty / mid).quantize(Decimal("0.01"))\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-22 the row's penalty fraction is the penalty over the package mid,"
+                " to 4 places"
+            ),
+        ),
+        dict(
+            id="WT8C-BQ-02-chain-availability-cutoff-dropped",
+            owner="test_future_capture_is_not_available_before_runtime_observation",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        cutoff = min(cutoff, available_by)\n",
+            replacement="        pass\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-23 an availability cutoff tighter than the entry session's 09:30 ET"
+                " is honoured"
+            ),
+        ),
+        dict(
+            id="WT8C-BQ-03-chain-session-mismatch-admitted",
+            owner="test_chain_available_by_decision_is_required",
+            file="src/tree_options/desk/qsl.py",
+            anchor='                header["session"] != session.isoformat()\n',
+            replacement="                False\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-24 a chain must be the decision session's own",
+        ),
+        dict(
+            id="WT8C-BQ-04-chain-underlying-mismatch-admitted",
+            owner="test_a_chain_naming_another_underlying_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor='                or header["underlying"] != name\n',
+            replacement="",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-25 a chain must name the underlying it is filed under",
+        ),
+        dict(
+            id="WT8C-BQ-05-source-digest-length-bound-regressed",
+            owner="test_a_source_digest_that_is_not_64_lower_case_hex_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor="                or len(source_sha) != 64\n",
+            replacement="                or len(source_sha) < 64\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-26 a chain's raw_sha256 is exactly 64 characters: a longer one is"
+                " refused as well"
+            ),
+        ),
+        dict(
+            id="WT8C-BQ-06-source-digest-hex-unchecked",
+            owner="test_a_source_digest_that_is_not_64_lower_case_hex_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor='                or any(c not in "0123456789abcdef" for c in source_sha)\n',
+            replacement="                or False\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-27 a chain's raw_sha256 is lower-case hex",
+        ),
+        dict(
+            id="WT8C-BQ-07-failed-gate-admitted",
+            owner="test_size_and_oi_floors_refuse",
+            file="src/tree_options/desk/qsl.py",
+            anchor="            if not g.ok:\n",
+            replacement="            if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-28 a candidate is built only from a gate that passed",
+        ),
+        dict(
+            id="WT8C-BQ-08-no-hold-window-admitted",
+            owner="test_an_expiry_without_a_hold_window_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor="            if deadline is None:\n",
+            replacement="            if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-29 an expiry with no hold window yields no candidate",
+        ),
+        dict(
+            id="WT8C-BQ-09-decision-cutoff-moved-to-close",
+            owner="test_chain_available_by_decision_is_required",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    cutoff = datetime.combine(entry, time(9, 30), tzinfo=ET)\n",
+            replacement="    cutoff = datetime.combine(entry, time(16, 0), tzinfo=ET)\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-30 the decision cutoff is the entry session's 09:30 ET",
+        ),
+    ]
+)
+
+
 # ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
 # TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
 # id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would
