@@ -11179,6 +11179,84 @@ MUTANTS.extend(
 )
 
 
+# ---- WT7-a, a void means what it says (wave 7, 2026-11-24) -----------------------
+# The owner's decision (2026-11-23): summarize no longer tests one key per
+# episode. A closed episode is INVALIDATED when an invalidating quality row of its
+# deal has entry_session <= session <= the as-of horizon, and voided_corrupt_quote
+# joins the invalidating set. One mutant per bound. The owners are not
+# interchangeable: for a CLOSED episode the deadline is a stricter window than the
+# horizon, so WT7A-SC-2 misses exactly the rows after the deadline (the owner's
+# 11-20 void, T1), while WT7A-SC-3 keeps T1 green and reads a row past the horizon
+# (T6). The window's three mutants share one anchor, the window test itself.
+_WT7A_SCORECARDS = "src/tree_options/desk/scorecards.py"
+_WT7A_TESTS = "tests/desk_safety/test_scorecards.py"
+_WT7A_WINDOW = 'any(ep["entry_session"] <= s <= end for s in rows)'
+MUTANTS.extend(
+    [
+        dict(
+            id="WT7A-SC-1-lower-bound-dropped",
+            owner="test_a_void_from_before_the_entry_session_is_not_this_episodes",
+            file=_WT7A_SCORECARDS,
+            anchor=_WT7A_WINDOW,
+            replacement="any(s <= end for s in rows)",
+            selectors=[_WT7A_TESTS],
+            invariant=(
+                "INV-WT7A-1 an invalidating row from before the episode's entry session"
+                " is not that episode's: the window starts at the entry session"
+            ),
+        ),
+        dict(
+            id="WT7A-SC-2-upper-bound-regressed-to-exit-deadline",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file=_WT7A_SCORECARDS,
+            anchor=_WT7A_WINDOW,
+            replacement='any(ep["entry_session"] <= s <= ep["exit_deadline"] for s in rows)',
+            selectors=[_WT7A_TESTS],
+            invariant=(
+                "INV-WT7A-2 the window's upper bound is the as-of horizon, not the"
+                " exit_deadline: a void filed after the deadline still invalidates"
+            ),
+        ),
+        dict(
+            id="WT7A-SC-3-upper-bound-dropped",
+            owner="test_a_void_after_the_as_of_horizon_on_a_closed_episode_does_not_count",
+            file=_WT7A_SCORECARDS,
+            anchor=_WT7A_WINDOW,
+            replacement='any(ep["entry_session"] <= s for s in rows)',
+            selectors=[_WT7A_TESTS],
+            invariant=(
+                "INV-WT7A-3 an invalidating row on a session after the as-of horizon"
+                " does not count: the window ends at the horizon"
+            ),
+        ),
+        dict(
+            id="WT7A-SC-4-void-set-entry-removed",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file=_WT7A_SCORECARDS,
+            anchor='        "voided_corrupt_quote",\n',
+            replacement="",
+            selectors=[_WT7A_TESTS],
+            invariant=(
+                "INV-WT7A-4 voided_corrupt_quote INVALIDATES: a void the reading never"
+                " reads is not a void"
+            ),
+        ),
+        dict(
+            id="WT7A-SC-5-deal-match-dropped",
+            owner="test_another_deals_void_does_not_count",
+            file=_WT7A_SCORECARDS,
+            anchor='rows = invalid.get(ep["deal_id"], [])',
+            replacement="rows = [s for sessions in invalid.values() for s in sessions]",
+            selectors=[_WT7A_TESTS],
+            invariant=(
+                "INV-WT7A-5 another deal's invalidating row never touches this deal's"
+                " episode: the window is read on the episode's own deal_id"
+            ),
+        ),
+    ]
+)
+
+
 # ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
 # TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
 # id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would

@@ -21,7 +21,11 @@ from tree_options.desk.shadows import database_path
 # An operational sample floor from the D7 plan, NOT an adoption criterion.
 MIN_RESOLVED = 20
 # A code INVALIDATES when the evidence is present and wrong; every other code
-# CENSORS (the evidence is missing). The test is per (deal, exit_deadline).
+# CENSORS (the evidence is missing). The two are read differently (summarize):
+# an invalidating row of a deal invalidates its episode when the row's session
+# lies in the episode's window, from the entry session to the as-of horizon
+# (WT7-a; not just the exit_deadline); a censoring row changes nothing by
+# itself, because an episode censors only when its deadline mark is missing.
 _INVALIDATING = frozenset(
     {
         "chain_vendor_conflict",
@@ -50,13 +54,15 @@ _INVALIDATING = frozenset(
         # its invalidation must not rest on a duplicate_contract_quote row
         # that the current exit filter no longer produces (census C1-A).
         "entry_fill_occ_provenance",
+        # WT7-a, the owner's decision (2026-11-23, "a void means what it
+        # says"): a void the reading never reads is not a void. No code path
+        # writes this code; its one row (qsl.sqlite3, NVDA, session 2026-11-20)
+        # is the owner's hand-written void record, filed after that episode's
+        # exit_deadline (2026-11-18) and read because the window now runs to
+        # the as-of horizon.
+        "voided_corrupt_quote",
     }
 )
-# NOT classified, on purpose: ``voided_corrupt_quote``. No code path writes
-# it; the one row (qsl.sqlite3, NVDA, session 2026-11-20) is the owner's
-# hand-written void record, which says it relies on the deadline-session
-# code to invalidate. It is keyed on a session after that episode's
-# exit_deadline, so this per-(deal, exit_deadline) test never reads it.
 
 
 def _total(resolved: list[dict[str, Any]], field: str) -> str | None:
@@ -70,13 +76,24 @@ def summarize(
     *,
     as_of: date,
 ) -> list[dict[str, Any]]:
+    """One card per family, as of the horizon ``as_of``.
+
+    An episode is OPEN while its exit_deadline is after the horizon. A closed
+    episode is INVALIDATED (counted censored and invalidated) when an
+    invalidating quality row of its deal has a session from the episode's
+    entry session through the horizon, inclusive at both ends. Otherwise it
+    is RESOLVED by its deadline mark, or CENSORED when that mark is missing.
+    The caller has already applied the knowledge cutoff to ``quality``.
+    """
     end = as_of.isoformat()
     by_mark = {(m["deal_id"], m["session"]): m for m in marks if m["session"] <= end}
-    invalid = {
-        (q["deal_id"], q["session"])
-        for q in quality
-        if q["code"] in _INVALIDATING and q["session"] <= end
-    }
+    # Every invalidating row of a deal, WHATEVER its session. Which rows count
+    # is decided per episode in ONE place, the window test below; no session
+    # bound here, since a second copy of the horizon would hide the window's.
+    invalid: dict[str, list[str]] = defaultdict(list)
+    for q in quality:
+        if q["code"] in _INVALIDATING:
+            invalid[q["deal_id"]].append(q["session"])
     families: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for ep in episodes:
         if ep["entry_session"] <= end:
@@ -88,9 +105,10 @@ def summarize(
         resolved, censored, opened, invalidated = [], 0, 0, 0
         for ep in group:
             mk = (ep["deal_id"], ep["exit_deadline"])
+            rows = invalid.get(ep["deal_id"], [])
             if ep["exit_deadline"] > end:
                 opened += 1
-            elif mk in invalid:
+            elif any(ep["entry_session"] <= s <= end for s in rows):
                 censored += 1
                 invalidated += 1
             elif mk in by_mark:

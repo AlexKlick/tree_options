@@ -1,5 +1,6 @@
 """Outcome quality, denominator transparency and no implicit promotion."""
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -160,3 +161,155 @@ def test_future_asof_does_not_censor_unobserved_outcomes(world):
     card = doc["families"][0]
     assert card["n_open"] == 1 and card["n_censored"] == 0
     assert doc["as_of_clamped_to_evaluation"] is True
+
+
+# ---- WT7-a: a void means what it says — the scorecard reads the whole episode ----
+# An episode is INVALIDATED when an invalidating quality row of its deal has
+# entry_session <= session <= the as-of horizon (NOT the exit_deadline). One
+# episode: deal D, entry 2026-11-16, deadline 2026-11-18, a clean deadline mark.
+_D = "d-wt7a-void"
+_ENTRY, _DEADLINE, _HORIZON = "2026-11-16", "2026-11-18", "2026-11-23"
+
+
+def _episode(*, deal=_D, deadline=_DEADLINE):
+    return {
+        "deal_id": deal,
+        "entry_session": _ENTRY,
+        "exit_deadline": deadline,
+        "row": "R1",
+        "tier": "signal",
+        "miner_sha256": "a" * 64,
+        "playbook_sha256": "b" * 64,
+        "source_session": "2026-11-13",
+    }
+
+
+def _mark(*, deal=_D, session=_DEADLINE):
+    return {
+        "deal_id": deal,
+        "session": session,
+        "modeled_net_pnl_dollars": "1.00",
+        "modeled_gross_pnl_dollars": "3.60",
+        "modeled_fees_dollars": "2.60",
+    }
+
+
+def _row(session, *, deal=_D, code="voided_corrupt_quote"):
+    return {"deal_id": deal, "session": session, "code": code}
+
+
+def _class(card):
+    """The one-episode card's class. An invalidated episode counts censored
+    AND invalidated; anything else is a reading no class describes."""
+    counts = (card["n_resolved"], card["n_censored"], card["n_invalidated"], card["n_open"])
+    names = {
+        (1, 0, 0, 0): "RESOLVED",
+        (0, 1, 1, 0): "INVALIDATED",
+        (0, 0, 0, 1): "OPEN",
+        (0, 1, 0, 0): "CENSORED",
+    }
+    return names.get(counts, f"UNCLASSIFIED{counts}")
+
+
+def _card(quality, *, as_of=_HORIZON, deadline=_DEADLINE):
+    [card] = scorecards.summarize(
+        [_episode(deadline=deadline)], [_mark()], quality, as_of=date.fromisoformat(as_of)
+    )
+    assert card["n_episodes"] == 1
+    return card
+
+
+def test_a_void_filed_after_the_deadline_invalidates_the_episode():
+    """The owner's real case (qsl.sqlite3, NVDA): the void is filed on 11-20
+    for an episode whose deadline is 11-18. A void the reading never reads is
+    not a void."""
+    card = _card([_row("2026-11-20")])
+    assert _class(card) == "INVALIDATED", (
+        "a voided_corrupt_quote filed after the deadline but on or before the"
+        " as-of horizon must invalidate the episode"
+    )
+    assert card["modeled_net_pnl_dollars"] is None
+
+
+def test_a_void_from_before_the_entry_session_is_not_this_episodes():
+    before = _card([_row("2026-11-13")])
+    assert _class(before) == "RESOLVED", (
+        "a void on a session before the entry session belongs to no session of"
+        " this episode: the window starts at the entry session"
+    )
+    on_entry = _card([_row(_ENTRY)])
+    assert _class(on_entry) == "INVALIDATED", (
+        "a void ON the entry session is inside the window: the lower bound is inclusive"
+    )
+
+
+def test_a_void_discovered_after_the_requested_as_of_does_not_count(world):
+    """The knowledge cutoff still bounds which rows an as-of card sees. The
+    void row is written through the store's own API (no code path writes
+    voided_corrupt_quote), the way shadows records a quality event, at a
+    DISCOVERY instant after the as-of 11-18 cutoff: unknown to that card,
+    known to the current one."""
+    as_of = date.fromisoformat(_DEADLINE)
+    with EvidenceStore(world.db) as store, store.atomic():
+        store.put("episode", _D, _episode(), cutoff_instant(date(2026, 11, 13)))
+        store.put(
+            "mark",
+            f"{_D}|{_DEADLINE}",
+            {**_mark(), "fetched_at": cutoff_instant(as_of).isoformat()},
+            cutoff_instant(as_of),
+        )
+        store.put(
+            "quality",
+            f"{_D}|2026-11-17|voided_corrupt_quote",
+            _row("2026-11-17"),
+            cutoff_instant(date(2026, 11, 20)),  # discovered after the as-of cutoff
+        )
+        store.put("evaluation", _HORIZON, {"session": _HORIZON}, cutoff_instant(date(2026, 11, 23)))
+    historical = scorecards.build_scorecards(world.db, as_of=as_of)
+    assert historical["as_of_session"] == _DEADLINE
+    assert historical["as_of_clamped_to_evaluation"] is False
+    assert _class(historical["families"][0]) == "RESOLVED", (
+        "a void recorded after the requested as-of's cutoff is not yet known to that card"
+    )
+    current = scorecards.build_scorecards(world.db)
+    assert current["as_of_session"] == _HORIZON
+    assert _class(current["families"][0]) == "INVALIDATED", (
+        "once recorded, the void on a session inside the episode's window invalidates it"
+    )
+
+
+def test_another_deals_void_does_not_count():
+    card = _card([_row("2026-11-17", deal="d-wt7a-another-deal")])
+    assert _class(card) == "RESOLVED", (
+        "a void filed for another deal must not touch this deal's episode:"
+        " the window is read on the episode's own deal_id"
+    )
+
+
+def test_a_censored_class_row_inside_the_window_with_a_clean_deadline_stays_resolved():
+    assert "chain_missing" not in scorecards._INVALIDATING  # the premise: a censoring code
+    card = _card([_row("2026-11-17", code="chain_missing")])
+    assert _class(card) == "RESOLVED", (
+        "a censoring code is decided by the deadline session: the deadline mark is"
+        " clean, so a missing chain on an intermediate session changes nothing"
+    )
+
+
+def test_a_void_after_the_as_of_horizon_on_a_closed_episode_does_not_count():
+    beyond = _card([_row("2026-11-25")], as_of=_HORIZON)
+    assert _class(beyond) == "RESOLVED", (
+        "a void on a session after the as-of horizon is outside the window:"
+        " the upper bound is the horizon"
+    )
+    on_horizon = _card([_row(_HORIZON)], as_of=_HORIZON)
+    assert _class(on_horizon) == "INVALIDATED", (
+        "a void ON the as-of horizon is inside the window: the upper bound is inclusive"
+    )
+
+
+def test_an_open_episode_with_a_void_inside_its_window_stays_open():
+    card = _card([_row("2026-11-20")], deadline="2026-11-28")
+    assert card["n_open"] == 1 and card["n_invalidated"] == 0 and card["n_censored"] == 0, (
+        "an episode whose deadline is after the as-of horizon stays open, whatever"
+        " its window holds so far"
+    )
