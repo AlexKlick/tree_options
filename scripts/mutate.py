@@ -11257,6 +11257,423 @@ MUTANTS.extend(
 )
 
 
+# ---- WT8-a, the verdict path's mutation gap: scorecards and health (wave 8, 2026-11-24) -
+# A census of scorecards.py and production.py, then a kill-probe of their candidate
+# mutants on disposable copies of f401d6c. 27 of these 36 are killed by a test that
+# existed before this wave (the measured owner); 9 were UNPINNED (the line ran, no
+# test failed) and are each owned by one new test in test_scorecards.py (SC-07,
+# SC-14, SC-20, SC-22) or test_production.py (PR-08, PR-09, PR-12, PR-16, PR-17).
+# SC-01 is the plan's first mutant: an INVALIDATED episode counts censored too, and
+# health raises censored_deadline_outcomes from that count; PR-17's owner pins the
+# health half (an invalidated episode degrades health). Several mutants share one
+# anchor (SC-01/SC-02, SC-03/SC-04, SC-07/SC-08, SC-10/SC-11, PR-01/PR-02,
+# PR-03/PR-04, PR-07/PR-08) on purpose. Never registered: SC-06 (the candidate's
+# replacement did not compile; its bound is pinned by SC-19) and SC-15 (EQUIVALENT:
+# the mark filter it drops is implied by exit_deadline <= end on every path that
+# reads by_mark).
+MUTANTS.extend(
+    [
+        dict(
+            id="WT8A-SC-01-censored-count-dropped-on-invalidation",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="                censored += 1\n                invalidated += 1\n",
+            replacement="                invalidated += 1\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-01 an INVALIDATED episode also counts censored: the double"
+                " count is what keeps invalidation loud to health"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-02-invalidated-count-dropped",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="                censored += 1\n                invalidated += 1\n",
+            replacement="                censored += 1\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant="INV-WT8A-SC-02 an invalidated episode is counted INVALIDATED",
+        ),
+        dict(
+            id="WT8A-SC-03-missing-mark-censored-counts-invalidated",
+            owner="test_the_exit_side_classifies_each_header_time_as_the_entry_side_does",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="            else:\n                censored += 1\n",
+            replacement="            else:\n                censored += 1\n                invalidated += 1\n",
+            selectors=["tests/desk_safety/test_shadow_entry_occ.py"],
+            invariant=(
+                "INV-WT8A-SC-03 a censored episode (its deadline mark is missing) is NOT"
+                " invalidated"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-04-missing-mark-censored-dropped",
+            owner="test_missing_deadline_remains_censored_not_a_loss_or_win",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="            else:\n                censored += 1\n",
+            replacement="            else:\n                pass\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-04 a missing deadline mark stays visible: the episode counts censored"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-05-exit-deadline-bound-inclusive",
+            owner="test_a_void_discovered_after_the_requested_as_of_does_not_count",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            if ep["exit_deadline"] > end:\n                opened += 1\n',
+            replacement='            if ep["exit_deadline"] >= end:\n                opened += 1\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-05 an episode whose deadline IS the horizon is decided, not left open"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-07-entry-after-horizon-admitted",
+            owner="test_an_episode_entered_after_the_horizon_is_not_in_the_card",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        if ep["entry_session"] <= end:\n',
+            replacement="        if True:\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-07 an episode entered after the horizon is not in the as-of"
+                " card at all"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-08-entry-session-bound-regressed",
+            owner="test_asof_view_does_not_use_future_evaluation_or_marks",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        if ep["entry_session"] <= end:\n',
+            replacement='        if ep["entry_session"] < end:\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-08 the entry bound is inclusive: an episode entered ON the"
+                " horizon counts"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-09-asof-mark-knowledge-cutoff-dropped",
+            owner="test_historical_card_does_not_use_quotes_received_after_requested_session",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            marks = [m for m in marks if timestamp(m["fetched_at"]) <= known_by]\n',
+            replacement="            marks = [m for m in marks]\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-09 an as-of card does not read a mark fetched after the"
+                " requested session"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-10-asof-quality-knowledge-cutoff-dropped",
+            owner="test_historical_card_does_not_use_quality_events_discovered_after_requested_session",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            quality = [q for q, at in store.all_at("quality") if timestamp(at) <= known_by]\n',
+            replacement='            quality = [q for q, at in store.all_at("quality")]\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-10 an as-of card does not read a quality event discovered"
+                " after the as-of"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-11-asof-quality-cutoff-regressed-to-session",
+            owner="test_historical_card_does_not_use_quality_events_discovered_after_requested_session",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            quality = [q for q, at in store.all_at("quality") if timestamp(at) <= known_by]\n',
+            replacement='            quality = [q for q, at in store.all_at("quality") if q["session"] <= horizon.isoformat()]\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-11 the quality cutoff is by DISCOVERY time, never by the"
+                " event's session"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-12-asof-horizon-not-clamped-to-evaluation",
+            owner="test_future_asof_does_not_censor_unobserved_outcomes",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="        horizon = min(requested, max(evaluated)) if requested is not None else max(evaluated)\n",
+            replacement="        horizon = requested if requested is not None else max(evaluated)\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-12 the outcome horizon is clamped to evaluated coverage: no"
+                " outcome is censored by ignorance"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-13-asof-clamp-flag-always-false",
+            owner="test_future_asof_does_not_censor_unobserved_outcomes",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="        clamped = requested is not None and requested > max(evaluated)\n",
+            replacement="        clamped = False\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-13 the card says when the requested as-of was clamped to the"
+                " evaluated coverage"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-14-censored-total-always-zero",
+            owner="test_the_totals_count_a_censored_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            "censored_total": sum(c["n_censored"] for c in families),\n',
+            replacement='            "censored_total": 0,\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-14 the card's censored_total is the sum of its families' n_censored"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-16-every-quality-code-invalidates",
+            owner="test_a_censored_class_row_inside_the_window_with_a_clean_deadline_stays_resolved",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        if q["code"] in _INVALIDATING:\n',
+            replacement="        if True:\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-16 only an INVALIDATING code can invalidate; a censoring code does not"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-18-invalidated-total-always-zero",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='                "n_invalidated": invalidated,\n',
+            replacement='                "n_invalidated": 0,\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant="INV-WT8A-SC-18 the family card reports its invalidated count",
+        ),
+        dict(
+            id="WT8A-SC-19-open-count-always-zero",
+            owner="test_open_episodes_do_not_count_as_censored",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='                "n_open": opened,\n',
+            replacement='                "n_open": 0,\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant="INV-WT8A-SC-19 the family card reports its open count",
+        ),
+        dict(
+            id="WT8A-SC-20-candidate-horizon-filter-dropped",
+            owner="test_an_asof_card_counts_only_candidates_known_by_the_horizon",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            x for x in store.all("candidate") if x["source_session"] <= horizon.isoformat()\n',
+            replacement='            x for x in store.all("candidate")\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-20 candidates_total counts the candidates of sessions up to"
+                " the horizon"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-21-no-evaluation-never-reported",
+            owner="test_r2_no_evaluation_is_not_ok_with_explicit_asof",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="        if not evaluated:\n",
+            replacement="        if False:\n",
+            selectors=["tests/desk_safety/test_round2_regressions.py"],
+            invariant=(
+                "INV-WT8A-SC-21 a requested date is not evidence that an evaluation"
+                " occurred: a store with none reads no_evaluation"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-22-quality-events-total-ignores-horizon",
+            owner="test_an_as_of_card_counts_only_quality_events_inside_the_horizon",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='                [q for q in quality if q["session"] <= horizon.isoformat()]\n',
+            replacement="                quality\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-22 quality_events_total counts the events of sessions up to"
+                " the horizon"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-01-censored-total-always-zero",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='        censored = sum(c["n_censored"] for c in cards)\n',
+            replacement="        censored = 0\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-01 health's censored total is the sum of the cards' n_censored"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-02-censored-total-counts-resolved",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='        censored = sum(c["n_censored"] for c in cards)\n',
+            replacement='        censored = sum(c["n_resolved"] for c in cards)\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-02 health's censored total never reads a resolved count",
+        ),
+        dict(
+            id="WT8A-PR-03-censored-blocker-dropped",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            blockers.append("censored_deadline_outcomes")\n',
+            replacement="            pass\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-03 a censored outcome is a BLOCKER: health's evidence_status"
+                " is degraded"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-04-censored-blocker-filed-as-pending",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            blockers.append("censored_deadline_outcomes")\n',
+            replacement='            pending.append("censored_deadline_outcomes")\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-04 a censored outcome is a blocker, not a pending note",
+        ),
+        dict(
+            id="WT8A-PR-05-queue-presence-inverted",
+            owner="test_publication_not_due_is_pending_not_missing_data_alarm",
+            file="src/tree_options/desk/production.py",
+            anchor="        if not present:\n",
+            replacement="        if present:\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-05 the queue item is raised when the current queue is ABSENT,"
+                " never when it is present"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-06-queue-always-not-due",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor="            not_due = queue_due is not None and now < queue_due\n",
+            replacement="            not_due = True\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-06 a missing queue past its due time is a blocker, never pending"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-07-evaluation-horizon-never-short",
+            owner="test_legitimate_pending_evaluation_is_published_as_unready",
+            file="src/tree_options/desk/production.py",
+            anchor="        if horizon is None or horizon < expected:\n",
+            replacement="        if False:\n",
+            selectors=["tests/desk_safety/test_read_snapshot.py"],
+            invariant="INV-WT8A-PR-07 a lagging or pending evaluation cycle is reported",
+        ),
+        dict(
+            id="WT8A-PR-08-evaluation-horizon-bound-inclusive",
+            owner="test_a_complete_session_is_ready",
+            file="src/tree_options/desk/production.py",
+            anchor="        if horizon is None or horizon < expected:\n",
+            replacement="        if horizon is None or horizon <= expected:\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-08 an evaluation exactly at the expected session is not lagging"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-09-missing-evaluation-reads-as-current",
+            owner="test_an_unevaluated_store_reports_no_horizon",
+            file="src/tree_options/desk/production.py",
+            anchor='        horizon = max((e["session"] for e in store.all("evaluation")), default=None)\n',
+            replacement='        horizon = max((e["session"] for e in store.all("evaluation")), default=expected)\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-09 a store with no evaluation has no horizon: it is pending,"
+                " never evaluated"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-11-queue-due-moved-to-close",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor="        queue_due = datetime.combine(next_entry, time(9, 30), ET) if next_entry else None\n",
+            replacement="        queue_due = datetime.combine(next_entry, time(16, 0), ET) if next_entry else None\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-11 the queue is due at the next entry session's 09:30 ET",
+        ),
+        dict(
+            id="WT8A-PR-12-evaluation-due-moved-to-2335",
+            owner="test_an_evaluation_is_lagging_after_1935_et",
+            file="src/tree_options/desk/production.py",
+            anchor="        evaluation_due = datetime.combine(as_of, time(19, 35), ET)\n",
+            replacement="        evaluation_due = datetime.combine(as_of, time(23, 35), ET)\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-12 the evaluation cycle is due at 19:35 ET of the expected session"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-13-evaluation-pending-and-lagging-swapped",
+            owner="test_legitimate_pending_evaluation_is_published_as_unready",
+            file="src/tree_options/desk/production.py",
+            anchor='                "evaluation_cycle_pending" if now < evaluation_due else "evaluation_lagging"\n',
+            replacement='                "evaluation_lagging" if now < evaluation_due else "evaluation_cycle_pending"\n',
+            selectors=["tests/desk_safety/test_read_snapshot.py"],
+            invariant=(
+                "INV-WT8A-PR-13 an evaluation not yet due is PENDING; past its due time it"
+                " is LAGGING"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-14-queue-pending-and-missing-swapped",
+            owner="test_publication_not_due_is_pending_not_missing_data_alarm",
+            file="src/tree_options/desk/production.py",
+            anchor='                "queue_publication_pending" if not_due else "missing_current_queue"\n',
+            replacement='                "missing_current_queue" if not_due else "queue_publication_pending"\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-14 a queue not yet due is PENDING; a missing queue past due is"
+                " a BLOCKER"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-15-evidence-status-never-degraded",
+            owner="test_publication_not_due_is_pending_not_missing_data_alarm",
+            file="src/tree_options/desk/production.py",
+            anchor='            else "awaiting_publication"\n            if pending\n            else "ready",\n',
+            replacement='            else "ready",\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-15 a pending item holds the status at awaiting_publication,"
+                " never ready"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-16-evidence-status-pending-outranks-blocker",
+            owner="test_a_blocker_outranks_a_pending_item",
+            file="src/tree_options/desk/production.py",
+            anchor='            "evidence_status": "degraded"\n            if blockers\n            else "awaiting_publication"\n            if pending\n            else "ready",\n',
+            replacement='            "evidence_status": "awaiting_publication"\n            if pending\n            else "degraded"\n            if blockers\n            else "ready",\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-16 a BLOCKER outranks a pending item: the status is degraded"
+                " whenever a blocker exists"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-17-health-censored-total-always-zero",
+            owner="test_an_invalidated_episode_degrades_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            "censored_total": censored,\n',
+            replacement='            "censored_total": 0,\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-17 health reports the censored total it computed",
+        ),
+        dict(
+            id="WT8A-PR-18-evidence-blockers-always-empty",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            "evidence_blockers": blockers,\n',
+            replacement='            "evidence_blockers": [],\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-18 health reports the blockers it found",
+        ),
+    ]
+)
+
+
 # ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
 # TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
 # id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would

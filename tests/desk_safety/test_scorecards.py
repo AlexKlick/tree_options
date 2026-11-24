@@ -313,3 +313,80 @@ def test_an_open_episode_with_a_void_inside_its_window_stays_open():
         "an episode whose deadline is after the as-of horizon stays open, whatever"
         " its window holds so far"
     )
+
+
+# ---- WT8-a: the verdict path's mutation gap — the card's horizon and totals ----
+# Each test below pins one bound no existing test fails on. The rows are written
+# as constants (sessions are ISO strings; summarize compares them as strings),
+# and the store-built cards are read with no as-of: the horizon is the
+# evaluation, 2026-11-23.
+
+
+def test_an_episode_entered_after_the_horizon_is_not_in_the_card():
+    late = {**_episode(), "entry_session": "2026-11-30", "exit_deadline": "2026-12-02"}
+    cards = scorecards.summarize([late], [], [], as_of=date(2026, 11, 23))
+    assert cards == [], (
+        "an episode entered after the as-of horizon is not in that card at all:"
+        " not open, not censored, not counted"
+    )
+
+
+def test_the_totals_count_a_censored_episode(world):
+    """One closed episode (entry 11-16, deadline 11-18), no deadline mark, no
+    quality row: CENSORED, and the card's totals must say so."""
+    with EvidenceStore(world.db) as store, store.atomic():
+        store.put("episode", _D, _episode(), cutoff_instant(date(2026, 11, 13)))
+        store.put("evaluation", _HORIZON, {"session": _HORIZON}, cutoff_instant(date(2026, 11, 23)))
+    doc = scorecards.build_scorecards(world.db)
+    assert doc["status"] == "ok" and doc["as_of_session"] == _HORIZON  # the premise
+    assert doc["episodes_total"] == 1
+    assert doc["resolved_total"] == 0
+    assert doc["open_total"] == 0
+    assert doc["censored_total"] == 1, (
+        "censored_total is the sum of the families' n_censored: one closed episode"
+        " with no deadline mark is one censored outcome"
+    )
+
+
+def test_an_asof_card_counts_only_candidates_known_by_the_horizon(world):
+    """Two candidates, of sessions 11-20 and 11-25; the horizon is 11-23."""
+    with EvidenceStore(world.db) as store, store.atomic():
+        store.put(
+            "candidate",
+            "c-wt8a-2026-11-20",
+            {"source_session": "2026-11-20", "contract_errors": []},
+            cutoff_instant(date(2026, 11, 20)),
+        )
+        store.put(
+            "candidate",
+            "c-wt8a-2026-11-25",
+            {"source_session": "2026-11-25", "contract_errors": []},
+            cutoff_instant(date(2026, 11, 25)),
+        )
+        store.put("evaluation", _HORIZON, {"session": _HORIZON}, cutoff_instant(date(2026, 11, 23)))
+    doc = scorecards.build_scorecards(world.db)
+    assert doc["status"] == "ok" and doc["as_of_session"] == _HORIZON  # the premise
+    assert doc["candidates_total"] == 1, (
+        "candidates_total counts the candidates of sessions up to the horizon:"
+        " the 11-25 candidate is after the 11-23 horizon"
+    )
+
+
+def test_an_as_of_card_counts_only_quality_events_inside_the_horizon(world):
+    """Two quality rows of one deal, of sessions 11-20 and 11-25; no episode;
+    the horizon is 11-23."""
+    with EvidenceStore(world.db) as store, store.atomic():
+        for session in ("2026-11-20", "2026-11-25"):
+            store.put(
+                "quality",
+                f"d-wt8a|{session}|chain_missing",
+                {"deal_id": "d-wt8a", "session": session, "code": "chain_missing"},
+                cutoff_instant(date.fromisoformat(session)),
+            )
+        store.put("evaluation", _HORIZON, {"session": _HORIZON}, cutoff_instant(date(2026, 11, 23)))
+    doc = scorecards.build_scorecards(world.db)
+    assert doc["status"] == "ok" and doc["as_of_session"] == _HORIZON  # the premise
+    assert doc["quality_events_total"] == 1, (
+        "quality_events_total counts the events of sessions up to the horizon:"
+        " the 11-25 event is after the 11-23 horizon"
+    )

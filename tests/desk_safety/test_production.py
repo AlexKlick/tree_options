@@ -94,3 +94,124 @@ def test_publication_not_due_is_pending_not_missing_data_alarm(world):
     assert doc["evidence_status"] == "awaiting_publication"
     assert "missing_current_queue" not in doc["evidence_blockers"]
     assert "queue_publication_pending" in doc["pending"]
+
+
+# ---- WT8-a: the verdict path's mutation gap — health reads what it found ----
+# The store holds EXACTLY the rows each test names, written with EvidenceStore.put
+# (not through shadows.update_shadows). Every `now` falls at or after
+# world.session's 16:15 ET cutoff and before the next session's, so health's
+# expected session is world.session (2025-03-03) in all five. The episode below is
+# CLOSED at that as-of: entered 2025-02-24, deadline 2025-02-28.
+_WT8A_DEAL = "d-wt8a-health"
+
+
+def _wt8a_episode():
+    return {
+        "deal_id": _WT8A_DEAL,
+        "entry_session": "2025-02-24",
+        "exit_deadline": "2025-02-28",
+        "row": "R1",
+        "tier": "signal",
+        "miner_sha256": "a" * 64,
+        "playbook_sha256": "b" * 64,
+        "source_session": "2025-02-21",
+    }
+
+
+def _wt8a_store(world, *, evaluation=False, queue=False, episode=False, void=False):
+    """Write exactly the named rows into a fresh store (none: an empty store)."""
+    from tree_options.desk.evidence import EvidenceStore
+
+    session = world.session.isoformat()
+    at = cutoff_instant(world.session)
+    with EvidenceStore(world.db) as store, store.atomic():
+        if evaluation:
+            store.put("evaluation", session, {"session": session}, at)
+        if queue:
+            store.put("queue", session, {"session": session}, at)
+        if episode:
+            store.put("episode", _WT8A_DEAL, _wt8a_episode(), at)
+        if void:
+            row = {"deal_id": _WT8A_DEAL, "session": "2025-02-26", "code": "voided_corrupt_quote"}
+            store.put("quality", f"{_WT8A_DEAL}|2025-02-26|voided_corrupt_quote", row, at)
+
+
+def test_an_invalidated_episode_degrades_health(world):
+    """An INVALIDATED episode counts censored (scorecards.summarize), and the
+    censored count is what keeps invalidation loud to health."""
+    _wt8a_store(world, evaluation=True, queue=True, episode=True, void=True)
+    doc = production.health(
+        database=world.db, now=datetime.combine(world.session, time(17), ET), cal=world.cal
+    )
+    assert doc["expected_session"] == world.session.isoformat()  # the premise
+    assert doc["evaluated_through"] == world.session.isoformat()  # the premise
+    assert doc["evidence_status"] == "degraded", (
+        "an invalidated episode must degrade health: it counts censored, and a"
+        " censored outcome is a blocker"
+    )
+    assert doc["evidence_blockers"] == ["censored_deadline_outcomes"]
+    assert doc["pending"] == []
+    assert doc["censored_total"] == 1, "health reports the censored total it computed"
+
+
+def test_a_complete_session_is_ready(world):
+    _wt8a_store(world, evaluation=True, queue=True)
+    doc = production.health(
+        database=world.db, now=datetime.combine(world.session, time(17), ET), cal=world.cal
+    )
+    assert doc["expected_session"] == world.session.isoformat()  # the premise
+    assert doc["evidence_status"] == "ready", (
+        "an evaluation exactly at the expected session is not lagging: with the"
+        " queue recorded and nothing censored, health is ready"
+    )
+    assert doc["pending"] == []
+    assert doc["evidence_blockers"] == []
+    assert doc["evaluated_through"] == world.session.isoformat()
+    assert doc["current_queue_recorded"] is True
+    assert doc["censored_total"] == 0
+
+
+def test_an_unevaluated_store_reports_no_horizon(world):
+    _wt8a_store(world)
+    doc = production.health(database=world.db, now=cutoff_instant(world.session), cal=world.cal)
+    assert doc["expected_session"] == world.session.isoformat()  # the premise
+    assert doc["evaluated_through"] is None, (
+        "a store with no evaluation has no horizon: it is pending, never evaluated"
+    )
+    assert "evaluation_cycle_pending" in doc["pending"]
+    assert "queue_publication_pending" in doc["pending"]
+    assert doc["evidence_status"] == "awaiting_publication"
+    assert doc["evidence_blockers"] == []
+
+
+def test_an_evaluation_is_lagging_after_1935_et(world):
+    _wt8a_store(world, queue=True)
+    late = production.health(
+        database=world.db, now=datetime.combine(world.session, time(20), ET), cal=world.cal
+    )
+    assert late["expected_session"] == world.session.isoformat()  # the premise
+    assert late["evidence_status"] == "degraded", (
+        "the evaluation cycle is due at 19:35 ET: missing at 20:00 ET it is lagging"
+    )
+    assert "evaluation_lagging" in late["evidence_blockers"]
+    assert "evaluation_cycle_pending" not in late["pending"]
+    early = production.health(
+        database=world.db, now=datetime.combine(world.session, time(19), ET), cal=world.cal
+    )
+    assert early["expected_session"] == world.session.isoformat()  # the premise
+    assert "evaluation_cycle_pending" in early["pending"], (
+        "before 19:35 ET a missing evaluation is still pending"
+    )
+    assert "evaluation_lagging" not in early["evidence_blockers"]
+
+
+def test_a_blocker_outranks_a_pending_item(world):
+    _wt8a_store(world, evaluation=True, episode=True)
+    doc = production.health(database=world.db, now=cutoff_instant(world.session), cal=world.cal)
+    assert doc["expected_session"] == world.session.isoformat()  # the premise
+    assert doc["evaluated_through"] == world.session.isoformat()  # the premise
+    assert doc["evidence_status"] == "degraded", (
+        "a blocker outranks a pending item: the status is degraded whenever a blocker exists"
+    )
+    assert doc["evidence_blockers"] == ["censored_deadline_outcomes"]
+    assert doc["pending"] == ["queue_publication_pending"]
