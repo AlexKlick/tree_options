@@ -11257,6 +11257,364 @@ MUTANTS.extend(
 )
 
 
+# ---- WT8-B, the evidence store's mutation gap (wave 8, 2026-11-24) ---------------
+# evidence.py had no active mutant (0 of 827). One mutant per bound of the custody
+# store: put's refusals, the audit chain's shape (seq, link, event digest), atomic(),
+# verify()'s checks and its transaction hygiene, all_at's join, backup()'s bounds.
+# Twelve keep an owner that existed before this wave (EV-22 and EV-15 in
+# test_scorecards.py); sixteen are owned by the fourteen tests WT8-B appended to
+# test_evidence.py (EV-06, EV-21 and EV-25 share the chain-shape test). EV-02/EV-03
+# and EV-15/EV-16 share an anchor on purpose: one line, two different bounds. The
+# empty replacements of EV-10, EV-11 and EV-13 delete one clause of a condition.
+MUTANTS.extend(
+    [
+        dict(
+            id="WT8B-EV-01-content-conflict-overwrites",
+            owner="test_conflict_does_not_overwrite_evidence",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                raise EvidenceError("content_conflict")\n',
+            replacement="                return True\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-1 a changed payload under an existing key is refused"
+                " (content_conflict), never accepted"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-02-put-transaction-requirement-dropped",
+            owner="test_write_requires_transaction_and_is_idempotent",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.readonly or not self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            replacement=(
+                "        if self.readonly:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-2 a write outside an open transaction is refused (transaction_required)"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-03-put-readonly-requirement-dropped",
+            owner="test_a_read_only_store_refuses_to_put",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.readonly or not self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            replacement=(
+                "        if not self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-3 a read-only store refuses a write with its own error"
+                " (transaction_required), even inside a read transaction"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-04-naive-instant-accepted",
+            owner="test_a_naive_instant_is_refused_before_anything_is_written",
+            file="src/tree_options/desk/evidence.py",
+            anchor="        timestamp(at.isoformat())\n",
+            replacement="        pass\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-4 a write carries a timezone-aware instant: a naive one is refused"
+                " before anything is written"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-05-replay-reported-as-write",
+            owner="test_write_requires_transaction_and_is_idempotent",
+            file="src/tree_options/desk/evidence.py",
+            anchor="            return False\n",
+            replacement="            return True\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-5 the same content under the same key is a replay: put returns False"
+                " and records nothing"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-06-previous-link-always-genesis",
+            owner="test_each_event_links_to_the_one_before",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "previous_sha256": previous[1] if previous else GENESIS,\n',
+            replacement='            "previous_sha256": GENESIS,\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-6 each audit event links to the previous event's hash; only the first"
+                " links to genesis"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-07-atomic-ignores-open-transaction",
+            owner="test_atomic_refuses_a_transaction_already_open",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.readonly or self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_state")\n'
+            ),
+            replacement=(
+                '        if self.readonly:\n            raise EvidenceError("transaction_state")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-7 a nested atomic() is refused (transaction_state) and the outer"
+                " transaction stays usable"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-08-rollback-dropped-on-exception",
+            owner="test_exception_rolls_back_data_and_audit",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        except BaseException:\n"
+                "            self.conn.rollback()\n"
+                "            raise\n"
+            ),
+            replacement="        except BaseException:\n            raise\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-8 a transaction that raised is rolled back: neither the object nor"
+                " its audit event survives"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-21-event-sequence-skips-one",
+            owner="test_each_event_links_to_the_one_before",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "seq": previous[0] + 1 if previous else 1,\n',
+            replacement='            "seq": previous[0] + 2 if previous else 1,\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-21 an audit event's seq is the previous event's seq plus one",
+        ),
+        dict(
+            id="WT8B-EV-22-event-instant-always-epoch",
+            owner="test_a_void_discovered_after_the_requested_as_of_does_not_count",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "occurred_at": at.isoformat(),\n',
+            replacement='            "occurred_at": "1970-01-01T00:00:00+00:00",\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8B-22 the audit records WHEN the evidence was recorded, and the"
+                " knowledge cutoff reads it"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-23-audit-event-digest-always-genesis",
+            owner="test_write_requires_transaction_and_is_idempotent",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "INSERT INTO audit VALUES (?,?,?,?,?,?,?)", (*event.values(), digest(event))\n',
+            replacement='            "INSERT INTO audit VALUES (?,?,?,?,?,?,?)", (*event.values(), GENESIS)\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-23 the audit row stores the digest of its own event",
+        ),
+        dict(
+            id="WT8B-EV-24-content-check-reads-another-key",
+            owner="test_conflict_does_not_overwrite_evidence",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "SELECT payload_sha256 FROM objects WHERE kind=? AND object_key=?", (kind, key)\n',
+            replacement='            "SELECT payload_sha256 FROM objects WHERE kind=? AND object_key=?", (kind, "\\0" + key)\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-24 put looks up the existing object under its own (kind, key)",
+        ),
+        dict(
+            id="WT8B-EV-25-previous-event-read-first",
+            owner="test_each_event_links_to_the_one_before",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "SELECT seq, event_sha256 FROM audit ORDER BY seq DESC LIMIT 1"\n',
+            replacement='            "SELECT seq, event_sha256 FROM audit ORDER BY seq ASC LIMIT 1"\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-25 a new event links to the LATEST audit event, not the first",
+        ),
+        dict(
+            id="WT8B-EV-26-seen-digest-takes-claimed-value",
+            owner="test_backup_roundtrip",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                seen[(obj["kind"], obj["object_key"])] = obj["payload_sha256"]\n',
+            replacement='                seen[(obj["kind"], obj["object_key"])] = claimed\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-26 verify remembers each object's PAYLOAD hash from its audit event"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-27-payload-digest-takes-recorded-value",
+            owner="test_tampering_is_detected",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                sha = digest(read_json(row["payload"].encode()))\n',
+            replacement='                sha = row["payload_sha256"]\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-27 verify recomputes each payload's digest from its stored bytes",
+        ),
+        dict(
+            id="WT8B-EV-28-verify-leaves-transaction-open",
+            owner="test_verify_leaves_no_transaction_open",
+            file="src/tree_options/desk/evidence.py",
+            anchor="            if owned:\n                self.conn.rollback()\n",
+            replacement="            if False:\n                self.conn.rollback()\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-28 a verify that raised on a transaction it opened rolls it back",
+        ),
+        dict(
+            id="WT8B-EV-09-verify-sequence-unchecked",
+            owner="test_verify_names_a_broken_sequence",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    obj["seq"] != count\n',
+            replacement="                    False\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-9 verify refuses an audit chain whose sequence numbers are not"
+                " consecutive from 1"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-10-verify-chain-link-unchecked",
+            owner="test_verify_names_a_broken_link",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    or obj["previous_sha256"] != previous\n',
+            replacement="",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-10 verify refuses an audit event whose previous_sha256 is not the"
+                " event before it"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-11-verify-event-digest-unchecked",
+            owner="test_verify_names_a_forged_digest",
+            file="src/tree_options/desk/evidence.py",
+            anchor="                    or digest(obj) != claimed\n",
+            replacement="",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-11 verify refuses an audit event whose stored digest is not the"
+                " digest of the event"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-12-verify-payload-digest-unchecked",
+            owner="test_verify_names_an_object_whose_recorded_digest_was_changed",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    sha != row["payload_sha256"]\n',
+            replacement="                    False\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-12 verify refuses an object whose payload bytes do not hash to its"
+                " recorded payload_sha256"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-13-verify-object-event-pairing-unchecked",
+            owner="test_verify_names_an_object_rewritten_with_its_digest",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    or seen.get((row["kind"], row["object_key"])) != sha\n',
+            replacement="",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-13 verify refuses an object whose payload hash is not the one its"
+                " audit event carries"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-14-verify-event-count-unchecked",
+            owner="test_corrupted_backup_is_never_published",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "            if objects != count:\n"
+                '                raise EvidenceError("object_event_count")\n'
+            ),
+            replacement=(
+                '            if False:\n                raise EvidenceError("object_event_count")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-14 verify refuses a store whose object count differs from its event count"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-15-all-at-joins-on-kind-only",
+            owner="test_historical_card_does_not_use_quality_events_discovered_after_requested_session",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            " ON a.kind=o.kind AND a.object_key=o.object_key WHERE o.kind=?"\n',
+            replacement='            " ON a.kind=o.kind WHERE o.kind=?"\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8B-15 all_at pairs each payload with its OWN audit row's time, not with"
+                " every commit of its kind"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-16-all-at-joins-on-key-only",
+            owner="test_all_at_pairs_each_object_with_its_own_commit",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            " ON a.kind=o.kind AND a.object_key=o.object_key WHERE o.kind=?"\n',
+            replacement='            " ON a.object_key=o.object_key WHERE o.kind=?"\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-16 all_at reads only the requested kind: a key shared with another"
+                " kind never pairs across kinds"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-17-backup-published-unverified",
+            owner="test_corrupted_backup_is_never_published",
+            file="src/tree_options/desk/evidence.py",
+            anchor="                snapshot.verify()\n",
+            replacement="                pass\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-17 a backup is verified before its destination name is published",
+        ),
+        dict(
+            id="WT8B-EV-18-backup-overwrites-destination",
+            owner="test_backup_refuses_an_existing_destination_and_its_own_file",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if destination.exists() or destination.resolve() == self.path.resolve():\n"
+                '            raise EvidenceError("backup_exists")\n'
+            ),
+            replacement='        if False:\n            raise EvidenceError("backup_exists")\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-18 a backup never overwrites: an existing destination, or the store's"
+                " own file, is refused by name"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-19-backup-inside-transaction-allowed",
+            owner="test_backup_refuses_inside_a_transaction",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.conn.in_transaction:\n"
+                '            raise EvidenceError("backup_in_transaction")\n'
+            ),
+            replacement=(
+                '        if False:\n            raise EvidenceError("backup_in_transaction")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-19 no backup is taken from inside an open transaction",
+        ),
+        dict(
+            id="WT8B-EV-20-backup-keeps-wal-journal",
+            owner="test_the_published_backup_is_a_single_rollback_journal_file",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                target.execute("PRAGMA journal_mode=DELETE")\n',
+            replacement="                pass\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-20 a published backup is a rollback-journal file (journal_mode"
+                " delete), no WAL sidecar needed"
+            ),
+        ),
+    ]
+)
+
+
 # ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
 # TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
 # id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would
