@@ -11257,6 +11257,1104 @@ MUTANTS.extend(
 )
 
 
+# ---- WT8-a, the verdict path's mutation gap: scorecards and health (wave 8, 2026-11-24) -
+# A census of scorecards.py and production.py, then a kill-probe of their candidate
+# mutants on disposable copies of f401d6c. 27 of these 36 are killed by a test that
+# existed before this wave (the measured owner); 9 were UNPINNED (the line ran, no
+# test failed) and are each owned by one new test in test_scorecards.py (SC-07,
+# SC-14, SC-20, SC-22) or test_production.py (PR-08, PR-09, PR-12, PR-16, PR-17).
+# SC-01 is the plan's first mutant: an INVALIDATED episode counts censored too, and
+# health raises censored_deadline_outcomes from that count; PR-17's owner pins the
+# health half (an invalidated episode degrades health). Several mutants share one
+# anchor (SC-01/SC-02, SC-03/SC-04, SC-07/SC-08, SC-10/SC-11, PR-01/PR-02,
+# PR-03/PR-04, PR-07/PR-08) on purpose. Never registered: SC-06 (the candidate's
+# replacement did not compile; its bound is pinned by SC-19) and SC-15 (EQUIVALENT:
+# the mark filter it drops is implied by exit_deadline <= end on every path that
+# reads by_mark).
+MUTANTS.extend(
+    [
+        dict(
+            id="WT8A-SC-01-censored-count-dropped-on-invalidation",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="                censored += 1\n                invalidated += 1\n",
+            replacement="                invalidated += 1\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-01 an INVALIDATED episode also counts censored: the double"
+                " count is what keeps invalidation loud to health"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-02-invalidated-count-dropped",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="                censored += 1\n                invalidated += 1\n",
+            replacement="                censored += 1\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant="INV-WT8A-SC-02 an invalidated episode is counted INVALIDATED",
+        ),
+        dict(
+            id="WT8A-SC-03-missing-mark-censored-counts-invalidated",
+            owner="test_the_exit_side_classifies_each_header_time_as_the_entry_side_does",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="            else:\n                censored += 1\n",
+            replacement="            else:\n                censored += 1\n                invalidated += 1\n",
+            selectors=["tests/desk_safety/test_shadow_entry_occ.py"],
+            invariant=(
+                "INV-WT8A-SC-03 a censored episode (its deadline mark is missing) is NOT"
+                " invalidated"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-04-missing-mark-censored-dropped",
+            owner="test_missing_deadline_remains_censored_not_a_loss_or_win",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="            else:\n                censored += 1\n",
+            replacement="            else:\n                pass\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-04 a missing deadline mark stays visible: the episode counts censored"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-05-exit-deadline-bound-inclusive",
+            owner="test_a_void_discovered_after_the_requested_as_of_does_not_count",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            if ep["exit_deadline"] > end:\n                opened += 1\n',
+            replacement='            if ep["exit_deadline"] >= end:\n                opened += 1\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-05 an episode whose deadline IS the horizon is decided, not left open"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-07-entry-after-horizon-admitted",
+            owner="test_an_episode_entered_after_the_horizon_is_not_in_the_card",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        if ep["entry_session"] <= end:\n',
+            replacement="        if True:\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-07 an episode entered after the horizon is not in the as-of"
+                " card at all"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-08-entry-session-bound-regressed",
+            owner="test_asof_view_does_not_use_future_evaluation_or_marks",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        if ep["entry_session"] <= end:\n',
+            replacement='        if ep["entry_session"] < end:\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-08 the entry bound is inclusive: an episode entered ON the"
+                " horizon counts"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-09-asof-mark-knowledge-cutoff-dropped",
+            owner="test_historical_card_does_not_use_quotes_received_after_requested_session",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            marks = [m for m in marks if timestamp(m["fetched_at"]) <= known_by]\n',
+            replacement="            marks = [m for m in marks]\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-09 an as-of card does not read a mark fetched after the"
+                " requested session"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-10-asof-quality-knowledge-cutoff-dropped",
+            owner="test_historical_card_does_not_use_quality_events_discovered_after_requested_session",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            quality = [q for q, at in store.all_at("quality") if timestamp(at) <= known_by]\n',
+            replacement='            quality = [q for q, at in store.all_at("quality")]\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-10 an as-of card does not read a quality event discovered"
+                " after the as-of"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-11-asof-quality-cutoff-regressed-to-session",
+            owner="test_historical_card_does_not_use_quality_events_discovered_after_requested_session",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            quality = [q for q, at in store.all_at("quality") if timestamp(at) <= known_by]\n',
+            replacement='            quality = [q for q, at in store.all_at("quality") if q["session"] <= horizon.isoformat()]\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-11 the quality cutoff is by DISCOVERY time, never by the"
+                " event's session"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-12-asof-horizon-not-clamped-to-evaluation",
+            owner="test_future_asof_does_not_censor_unobserved_outcomes",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="        horizon = min(requested, max(evaluated)) if requested is not None else max(evaluated)\n",
+            replacement="        horizon = requested if requested is not None else max(evaluated)\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-12 the outcome horizon is clamped to evaluated coverage: no"
+                " outcome is censored by ignorance"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-13-asof-clamp-flag-always-false",
+            owner="test_future_asof_does_not_censor_unobserved_outcomes",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="        clamped = requested is not None and requested > max(evaluated)\n",
+            replacement="        clamped = False\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-13 the card says when the requested as-of was clamped to the"
+                " evaluated coverage"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-14-censored-total-always-zero",
+            owner="test_the_totals_count_a_censored_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            "censored_total": sum(c["n_censored"] for c in families),\n',
+            replacement='            "censored_total": 0,\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-14 the card's censored_total is the sum of its families' n_censored"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-16-every-quality-code-invalidates",
+            owner="test_a_censored_class_row_inside_the_window_with_a_clean_deadline_stays_resolved",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='        if q["code"] in _INVALIDATING:\n',
+            replacement="        if True:\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-16 only an INVALIDATING code can invalidate; a censoring code does not"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-18-invalidated-total-always-zero",
+            owner="test_a_void_filed_after_the_deadline_invalidates_the_episode",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='                "n_invalidated": invalidated,\n',
+            replacement='                "n_invalidated": 0,\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant="INV-WT8A-SC-18 the family card reports its invalidated count",
+        ),
+        dict(
+            id="WT8A-SC-19-open-count-always-zero",
+            owner="test_open_episodes_do_not_count_as_censored",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='                "n_open": opened,\n',
+            replacement='                "n_open": 0,\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant="INV-WT8A-SC-19 the family card reports its open count",
+        ),
+        dict(
+            id="WT8A-SC-20-candidate-horizon-filter-dropped",
+            owner="test_an_asof_card_counts_only_candidates_known_by_the_horizon",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='            x for x in store.all("candidate") if x["source_session"] <= horizon.isoformat()\n',
+            replacement='            x for x in store.all("candidate")\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-20 candidates_total counts the candidates of sessions up to"
+                " the horizon"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-21-no-evaluation-never-reported",
+            owner="test_r2_no_evaluation_is_not_ok_with_explicit_asof",
+            file="src/tree_options/desk/scorecards.py",
+            anchor="        if not evaluated:\n",
+            replacement="        if False:\n",
+            selectors=["tests/desk_safety/test_round2_regressions.py"],
+            invariant=(
+                "INV-WT8A-SC-21 a requested date is not evidence that an evaluation"
+                " occurred: a store with none reads no_evaluation"
+            ),
+        ),
+        dict(
+            id="WT8A-SC-22-quality-events-total-ignores-horizon",
+            owner="test_an_as_of_card_counts_only_quality_events_inside_the_horizon",
+            file="src/tree_options/desk/scorecards.py",
+            anchor='                [q for q in quality if q["session"] <= horizon.isoformat()]\n',
+            replacement="                quality\n",
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8A-SC-22 quality_events_total counts the events of sessions up to"
+                " the horizon"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-01-censored-total-always-zero",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='        censored = sum(c["n_censored"] for c in cards)\n',
+            replacement="        censored = 0\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-01 health's censored total is the sum of the cards' n_censored"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-02-censored-total-counts-resolved",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='        censored = sum(c["n_censored"] for c in cards)\n',
+            replacement='        censored = sum(c["n_resolved"] for c in cards)\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-02 health's censored total never reads a resolved count",
+        ),
+        dict(
+            id="WT8A-PR-03-censored-blocker-dropped",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            blockers.append("censored_deadline_outcomes")\n',
+            replacement="            pass\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-03 a censored outcome is a BLOCKER: health's evidence_status"
+                " is degraded"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-04-censored-blocker-filed-as-pending",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            blockers.append("censored_deadline_outcomes")\n',
+            replacement='            pending.append("censored_deadline_outcomes")\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-04 a censored outcome is a blocker, not a pending note",
+        ),
+        dict(
+            id="WT8A-PR-05-queue-presence-inverted",
+            owner="test_publication_not_due_is_pending_not_missing_data_alarm",
+            file="src/tree_options/desk/production.py",
+            anchor="        if not present:\n",
+            replacement="        if present:\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-05 the queue item is raised when the current queue is ABSENT,"
+                " never when it is present"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-06-queue-always-not-due",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor="            not_due = queue_due is not None and now < queue_due\n",
+            replacement="            not_due = True\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-06 a missing queue past its due time is a blocker, never pending"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-07-evaluation-horizon-never-short",
+            owner="test_legitimate_pending_evaluation_is_published_as_unready",
+            file="src/tree_options/desk/production.py",
+            anchor="        if horizon is None or horizon < expected:\n",
+            replacement="        if False:\n",
+            selectors=["tests/desk_safety/test_read_snapshot.py"],
+            invariant="INV-WT8A-PR-07 a lagging or pending evaluation cycle is reported",
+        ),
+        dict(
+            id="WT8A-PR-08-evaluation-horizon-bound-inclusive",
+            owner="test_a_complete_session_is_ready",
+            file="src/tree_options/desk/production.py",
+            anchor="        if horizon is None or horizon < expected:\n",
+            replacement="        if horizon is None or horizon <= expected:\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-08 an evaluation exactly at the expected session is not lagging"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-09-missing-evaluation-reads-as-current",
+            owner="test_an_unevaluated_store_reports_no_horizon",
+            file="src/tree_options/desk/production.py",
+            anchor='        horizon = max((e["session"] for e in store.all("evaluation")), default=None)\n',
+            replacement='        horizon = max((e["session"] for e in store.all("evaluation")), default=expected)\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-09 a store with no evaluation has no horizon: it is pending,"
+                " never evaluated"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-11-queue-due-moved-to-close",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor="        queue_due = datetime.combine(next_entry, time(9, 30), ET) if next_entry else None\n",
+            replacement="        queue_due = datetime.combine(next_entry, time(16, 0), ET) if next_entry else None\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-11 the queue is due at the next entry session's 09:30 ET",
+        ),
+        dict(
+            id="WT8A-PR-12-evaluation-due-moved-to-2335",
+            owner="test_an_evaluation_is_lagging_after_1935_et",
+            file="src/tree_options/desk/production.py",
+            anchor="        evaluation_due = datetime.combine(as_of, time(19, 35), ET)\n",
+            replacement="        evaluation_due = datetime.combine(as_of, time(23, 35), ET)\n",
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-12 the evaluation cycle is due at 19:35 ET of the expected session"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-13-evaluation-pending-and-lagging-swapped",
+            owner="test_legitimate_pending_evaluation_is_published_as_unready",
+            file="src/tree_options/desk/production.py",
+            anchor='                "evaluation_cycle_pending" if now < evaluation_due else "evaluation_lagging"\n',
+            replacement='                "evaluation_lagging" if now < evaluation_due else "evaluation_cycle_pending"\n',
+            selectors=["tests/desk_safety/test_read_snapshot.py"],
+            invariant=(
+                "INV-WT8A-PR-13 an evaluation not yet due is PENDING; past its due time it"
+                " is LAGGING"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-14-queue-pending-and-missing-swapped",
+            owner="test_publication_not_due_is_pending_not_missing_data_alarm",
+            file="src/tree_options/desk/production.py",
+            anchor='                "queue_publication_pending" if not_due else "missing_current_queue"\n',
+            replacement='                "missing_current_queue" if not_due else "queue_publication_pending"\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-14 a queue not yet due is PENDING; a missing queue past due is"
+                " a BLOCKER"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-15-evidence-status-never-degraded",
+            owner="test_publication_not_due_is_pending_not_missing_data_alarm",
+            file="src/tree_options/desk/production.py",
+            anchor='            else "awaiting_publication"\n            if pending\n            else "ready",\n',
+            replacement='            else "ready",\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-15 a pending item holds the status at awaiting_publication,"
+                " never ready"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-16-evidence-status-pending-outranks-blocker",
+            owner="test_a_blocker_outranks_a_pending_item",
+            file="src/tree_options/desk/production.py",
+            anchor='            "evidence_status": "degraded"\n            if blockers\n            else "awaiting_publication"\n            if pending\n            else "ready",\n',
+            replacement='            "evidence_status": "awaiting_publication"\n            if pending\n            else "degraded"\n            if blockers\n            else "ready",\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant=(
+                "INV-WT8A-PR-16 a BLOCKER outranks a pending item: the status is degraded"
+                " whenever a blocker exists"
+            ),
+        ),
+        dict(
+            id="WT8A-PR-17-health-censored-total-always-zero",
+            owner="test_an_invalidated_episode_degrades_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            "censored_total": censored,\n',
+            replacement='            "censored_total": 0,\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-17 health reports the censored total it computed",
+        ),
+        dict(
+            id="WT8A-PR-18-evidence-blockers-always-empty",
+            owner="test_censored_outcomes_degrade_health",
+            file="src/tree_options/desk/production.py",
+            anchor='            "evidence_blockers": blockers,\n',
+            replacement='            "evidence_blockers": [],\n',
+            selectors=["tests/desk_safety/test_production.py"],
+            invariant="INV-WT8A-PR-18 health reports the blockers it found",
+        ),
+    ]
+)
+
+
+# ---- WT8-B, the evidence store's mutation gap (wave 8, 2026-11-24) ---------------
+# evidence.py had no active mutant (0 of 827). One mutant per bound of the custody
+# store: put's refusals, the audit chain's shape (seq, link, event digest), atomic(),
+# verify()'s checks and its transaction hygiene, all_at's join, backup()'s bounds.
+# Twelve keep an owner that existed before this wave (EV-22 and EV-15 in
+# test_scorecards.py); sixteen are owned by the fourteen tests WT8-B appended to
+# test_evidence.py (EV-06, EV-21 and EV-25 share the chain-shape test). EV-02/EV-03
+# and EV-15/EV-16 share an anchor on purpose: one line, two different bounds. The
+# empty replacements of EV-10, EV-11 and EV-13 delete one clause of a condition.
+MUTANTS.extend(
+    [
+        dict(
+            id="WT8B-EV-01-content-conflict-overwrites",
+            owner="test_conflict_does_not_overwrite_evidence",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                raise EvidenceError("content_conflict")\n',
+            replacement="                return True\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-1 a changed payload under an existing key is refused"
+                " (content_conflict), never accepted"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-02-put-transaction-requirement-dropped",
+            owner="test_write_requires_transaction_and_is_idempotent",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.readonly or not self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            replacement=(
+                "        if self.readonly:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-2 a write outside an open transaction is refused (transaction_required)"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-03-put-readonly-requirement-dropped",
+            owner="test_a_read_only_store_refuses_to_put",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.readonly or not self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            replacement=(
+                "        if not self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_required")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-3 a read-only store refuses a write with its own error"
+                " (transaction_required), even inside a read transaction"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-04-naive-instant-accepted",
+            owner="test_a_naive_instant_is_refused_before_anything_is_written",
+            file="src/tree_options/desk/evidence.py",
+            anchor="        timestamp(at.isoformat())\n",
+            replacement="        pass\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-4 a write carries a timezone-aware instant: a naive one is refused"
+                " before anything is written"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-05-replay-reported-as-write",
+            owner="test_write_requires_transaction_and_is_idempotent",
+            file="src/tree_options/desk/evidence.py",
+            anchor="            return False\n",
+            replacement="            return True\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-5 the same content under the same key is a replay: put returns False"
+                " and records nothing"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-06-previous-link-always-genesis",
+            owner="test_each_event_links_to_the_one_before",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "previous_sha256": previous[1] if previous else GENESIS,\n',
+            replacement='            "previous_sha256": GENESIS,\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-6 each audit event links to the previous event's hash; only the first"
+                " links to genesis"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-07-atomic-ignores-open-transaction",
+            owner="test_atomic_refuses_a_transaction_already_open",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.readonly or self.conn.in_transaction:\n"
+                '            raise EvidenceError("transaction_state")\n'
+            ),
+            replacement=(
+                '        if self.readonly:\n            raise EvidenceError("transaction_state")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-7 a nested atomic() is refused (transaction_state) and the outer"
+                " transaction stays usable"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-08-rollback-dropped-on-exception",
+            owner="test_exception_rolls_back_data_and_audit",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        except BaseException:\n"
+                "            self.conn.rollback()\n"
+                "            raise\n"
+            ),
+            replacement="        except BaseException:\n            raise\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-8 a transaction that raised is rolled back: neither the object nor"
+                " its audit event survives"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-21-event-sequence-skips-one",
+            owner="test_each_event_links_to_the_one_before",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "seq": previous[0] + 1 if previous else 1,\n',
+            replacement='            "seq": previous[0] + 2 if previous else 1,\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-21 an audit event's seq is the previous event's seq plus one",
+        ),
+        dict(
+            id="WT8B-EV-22-event-instant-always-epoch",
+            owner="test_a_void_discovered_after_the_requested_as_of_does_not_count",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "occurred_at": at.isoformat(),\n',
+            replacement='            "occurred_at": "1970-01-01T00:00:00+00:00",\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8B-22 the audit records WHEN the evidence was recorded, and the"
+                " knowledge cutoff reads it"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-23-audit-event-digest-always-genesis",
+            owner="test_write_requires_transaction_and_is_idempotent",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "INSERT INTO audit VALUES (?,?,?,?,?,?,?)", (*event.values(), digest(event))\n',
+            replacement='            "INSERT INTO audit VALUES (?,?,?,?,?,?,?)", (*event.values(), GENESIS)\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-23 the audit row stores the digest of its own event",
+        ),
+        dict(
+            id="WT8B-EV-24-content-check-reads-another-key",
+            owner="test_conflict_does_not_overwrite_evidence",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "SELECT payload_sha256 FROM objects WHERE kind=? AND object_key=?", (kind, key)\n',
+            replacement='            "SELECT payload_sha256 FROM objects WHERE kind=? AND object_key=?", (kind, "\\0" + key)\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-24 put looks up the existing object under its own (kind, key)",
+        ),
+        dict(
+            id="WT8B-EV-25-previous-event-read-first",
+            owner="test_each_event_links_to_the_one_before",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            "SELECT seq, event_sha256 FROM audit ORDER BY seq DESC LIMIT 1"\n',
+            replacement='            "SELECT seq, event_sha256 FROM audit ORDER BY seq ASC LIMIT 1"\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-25 a new event links to the LATEST audit event, not the first",
+        ),
+        dict(
+            id="WT8B-EV-26-seen-digest-takes-claimed-value",
+            owner="test_backup_roundtrip",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                seen[(obj["kind"], obj["object_key"])] = obj["payload_sha256"]\n',
+            replacement='                seen[(obj["kind"], obj["object_key"])] = claimed\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-26 verify remembers each object's PAYLOAD hash from its audit event"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-27-payload-digest-takes-recorded-value",
+            owner="test_tampering_is_detected",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                sha = digest(read_json(row["payload"].encode()))\n',
+            replacement='                sha = row["payload_sha256"]\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-27 verify recomputes each payload's digest from its stored bytes",
+        ),
+        dict(
+            id="WT8B-EV-28-verify-leaves-transaction-open",
+            owner="test_verify_leaves_no_transaction_open",
+            file="src/tree_options/desk/evidence.py",
+            anchor="            if owned:\n                self.conn.rollback()\n",
+            replacement="            if False:\n                self.conn.rollback()\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-28 a verify that raised on a transaction it opened rolls it back",
+        ),
+        dict(
+            id="WT8B-EV-09-verify-sequence-unchecked",
+            owner="test_verify_names_a_broken_sequence",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    obj["seq"] != count\n',
+            replacement="                    False\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-9 verify refuses an audit chain whose sequence numbers are not"
+                " consecutive from 1"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-10-verify-chain-link-unchecked",
+            owner="test_verify_names_a_broken_link",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    or obj["previous_sha256"] != previous\n',
+            replacement="",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-10 verify refuses an audit event whose previous_sha256 is not the"
+                " event before it"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-11-verify-event-digest-unchecked",
+            owner="test_verify_names_a_forged_digest",
+            file="src/tree_options/desk/evidence.py",
+            anchor="                    or digest(obj) != claimed\n",
+            replacement="",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-11 verify refuses an audit event whose stored digest is not the"
+                " digest of the event"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-12-verify-payload-digest-unchecked",
+            owner="test_verify_names_an_object_whose_recorded_digest_was_changed",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    sha != row["payload_sha256"]\n',
+            replacement="                    False\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-12 verify refuses an object whose payload bytes do not hash to its"
+                " recorded payload_sha256"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-13-verify-object-event-pairing-unchecked",
+            owner="test_verify_names_an_object_rewritten_with_its_digest",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                    or seen.get((row["kind"], row["object_key"])) != sha\n',
+            replacement="",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-13 verify refuses an object whose payload hash is not the one its"
+                " audit event carries"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-14-verify-event-count-unchecked",
+            owner="test_corrupted_backup_is_never_published",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "            if objects != count:\n"
+                '                raise EvidenceError("object_event_count")\n'
+            ),
+            replacement=(
+                '            if False:\n                raise EvidenceError("object_event_count")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-14 verify refuses a store whose object count differs from its event count"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-15-all-at-joins-on-kind-only",
+            owner="test_historical_card_does_not_use_quality_events_discovered_after_requested_session",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            " ON a.kind=o.kind AND a.object_key=o.object_key WHERE o.kind=?"\n',
+            replacement='            " ON a.kind=o.kind WHERE o.kind=?"\n',
+            selectors=["tests/desk_safety/test_scorecards.py"],
+            invariant=(
+                "INV-WT8B-15 all_at pairs each payload with its OWN audit row's time, not with"
+                " every commit of its kind"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-16-all-at-joins-on-key-only",
+            owner="test_all_at_pairs_each_object_with_its_own_commit",
+            file="src/tree_options/desk/evidence.py",
+            anchor='            " ON a.kind=o.kind AND a.object_key=o.object_key WHERE o.kind=?"\n',
+            replacement='            " ON a.object_key=o.object_key WHERE o.kind=?"\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-16 all_at reads only the requested kind: a key shared with another"
+                " kind never pairs across kinds"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-17-backup-published-unverified",
+            owner="test_corrupted_backup_is_never_published",
+            file="src/tree_options/desk/evidence.py",
+            anchor="                snapshot.verify()\n",
+            replacement="                pass\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-17 a backup is verified before its destination name is published",
+        ),
+        dict(
+            id="WT8B-EV-18-backup-overwrites-destination",
+            owner="test_backup_refuses_an_existing_destination_and_its_own_file",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if destination.exists() or destination.resolve() == self.path.resolve():\n"
+                '            raise EvidenceError("backup_exists")\n'
+            ),
+            replacement='        if False:\n            raise EvidenceError("backup_exists")\n',
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-18 a backup never overwrites: an existing destination, or the store's"
+                " own file, is refused by name"
+            ),
+        ),
+        dict(
+            id="WT8B-EV-19-backup-inside-transaction-allowed",
+            owner="test_backup_refuses_inside_a_transaction",
+            file="src/tree_options/desk/evidence.py",
+            anchor=(
+                "        if self.conn.in_transaction:\n"
+                '            raise EvidenceError("backup_in_transaction")\n'
+            ),
+            replacement=(
+                '        if False:\n            raise EvidenceError("backup_in_transaction")\n'
+            ),
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant="INV-WT8B-19 no backup is taken from inside an open transaction",
+        ),
+        dict(
+            id="WT8B-EV-20-backup-keeps-wal-journal",
+            owner="test_the_published_backup_is_a_single_rollback_journal_file",
+            file="src/tree_options/desk/evidence.py",
+            anchor='                target.execute("PRAGMA journal_mode=DELETE")\n',
+            replacement="                pass\n",
+            selectors=["tests/desk_safety/test_evidence.py"],
+            invariant=(
+                "INV-WT8B-20 a published backup is a rollback-journal file (journal_mode"
+                " delete), no WAL sidecar needed"
+            ),
+        ),
+    ]
+)
+
+
+# ---- WT8-C, the QSL gate's mutation gap (wave 8, 2026-11-24) ---------------------
+# Thirty mutants in desk/qsl.py, one file and one selector. Twelve are owned by tests
+# that existed at f401d6c. Eighteen sat on bounds no test sat on (a crossed, a locked
+# and a zero-bid book, the inclusive theta and floor bounds, each touch size and each
+# leg's open interest on its own, a zero package mid, the entry terms' width refusal,
+# three chain-header refusals and the hold window): every test went through the
+# fixture's chain, so none sat exactly ON a bound. They are owned by the twelve
+# hand-built tests WT8-C appended to test_qsl.py. Several mutants share one anchor on
+# purpose: one line, several ways to break it, each with its own owner.
+MUTANTS.extend(
+    [
+        dict(
+            id="WT8C-QS-01-crossed-book-two-sided",
+            owner="test_a_crossed_book_is_not_two_sided",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid <= leg.ask:\n",
+            replacement="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-1 a crossed book (bid above ask) is not a two-sided quote",
+        ),
+        dict(
+            id="WT8C-QS-02-locked-book-refused",
+            owner="test_a_locked_book_is_two_sided",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid <= leg.ask:\n",
+            replacement="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid < leg.ask:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-2 a locked book (bid equal to ask) IS a two-sided quote",
+        ),
+        dict(
+            id="WT8C-QS-03-zero-bid-two-sided",
+            owner="test_a_zero_bid_is_not_two_sided",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if leg.bid is None or leg.ask is None or not _ZERO < leg.bid <= leg.ask:\n",
+            replacement="        if leg.bid is None or leg.ask is None or not leg.bid <= leg.ask:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-3 a non-positive bid is not a quote: the leg is not two-sided",
+        ),
+        dict(
+            id="WT8C-QS-04-theta-bound-exclusive",
+            owner="test_the_theta_bound_is_inclusive_at_exactly_a_tenth",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        elif penalty > THETA * mid:\n",
+            replacement="        elif penalty >= THETA * mid:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-4 a crossing penalty of exactly theta times the package mid passes"
+                " the gate: the bound is inclusive"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-05-theta-never-enforced",
+            owner="test_put_family_fails_theta_on_a_moderately_wide_book",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        elif penalty > THETA * mid:\n",
+            replacement="        elif False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-5 a crossing penalty above theta times the package mid is refused"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-06-short-bid-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        short.bid_size >= SIZE_FLOOR\n",
+            replacement="        True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-6 the short leg's bid size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-07-short-ask-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        and short.ask_size >= SIZE_FLOOR\n",
+            replacement="        and True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-7 the short leg's ask size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-08-long-bid-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        and long.bid_size >= SIZE_FLOOR\n",
+            replacement="        and True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-8 the long leg's bid size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-09-long-ask-size-unfloored",
+            owner="test_each_touch_size_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        and long.ask_size >= SIZE_FLOOR\n",
+            replacement="        and True\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-9 the long leg's ask size must clear the touch-size floor",
+        ),
+        dict(
+            id="WT8C-QS-10-size-floor-exclusive",
+            owner="test_the_floors_are_inclusive_at_exactly_ten_and_one_hundred",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        short.bid_size >= SIZE_FLOOR\n",
+            replacement="        short.bid_size > SIZE_FLOOR\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-10 a touch size exactly at the floor clears it: the bound is inclusive"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-11-oi-floor-either-leg",
+            owner="test_each_legs_open_interest_is_floored_on_its_own",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (short.oi >= OI_FLOOR and long.oi >= OI_FLOOR):\n",
+            replacement="    if not (short.oi >= OI_FLOOR or long.oi >= OI_FLOOR):\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-11 both legs' open interest must clear the floor, each on its own"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-12-oi-floor-never-enforced",
+            owner="test_size_and_oi_floors_refuse",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (short.oi >= OI_FLOOR and long.oi >= OI_FLOOR):\n",
+            replacement="    if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-12 open interest below the floor is refused",
+        ),
+        dict(
+            id="WT8C-QS-13-oi-floor-exclusive",
+            owner="test_the_floors_are_inclusive_at_exactly_ten_and_one_hundred",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (short.oi >= OI_FLOOR and long.oi >= OI_FLOOR):\n",
+            replacement="    if not (short.oi > OI_FLOOR and long.oi > OI_FLOOR):\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-13 open interest exactly at the floor clears it: the bound is inclusive"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-14-package-mid-family-swapped",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='        mid = cents(short.mid - long.mid) if family == "put_credit" else cents(long.mid - short.mid)\n',
+            replacement='        mid = cents(long.mid - short.mid) if family == "put_credit" else cents(short.mid - long.mid)\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-14 a put credit's package mid is the short's mid minus the long's;"
+                " a call debit's is the reverse"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-15-package-cross-family-swapped",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='            cents(short.bid - long.ask) if family == "put_credit" else cents(long.ask - short.bid)\n',
+            replacement='            cents(long.ask - short.bid) if family == "put_credit" else cents(short.bid - long.ask)\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-15 the crossing entry is the short's bid minus the long's ask for a"
+                " put credit, and the long's ask minus the short's bid for a call debit"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-16-crossing-penalty-always-zero",
+            owner="test_call_family_fails_theta_on_a_very_wide_book",
+            file="src/tree_options/desk/qsl.py",
+            anchor='        penalty = (mid - cross) if family == "put_credit" else (cross - mid)\n',
+            replacement="        penalty = _ZERO\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-16 the gate's crossing penalty is the sum of the legs' half-spreads,"
+                " never zero by fiat"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-17-zero-mid-not-refused",
+            owner="test_a_zero_package_mid_is_not_positive",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        if mid <= _ZERO:\n",
+            replacement="        if mid < _ZERO:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-17 a non-positive package mid, zero included, is refused",
+        ),
+        dict(
+            id="WT8C-QS-18-limit-on-the-wrong-side-of-the-fill",
+            owner="test_limit_is_the_first_cent_beyond_the_crossing_fill",
+            file="src/tree_options/desk/qsl.py",
+            anchor='    limit = fill - _CENT if family == "put_credit" else fill + _CENT\n',
+            replacement='    limit = fill + _CENT if family == "put_credit" else fill - _CENT\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-18 the limit is the first cent beyond the crossing fill: below it"
+                " for a credit, above it for a debit"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-19-limit-width-bound-dropped",
+            owner="test_entry_terms_refuse_terms_not_strictly_inside_the_width",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (_ZERO < limit < width and _ZERO < fill < width):\n",
+            replacement="    if not (_ZERO < fill < width):\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-19 the entry limit must sit strictly inside the width",
+        ),
+        dict(
+            id="WT8C-QS-20-entry-terms-never-refused",
+            owner="test_entry_terms_refuse_terms_not_strictly_inside_the_width",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    if not (_ZERO < limit < width and _ZERO < fill < width):\n",
+            replacement="    if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-20 when no legal entry terms exist on a width the answer is no"
+                " terms (None)"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-21-row-penalty-family-swapped",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='    penalty = (mid - fill) if family == "put_credit" else (fill - mid)\n',
+            replacement='    penalty = (fill - mid) if family == "put_credit" else (mid - fill)\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-21 the row's crossing penalty is measured against the crossing fill,"
+                " with the family's sign"
+            ),
+        ),
+        dict(
+            id="WT8C-QS-22-row-penalty-frac-always-one-hundredth",
+            owner="test_gate_arithmetic_matches_a_hand_computed_oracle",
+            file="src/tree_options/desk/qsl.py",
+            anchor='    penalty_frac = (penalty / mid).quantize(Decimal("0.0001"))\n',
+            replacement='    penalty_frac = (penalty / mid).quantize(Decimal("0.01"))\n',
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-22 the row's penalty fraction is the penalty over the package mid,"
+                " to 4 places"
+            ),
+        ),
+        dict(
+            id="WT8C-BQ-02-chain-availability-cutoff-dropped",
+            owner="test_future_capture_is_not_available_before_runtime_observation",
+            file="src/tree_options/desk/qsl.py",
+            anchor="        cutoff = min(cutoff, available_by)\n",
+            replacement="        pass\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-23 an availability cutoff tighter than the entry session's 09:30 ET"
+                " is honoured"
+            ),
+        ),
+        dict(
+            id="WT8C-BQ-03-chain-session-mismatch-admitted",
+            owner="test_chain_available_by_decision_is_required",
+            file="src/tree_options/desk/qsl.py",
+            anchor='                header["session"] != session.isoformat()\n',
+            replacement="                False\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-24 a chain must be the decision session's own",
+        ),
+        dict(
+            id="WT8C-BQ-04-chain-underlying-mismatch-admitted",
+            owner="test_a_chain_naming_another_underlying_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor='                or header["underlying"] != name\n',
+            replacement="",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-25 a chain must name the underlying it is filed under",
+        ),
+        dict(
+            id="WT8C-BQ-05-source-digest-length-bound-regressed",
+            owner="test_a_source_digest_that_is_not_64_lower_case_hex_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor="                or len(source_sha) != 64\n",
+            replacement="                or len(source_sha) < 64\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant=(
+                "INV-WT8C-26 a chain's raw_sha256 is exactly 64 characters: a longer one is"
+                " refused as well"
+            ),
+        ),
+        dict(
+            id="WT8C-BQ-06-source-digest-hex-unchecked",
+            owner="test_a_source_digest_that_is_not_64_lower_case_hex_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor='                or any(c not in "0123456789abcdef" for c in source_sha)\n',
+            replacement="                or False\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-27 a chain's raw_sha256 is lower-case hex",
+        ),
+        dict(
+            id="WT8C-BQ-07-failed-gate-admitted",
+            owner="test_size_and_oi_floors_refuse",
+            file="src/tree_options/desk/qsl.py",
+            anchor="            if not g.ok:\n",
+            replacement="            if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-28 a candidate is built only from a gate that passed",
+        ),
+        dict(
+            id="WT8C-BQ-08-no-hold-window-admitted",
+            owner="test_an_expiry_without_a_hold_window_is_refused",
+            file="src/tree_options/desk/qsl.py",
+            anchor="            if deadline is None:\n",
+            replacement="            if False:\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-29 an expiry with no hold window yields no candidate",
+        ),
+        dict(
+            id="WT8C-BQ-09-decision-cutoff-moved-to-close",
+            owner="test_chain_available_by_decision_is_required",
+            file="src/tree_options/desk/qsl.py",
+            anchor="    cutoff = datetime.combine(entry, time(9, 30), tzinfo=ET)\n",
+            replacement="    cutoff = datetime.combine(entry, time(16, 0), tzinfo=ET)\n",
+            selectors=["tests/desk_safety/test_qsl.py"],
+            invariant="INV-WT8C-30 the decision cutoff is the entry session's 09:30 ET",
+        ),
+    ]
+)
+
+
 # ---- I-A's import-time uniqueness assert (wave 5, 2026-11-23) --------------------
 # TWO MUTANTS WITH THE SAME ID ARE NOT TWO MUTANTS.  The mutation report is keyed by
 # id, so a duplicate id silently OVERWRITES one verdict — and the anchor census would

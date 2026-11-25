@@ -643,3 +643,164 @@ def test_qsl_payload_binds_real_engine_source_and_dependency_bytes(world, tmp_pa
     third = qsl.qsl_engine_manifest()
     dependency.write_bytes(b"changed surface source")
     assert qsl.qsl_engine_manifest()["sha256"] != third["sha256"]
+
+
+# ------------------------------------------- WT8-C: the gate's bounds, by hand
+# Every test below sits exactly ON one bound or thins exactly ONE number of a
+# baseline book whose every number is ON a bound (sizes 10, OI 100, a crossing
+# penalty of exactly a tenth of the package mid). For put_credit: mid = 1.10 -
+# 0.90 = 0.20, crossing = 1.09 - 0.91 = 0.18, penalty = 0.02 = 0.10 x 0.20.
+_PRICES = {"short": ("1.09", "1.11", "1.10"), "long": ("0.89", "0.91", "0.90")}
+
+
+def test_a_crossed_book_is_not_two_sided():
+    short, long = _leg("1.11", "1.09", "1.10"), _leg(*_PRICES["long"])
+    g = qsl.gate("put_credit", short, long)
+    assert g.ok is False
+    assert g.reasons == ("no_two_sided_quote:short", "no_package_price")
+    assert g.mid is None
+    assert g.cross is None
+
+
+def test_a_locked_book_is_two_sided():
+    short, long = _leg("1.10", "1.10", "1.10"), _leg("0.90", "0.90", "0.90")
+    g = qsl.gate("put_credit", short, long)
+    assert g.ok is True
+    assert g.reasons == ()
+    assert g.mid == Decimal("0.20")  # 1.10 - 0.90
+    assert g.cross == Decimal("0.20")  # 1.10 - 0.90: a locked book crosses at its mid
+
+
+def test_a_zero_bid_is_not_two_sided():
+    short, long = _leg("0.00", "1.11", "1.10"), _leg(*_PRICES["long"])
+    g = qsl.gate("put_credit", short, long)
+    assert g.ok is False
+    assert g.reasons == ("no_two_sided_quote:short", "no_package_price")
+
+
+def test_the_theta_bound_is_inclusive_at_exactly_a_tenth():
+    g = qsl.gate("put_credit", _leg(*_PRICES["short"]), _leg(*_PRICES["long"]))
+    assert g.mid == Decimal("0.20")
+    assert g.cross == Decimal("0.18")
+    assert g.mid - g.cross == Decimal("0.10") * g.mid  # the premise: ON the bound
+    assert g.ok is True
+    assert g.reasons == ()
+
+
+@pytest.mark.parametrize(
+    "leg,field",
+    [("short", "bid_size"), ("short", "ask_size"), ("long", "bid_size"), ("long", "ask_size")],
+)
+def test_each_touch_size_is_floored_on_its_own(leg, field):
+    thin = {field: 9}  # one size one below the floor of 10; every other size ON it
+    short = _leg(*_PRICES["short"], **(thin if leg == "short" else {}))
+    long = _leg(*_PRICES["long"], **(thin if leg == "long" else {}))
+    g = qsl.gate("put_credit", short, long)
+    assert g.ok is False
+    assert g.reasons == ("touch_size_below_floor",)
+
+
+@pytest.mark.parametrize("leg", ["short", "long"])
+def test_each_legs_open_interest_is_floored_on_its_own(leg):
+    thin = {"oi": 40}  # one leg below the floor of 100; the other leg ON it
+    short = _leg(*_PRICES["short"], **(thin if leg == "short" else {}))
+    long = _leg(*_PRICES["long"], **(thin if leg == "long" else {}))
+    g = qsl.gate("put_credit", short, long)
+    assert g.ok is False
+    assert g.reasons == ("open_interest_below_floor",)
+
+
+def test_the_floors_are_inclusive_at_exactly_ten_and_one_hundred():
+    short, long = _leg(*_PRICES["short"]), _leg(*_PRICES["long"])
+    assert (short.bid_size, short.ask_size, long.bid_size, long.ask_size) == (10, 10, 10, 10)
+    assert (short.oi, long.oi) == (100, 100)
+    g = qsl.gate("put_credit", short, long)
+    assert g.ok is True
+    assert g.reasons == ()
+
+
+@pytest.mark.parametrize("family", ["put_credit", "call_debit"])
+def test_a_zero_package_mid_is_not_positive(family):
+    same = _leg("1.00", "1.02", "1.01")  # mid 1.01 - 1.01 = 0.00 for either family
+    g = qsl.gate(family, same, same)
+    assert g.ok is False
+    assert g.reasons == ("package_mid_not_positive",)
+    assert g.mid == Decimal("0.00")
+
+
+@pytest.mark.parametrize("cross", ["0.01", "2.00"])
+def test_entry_terms_refuse_terms_not_strictly_inside_the_width(cross):
+    """0.01: the credit floor would be 0.00; 2.00: the fill is as wide as the width."""
+    width = Decimal("2.00")
+    g = qsl.Gate(ok=True, reasons=(), mid=Decimal("2.00"), cross=Decimal(cross))
+    assert qsl.entry_terms(g, "put_credit", width) is None
+    sane = qsl.Gate(ok=True, reasons=(), mid=Decimal("2.00"), cross=Decimal("1.00"))
+    assert qsl.entry_terms(sane, "put_credit", width) == (Decimal("1.00"), Decimal("0.99"))
+
+
+def test_a_chain_naming_another_underlying_is_refused(world):
+    assert len(world.build()["admissible"]) == 2  # the premise: the header is all that moves
+    doc = world.write_chain(world.session)
+    doc["header"]["underlying"] = "MSFT"  # filed as AAPL, names MSFT
+    world.chain_path("AAPL", world.session).write_bytes(encode_document(doc))
+    payload = world.build()
+    assert payload["admissible"] == []
+    # .get: a missing key reads 0, so the refusal has to be NAMED, not just a refusal
+    assert payload["qsl"]["refused"].get("chain_availability_invalid", 0) == 1
+
+
+@pytest.mark.parametrize(
+    "source_sha",
+    [
+        pytest.param("e" * 65, id="one-char-too-long"),
+        pytest.param("E" * 64, id="upper-case-hex"),
+        pytest.param("g" * 64, id="not-hex"),
+    ],
+)
+def test_a_source_digest_that_is_not_64_lower_case_hex_is_refused(world, source_sha):
+    assert len(world.build()["admissible"]) == 2  # the premise: the digest is all that moves
+    doc = world.write_chain(world.session)
+    doc["header"]["raw_sha256"] = source_sha
+    world.chain_path("AAPL", world.session).write_bytes(encode_document(doc))
+    payload = world.build()
+    assert payload["admissible"] == []
+    assert payload["qsl"]["refused"].get("chain_availability_invalid", 0) == 1
+
+
+def test_an_expiry_without_a_hold_window_is_refused(world):
+    assert len(world.build()["admissible"]) == 2  # the premise, with the real calendar
+
+    class _TwoSessions:
+        """D and its entry session only: no session two before any expiry is after the entry."""
+
+        def sessions(self):
+            return (world.session, world.entry)
+
+    payload = qsl.build_queue(
+        world.session,
+        chains=qsl.chain_files(world.store, world.session),
+        cal=_TwoSessions(),
+        rate=RATE,
+    )
+    assert payload["admissible"] == []
+    assert payload["qsl"]["refused"]["put_credit:no_hold_window"] == 1
+    assert payload["qsl"]["refused"]["call_debit:no_hold_window"] == 1
+
+
+def _leg(bid: str, ask: str, mid: str, **sizes: int) -> qsl.LegQuote:
+    """A leg built by hand: sizes sit exactly ON the floors unless a test lowers one."""
+    assert set(sizes) <= {"bid_size", "ask_size", "oi"}, sizes
+    return qsl.LegQuote(
+        "P",
+        Decimal("100"),
+        date(2026, 10, 14),
+        22,
+        Decimal(bid),
+        Decimal(ask),
+        Decimal(mid),
+        sizes.get("bid_size", 10),
+        sizes.get("ask_size", 10),
+        sizes.get("oi", 100),
+        0.30,
+        32.0,
+    )
